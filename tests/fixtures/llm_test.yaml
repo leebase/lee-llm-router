@@ -1,0 +1,12 @@
+llm:
+  default_role: test
+  providers:
+    mock:
+      type: mock
+  roles:
+    test:
+      provider: mock
+      model: mock-model
+      temperature: 0.1
+    minimal:
+      provider: mock
