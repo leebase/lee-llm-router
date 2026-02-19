@@ -22,7 +22,18 @@ class ProviderChoice:
     """Result returned by a RoutingPolicy."""
 
     provider_name: str
-    overrides: dict[str, Any] = field(default_factory=dict)
+    provider_overrides: dict[str, Any] = field(default_factory=dict)
+    request_overrides: dict[str, Any] = field(default_factory=dict)
+    overrides: dict[str, Any] = field(default_factory=dict)  # legacy alias
+
+    def __post_init__(self) -> None:
+        if self.overrides:
+            if self.provider_overrides:
+                self.provider_overrides = {**self.overrides, **self.provider_overrides}
+            else:
+                self.provider_overrides = dict(self.overrides)
+        # Keep overrides attribute pointing at provider_overrides for legacy readers.
+        self.overrides = self.provider_overrides
 
 
 @runtime_checkable

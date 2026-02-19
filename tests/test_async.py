@@ -116,6 +116,35 @@ def test_complete_fallback_chain_sync(tmp_path: Path, caplog):
     assert any("policy.fallback" in r.message for r in caplog.records)
 
 
+def test_fallback_writes_trace_per_attempt(tmp_path: Path):
+    """Each fallback attempt writes its own trace file with failure context."""
+    config = make_config(fallback_providers=["mock2"])
+    router = LLMRouter(config, trace_dir=tmp_path)
+
+    call_count = 0
+
+    def _complete(self, request, cfg):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise LLMRouterError("rate limited", failure_type=FailureType.RATE_LIMIT)
+        return LLMResponse(text="fallback ok", provider="mock2", model="mock-model", usage=LLMUsage())
+
+    with patch("lee_llm_router.providers.mock.MockProvider.complete", _complete):
+        router.complete("test", [{"role": "user", "content": "hi"}])
+
+    trace_files = list(tmp_path.rglob("*.json"))
+    assert len(trace_files) == 2
+    attempts = {}
+    for path in trace_files:
+        data = json.loads(path.read_text())
+        attempts[data["attempt"]] = data
+    assert attempts[0]["provider"] == "mock"
+    assert attempts[0]["failure_type"] == "RATE_LIMIT"
+    assert attempts[1]["provider"] == "mock2"
+    assert attempts[1]["failure_type"] is None
+
+
 def test_complete_async_fallback_chain(tmp_path: Path, caplog):
     """Async: primary raises TIMEOUT → fallback provider succeeds."""
     config = make_config(fallback_providers=["mock2"])
@@ -297,6 +326,7 @@ def test_trace_cli_shows_traces(tmp_path: Path, capsys):
 
     captured = capsys.readouterr()
     assert "OK" in captured.out
+    assert "a0" in captured.out
 
 
 def test_trace_cli_empty_directory(tmp_path: Path, capsys):

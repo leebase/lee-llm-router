@@ -5,13 +5,15 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from lee_llm_router.client import LLMClient
-from lee_llm_router.config import load_config
+from lee_llm_router.config import LLMConfig, ProviderConfig, RoleConfig, load_config
+from lee_llm_router.policy import ProviderChoice
 from lee_llm_router.providers.base import FailureType, LLMRouterError
-from lee_llm_router.response import LLMResponse
+from lee_llm_router.response import LLMResponse, LLMUsage
 from lee_llm_router.router import LLMRouter
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -93,6 +95,63 @@ def test_complete_per_call_override(mock_config, tmp_path):
     # The request_id in the trace should reflect the overridden model
     data = json.loads(list(tmp_path.rglob("*.json"))[0].read_text())
     assert data["model"] == "overridden-model"
+
+
+def test_policy_request_overrides_applied(mock_config, tmp_path):
+    class ForceCheapPolicy:
+        def choose(self, role, config):
+            return ProviderChoice(
+                provider_name="mock",
+                request_overrides={"model": "cheap-model", "temperature": 0.05},
+            )
+
+    router = LLMRouter(mock_config, trace_dir=tmp_path, policy=ForceCheapPolicy())
+    router.complete("test", MESSAGES)
+
+    data = json.loads(list(tmp_path.rglob("*.json"))[0].read_text())
+    assert data["model"] == "cheap-model"
+
+
+def test_per_call_overrides_win_over_policy(mock_config, tmp_path):
+    class ForceCheapPolicy:
+        def choose(self, role, config):
+            return ProviderChoice(
+                provider_name="mock",
+                request_overrides={"model": "cheap-model"},
+            )
+
+    router = LLMRouter(mock_config, trace_dir=tmp_path, policy=ForceCheapPolicy())
+    router.complete("test", MESSAGES, model="per-call")
+
+    data = json.loads(list(tmp_path.rglob("*.json"))[0].read_text())
+    assert data["model"] == "per-call"
+
+
+def test_router_supports_openai_http_alias(tmp_path):
+    config = LLMConfig(
+        default_role="planner",
+        providers={
+            "openrouter": ProviderConfig(
+                name="openrouter",
+                type="openai_http",
+                raw={"base_url": "https://api.openai.com/v1", "api_key_env": "DUMMY"},
+            )
+        },
+        roles={
+            "planner": RoleConfig(
+                name="planner",
+                provider="openrouter",
+                model="gpt-4o-mini",
+            )
+        },
+    )
+    router = LLMRouter(config, trace_dir=tmp_path)
+    fake_response = LLMResponse(text="alias-ok", usage=LLMUsage(), provider="openrouter_http", model="gpt-4o-mini")
+
+    with patch("lee_llm_router.providers.http.OpenRouterHTTPProvider.complete", return_value=fake_response):
+        response = router.complete("planner", MESSAGES)
+
+    assert response.text == "alias-ok"
 
 
 # ---------------------------------------------------------------------------

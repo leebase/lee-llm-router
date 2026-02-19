@@ -10,7 +10,7 @@
 |-----------|-------|
 | **Phase** | P2 — Enhancements Complete |
 | **Mode** | 2 (Implementation with approval) |
-| **Last Updated** | 2026-02-18 (Sprint 5 complete — P2 done) |
+| **Last Updated** | 2026-02-18 (Sprint 6 reliability prep: alias, policy overrides, trace integrity) |
 
 ### Sprint Status
 | Sprint | Status | Completion |
@@ -29,6 +29,8 @@
 All planned sprints complete. Lee LLM Router v0.1.0 is feature-complete per product-definition.md.
 
 ### Recently Completed
+- ✅ Sprint 6 prep: provider alias, policy overrides, per-attempt traces + CLI metadata
+- ✅ Repository guidelines in `AGENTS.md` condensed for contributors
 - ✅ Project scaffolded with init-agent
 - ✅ AGENTS.md created
 - ✅ sprint-plan.md created (5 sprints across 3 phases)

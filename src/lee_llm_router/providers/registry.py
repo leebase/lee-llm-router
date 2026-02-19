@@ -2,29 +2,41 @@
 
 from __future__ import annotations
 
+from typing import Iterable
+
 _REGISTRY: dict[str, type] = {}
+_ALIASES: dict[str, str] = {}
 
 
-def register(name: str, provider_cls: type) -> None:
+def register(name: str, provider_cls: type, *, aliases: Iterable[str] | None = None) -> None:
     """Register a provider class under the given name."""
     _REGISTRY[name] = provider_cls
+    if aliases:
+        for alias in aliases:
+            _ALIASES[alias] = name
+
+
+def register_alias(alias: str, target: str) -> None:
+    """Register an additional lookup alias for an existing provider name."""
+    _ALIASES[alias] = target
 
 
 def get(name: str) -> type:
-    """Retrieve a registered provider class by name.
+    """Retrieve a registered provider class by name or alias.
 
     Raises KeyError if the provider is not registered.
     """
-    if name not in _REGISTRY:
+    canonical = _ALIASES.get(name, name)
+    if canonical not in _REGISTRY:
         raise KeyError(
-            f"Provider {name!r} not registered. Available: {list(_REGISTRY)}"
+            f"Provider {name!r} not registered. Available: {available()}"
         )
-    return _REGISTRY[name]
+    return _REGISTRY[canonical]
 
 
 def available() -> list[str]:
-    """Return a list of all registered provider names."""
-    return list(_REGISTRY.keys())
+    """Return a list of all registered provider names and aliases."""
+    return sorted(set(_REGISTRY.keys()) | set(_ALIASES.keys()))
 
 
 def _register_builtins() -> None:
@@ -34,7 +46,7 @@ def _register_builtins() -> None:
     from lee_llm_router.providers.mock import MockProvider
 
     register("mock", MockProvider)
-    register("openrouter_http", OpenRouterHTTPProvider)
+    register("openrouter_http", OpenRouterHTTPProvider, aliases=("openai_http",))
     register("codex_cli", CodexCLIProvider)
 
 

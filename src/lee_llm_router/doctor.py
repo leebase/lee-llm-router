@@ -146,11 +146,14 @@ def _run_trace(args: argparse.Namespace) -> int:
             data = json.loads(tf.read_text())
             status = "ERROR" if data.get("error") else "OK"
             elapsed = f"{data.get('elapsed_ms') or 0:.0f}ms"
+            attempt = int(data.get("attempt", 0) or 0)
+            attempt_str = f"a{attempt}"
             print(
                 f"{str(data.get('request_id', '?'))[:8]}  "
                 f"{str(data.get('started_at', '?'))[:19]}  "
                 f"{str(data.get('role', '?')):<12}  "
                 f"{str(data.get('provider', '?')):<20}  "
+                f"{attempt_str:<6}  "
                 f"{str(data.get('model', '?')):<20}  "
                 f"{status:<6}  {elapsed}"
             )

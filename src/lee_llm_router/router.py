@@ -137,7 +137,9 @@ class LLMRouter:
         """
         role_cfg = self._resolve_role(role)
         choice = self._policy.choose(role, self.config)
-        request = self._build_request(role, messages, role_cfg, overrides)
+        policy_request_overrides = dict(getattr(choice, "request_overrides", {}))
+        request_overrides = {**policy_request_overrides, **overrides}
+        request = self._build_request(role, messages, role_cfg, request_overrides)
 
         self._log_policy_choice(request, role, choice.provider_name)
 
@@ -152,11 +154,14 @@ class LLMRouter:
 
             pcfg = self.config.providers[pname]
             provider = get_provider(pcfg.type)()
-            trace = start_trace(request, provider=pcfg.name)
+            trace = start_trace(request, provider=pcfg.name, attempt=attempt)
             t0 = time.monotonic()
 
+            policy_provider_overrides = dict(getattr(choice, "provider_overrides", {}))
+            call_config = {**pcfg.raw, **policy_provider_overrides}
+
             try:
-                response = provider.complete(request, {**pcfg.raw, **choice.overrides})
+                response = provider.complete(request, call_config)
                 elapsed_ms = (time.monotonic() - t0) * 1000
                 record_success(trace, response, elapsed_ms=elapsed_ms)
                 self._trace_store.write(trace)
@@ -200,7 +205,9 @@ class LLMRouter:
         """
         role_cfg = self._resolve_role(role)
         choice = self._policy.choose(role, self.config)
-        request = self._build_request(role, messages, role_cfg, overrides)
+        policy_request_overrides = dict(getattr(choice, "request_overrides", {}))
+        request_overrides = {**policy_request_overrides, **overrides}
+        request = self._build_request(role, messages, role_cfg, request_overrides)
 
         self._log_policy_choice(request, role, choice.provider_name)
 
@@ -215,9 +222,10 @@ class LLMRouter:
 
             pcfg = self.config.providers[pname]
             provider = get_provider(pcfg.type)()
-            trace = start_trace(request, provider=pcfg.name)
+            trace = start_trace(request, provider=pcfg.name, attempt=attempt)
             t0 = time.monotonic()
-            call_config = {**pcfg.raw, **choice.overrides}
+            policy_provider_overrides = dict(getattr(choice, "provider_overrides", {}))
+            call_config = {**pcfg.raw, **policy_provider_overrides}
 
             try:
                 if hasattr(provider, "complete_async"):

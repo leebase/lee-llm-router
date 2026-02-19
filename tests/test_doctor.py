@@ -17,6 +17,29 @@ def test_doctor_valid_config_exit_0():
     assert errors == [], f"Unexpected errors: {errors}"
 
 
+def test_doctor_allows_openai_http_alias(tmp_path, monkeypatch):
+    """Configs using type: openai_http must pass when env + base_url provided."""
+    monkeypatch.setenv("OPENAI_ALIAS_KEY", "token")
+
+    config_file = tmp_path / "llm.yaml"
+    config_file.write_text("""\
+llm:
+  default_role: planner
+  providers:
+    openrouter:
+      type: openai_http
+      base_url: https://api.openai.com/v1
+      api_key_env: OPENAI_ALIAS_KEY
+  roles:
+    planner:
+      provider: openrouter
+      model: gpt-4o-mini
+""")
+    errors, warnings = check_config(str(config_file))
+    assert errors == []
+    assert warnings == []
+
+
 def test_doctor_missing_env_var_reports_error(tmp_path, monkeypatch):
     """HTTP provider whose api_key_env is unset produces an error."""
     monkeypatch.delenv("MISSING_API_KEY_XYZ", raising=False)

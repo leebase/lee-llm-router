@@ -6,6 +6,39 @@
 
 ---
 
+## 2026-02-18 — Sprint 6 Prep: Provider Aliases, Policy Overrides, Trace Integrity
+
+**What was built:** Added `openai_http` as a first-class alias in the provider registry plus doctor + router tests; policies can now override request attributes via `ProviderChoice.request_overrides` (without colliding with provider config overrides), and per-call kwargs now win over policy defaults. Trace attempts are persisted individually (`<request>-<attempt>-<provider>.json`), fallback runs write one file per attempt, and `lee-llm-router trace --last` shows attempt metadata.
+
+**Why it matters:** Configs copied from OpenAI examples work without edits, cost-aware policies can enforce cheaper models reliably, and trace archives finally capture every failure/success along a fallback chain—making the new `trace --last` output actionable during incident review.
+
+**How to Verify**
+
+```bash
+pip install -e ".[dev]"            # ensures httpx is available
+pytest tests/test_doctor.py \
+       tests/test_router.py \
+       tests/test_async.py -k "policy or alias or trace"
+lee-llm-router doctor --config tests/fixtures/llm_test.yaml
+```
+
+---
+
+## 2026-02-18 — Repository Guidelines Refresh
+
+**What was built:** Replaced the sprawling agent instructions with a 384-word `AGENTS.md` titled “Repository Guidelines.” The document now covers structure, commands, style, testing, PR etiquette, and security tips with concise bullets and concrete examples (`pip install -e ".[dev]"`, `lee-llm-router doctor --config ...`).
+
+**Why it matters:** Contributors now have a single reference that matches the current repo state (async providers, 54 tests, doc layout). Short guidance reduces onboarding time and prevents divergence from the established workflow documents.
+
+**How to Verify**
+
+```bash
+wc -w AGENTS.md         # → 384 (within 200–400 target)
+cat AGENTS.md           # confirm sections + commands listed in spec
+```
+
+---
+
 ## 2026-02-18 — Sprint 5: Async, Fallbacks, Extended Telemetry — P2 Complete
 
 **What was built:** Full async support via `httpx` (`complete_async()` in `OpenRouterHTTPProvider` and `LLMRouter`), provider fallback chain with `policy.fallback` telemetry events, token accounting hook (`on_token_usage` callback), `EventSink` protocol for external event consumption, and `lee-llm-router trace --last N` CLI subcommand. Added `complete_async` to `MockProvider` for testability.

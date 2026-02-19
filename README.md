@@ -95,7 +95,7 @@ See [`docs/providers.md`](docs/providers.md) for configuration details.
 Every completion emits structured log events and writes a JSON trace file:
 
 - **Events**: `llm.complete.start`, `llm.complete.success`, `llm.complete.error`, `policy.choice`
-- **Trace files**: `<workspace>/.agentleeops/traces/YYYYMMDD/<request_id>.json`
+- **Trace files**: `<workspace>/.agentleeops/traces/YYYYMMDD/<request_id>-<attempt>-<provider>.json`
 
 ```python
 # Control trace location
@@ -112,11 +112,21 @@ from lee_llm_router.policy import RoutingPolicy
 class CheapFirstPolicy:
     def choose(self, role, config):
         # Route to cheap provider by default
-        return ProviderChoice(provider_name="openrouter",
-                              overrides={"model": "openai/gpt-4o-mini"})
+        return ProviderChoice(
+            provider_name="openrouter",
+            request_overrides={"model": "openai/gpt-4o-mini"},
+        )
 
 router = LLMRouter(config, policy=CheapFirstPolicy())
 ```
+
+Request attribute precedence:
+
+1. Role defaults from `config.roles[role]`
+2. `ProviderChoice.request_overrides`
+3. `router.complete(..., model=..., temperature=...)` per-call overrides
+
+Provider configuration overrides go through `ProviderChoice.provider_overrides`.
 
 ## Custom Trace Store (Phase 1)
 

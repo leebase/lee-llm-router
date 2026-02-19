@@ -7,9 +7,9 @@ Event names follow the Meridian convention:
     policy.choice
 
 Trace files are written by a TraceStore. The default LocalFileTraceStore writes to:
-    <workspace>/.agentleeops/traces/YYYYMMDD/<request_id>.json   (workspace set)
-    .lee-llm-router/traces/YYYYMMDD/<request_id>.json             (fallback)
-    <trace_dir>/YYYYMMDD/<request_id>.json                        (explicit override)
+    <workspace>/.agentleeops/traces/YYYYMMDD/<request_id>-<attempt>-<provider>.json
+    .lee-llm-router/traces/YYYYMMDD/<request_id>-<attempt>-<provider>.json
+    <trace_dir>/YYYYMMDD/<request_id>-<attempt>-<provider>.json
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ class TraceRecord:
     provider: str
     model: str
     started_at: str
+    attempt: int = 0
     work_package_id: str | None = None
     workspace: str | None = None
     elapsed_ms: float | None = None
@@ -97,12 +98,13 @@ class LocalFileTraceStore:
 # ---------------------------------------------------------------------------
 
 
-def start_trace(request: LLMRequest, provider: str = "") -> TraceRecord:
+def start_trace(request: LLMRequest, provider: str = "", attempt: int = 0) -> TraceRecord:
     """Create a TraceRecord and emit llm.complete.start."""
     trace = TraceRecord(
         request_id=request.request_id,
         role=request.role,
         provider=provider,
+        attempt=attempt,
         model=request.model,
         started_at=datetime.now(timezone.utc).isoformat(),
         work_package_id=request.work_package_id,
@@ -115,6 +117,7 @@ def start_trace(request: LLMRequest, provider: str = "") -> TraceRecord:
             "request_id": trace.request_id,
             "role": trace.role,
             "provider": trace.provider,
+            "attempt": trace.attempt,
             "model": trace.model,
             "work_package_id": trace.work_package_id,
         },
@@ -141,6 +144,7 @@ def record_success(
             "request_id": trace.request_id,
             "role": trace.role,
             "provider": trace.provider,
+            "attempt": trace.attempt,
             "model": trace.model,
             "elapsed_ms": elapsed_ms,
             "usage": trace.usage,
@@ -164,6 +168,7 @@ def record_error(
             "request_id": trace.request_id,
             "role": trace.role,
             "provider": trace.provider,
+            "attempt": trace.attempt,
             "model": trace.model,
             "elapsed_ms": elapsed_ms,
             "failure_type": trace.failure_type,
@@ -189,6 +194,7 @@ def _write_trace(trace: TraceRecord, trace_dir: Path) -> Path:
     date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
     out_dir = trace_dir / date_str
     out_dir.mkdir(parents=True, exist_ok=True)
-    trace_path = out_dir / f"{trace.request_id}.json"
+    provider_slug = (trace.provider or "provider").replace("/", "_")
+    trace_path = out_dir / f"{trace.request_id}-{trace.attempt}-{provider_slug}.json"
     trace_path.write_text(json.dumps(asdict(trace), indent=2))
     return trace_path
