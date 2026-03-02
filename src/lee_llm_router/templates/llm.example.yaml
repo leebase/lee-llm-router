@@ -22,6 +22,13 @@ llm:
       model_flag: --model
       output_flag: --output-last-message
 
+    codex_subscription:
+      type: openai_codex_subscription_http
+      base_url: https://chatgpt.com/backend-api/codex
+      # Option A: explicit token env (recommended for CI)
+      # access_token_env: OPENAI_CODEX_ACCESS_TOKEN
+      # Option B: no env var needed if `codex login` populated ~/.codex/auth.json
+
     mock:
       type: mock
       # Optional: override the default echo text
@@ -47,6 +54,10 @@ llm:
     local:
       provider: codex_local
       model: o3
+
+    codex_sub:
+      provider: codex_subscription
+      model: gpt-5.3-codex
 
     test:
       provider: mock

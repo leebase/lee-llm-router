@@ -70,7 +70,9 @@ def _parse_response(resp_data: dict[str, Any], request: LLMRequest) -> LLMRespon
 
 def _check_status(status_code: int, text: str) -> None:
     if status_code == 429:
-        raise LLMRouterError("Rate limited by provider", failure_type=FailureType.RATE_LIMIT)
+        raise LLMRouterError(
+            "Rate limited by provider", failure_type=FailureType.RATE_LIMIT
+        )
     if status_code >= 400:
         raise LLMRouterError(
             f"Provider returned HTTP {status_code}: {text[:200]}",

@@ -10,7 +10,7 @@
 |-----------|-------|
 | **Phase** | P2 — Enhancements Complete |
 | **Mode** | 2 (Implementation with approval) |
-| **Last Updated** | 2026-02-18 (Sprint 6 reliability prep: alias, policy overrides, trace integrity) |
+| **Last Updated** | 2026-03-02 (OpenAI Codex subscription provider + docs/tests refresh) |
 
 ### Sprint Status
 | Sprint | Status | Completion |
@@ -29,6 +29,10 @@
 All planned sprints complete. Lee LLM Router v0.1.0 is feature-complete per product-definition.md.
 
 ### Recently Completed
+- ✅ OpenAI Codex subscription provider added (`openai_codex_subscription_http`) with credential discovery from env, macOS keychain, and `CODEX_HOME/auth.json`
+- ✅ Doctor CLI validation for Codex subscription provider aliases and token env checks
+- ✅ Config/docs/template updates for subscription-backed provider usage
+- ✅ Test suite expanded and green (`63 passed`)
 - ✅ Sprint 6 prep: provider alias, policy overrides, per-attempt traces + CLI metadata
 - ✅ Repository guidelines in `AGENTS.md` condensed for contributors
 - ✅ Project scaffolded with init-agent
@@ -52,6 +56,7 @@ All planned sprints complete. Lee LLM Router v0.1.0 is feature-complete per prod
 |----------|-----------|------|
 | TinyClaw methodology | Build from scratch with small primitives; validate before scale | 2026-02-17 |
 | httpx over requests | Native async support, modern HTTP client | 2026-02-18 |
+| Add Codex subscription HTTP provider | Enable ChatGPT subscription routing without requiring API-key billing | 2026-03-02 |
 
 ---
 

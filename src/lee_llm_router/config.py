@@ -17,8 +17,8 @@ class ConfigError(ValueError):
 class ProviderConfig:
     """Config for a single provider entry."""
 
-    name: str           # YAML key (e.g. "openrouter")
-    type: str           # registry key (e.g. "openrouter_http")
+    name: str  # YAML key (e.g. "openrouter")
+    type: str  # registry key (e.g. "openrouter_http")
     raw: dict[str, Any] = field(default_factory=dict)  # everything except "type"
 
 
@@ -26,8 +26,8 @@ class ProviderConfig:
 class RoleConfig:
     """Config for a single role entry."""
 
-    name: str           # YAML key (e.g. "planner")
-    provider: str       # references a key in LLMConfig.providers
+    name: str  # YAML key (e.g. "planner")
+    provider: str  # references a key in LLMConfig.providers
     model: str = ""
     temperature: float = 0.2
     json_mode: bool = False

@@ -146,9 +146,17 @@ def test_router_supports_openai_http_alias(tmp_path):
         },
     )
     router = LLMRouter(config, trace_dir=tmp_path)
-    fake_response = LLMResponse(text="alias-ok", usage=LLMUsage(), provider="openrouter_http", model="gpt-4o-mini")
+    fake_response = LLMResponse(
+        text="alias-ok",
+        usage=LLMUsage(),
+        provider="openrouter_http",
+        model="gpt-4o-mini",
+    )
 
-    with patch("lee_llm_router.providers.http.OpenRouterHTTPProvider.complete", return_value=fake_response):
+    with patch(
+        "lee_llm_router.providers.http.OpenRouterHTTPProvider.complete",
+        return_value=fake_response,
+    ):
         response = router.complete("planner", MESSAGES)
 
     assert response.text == "alias-ok"

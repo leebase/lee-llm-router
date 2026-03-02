@@ -8,7 +8,9 @@ _REGISTRY: dict[str, type] = {}
 _ALIASES: dict[str, str] = {}
 
 
-def register(name: str, provider_cls: type, *, aliases: Iterable[str] | None = None) -> None:
+def register(
+    name: str, provider_cls: type, *, aliases: Iterable[str] | None = None
+) -> None:
     """Register a provider class under the given name."""
     _REGISTRY[name] = provider_cls
     if aliases:
@@ -28,9 +30,7 @@ def get(name: str) -> type:
     """
     canonical = _ALIASES.get(name, name)
     if canonical not in _REGISTRY:
-        raise KeyError(
-            f"Provider {name!r} not registered. Available: {available()}"
-        )
+        raise KeyError(f"Provider {name!r} not registered. Available: {available()}")
     return _REGISTRY[canonical]
 
 
@@ -44,9 +44,17 @@ def _register_builtins() -> None:
     from lee_llm_router.providers.codex_cli import CodexCLIProvider
     from lee_llm_router.providers.http import OpenRouterHTTPProvider
     from lee_llm_router.providers.mock import MockProvider
+    from lee_llm_router.providers.openai_codex_subscription import (
+        OpenAICodexSubscriptionHTTPProvider,
+    )
 
     register("mock", MockProvider)
     register("openrouter_http", OpenRouterHTTPProvider, aliases=("openai_http",))
+    register(
+        "openai_codex_subscription_http",
+        OpenAICodexSubscriptionHTTPProvider,
+        aliases=("openai_codex_http", "chatgpt_subscription_http"),
+    )
     register("codex_cli", CodexCLIProvider)
 
 

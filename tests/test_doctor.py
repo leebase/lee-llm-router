@@ -40,6 +40,29 @@ llm:
     assert warnings == []
 
 
+def test_doctor_allows_openai_codex_subscription_alias_with_env(tmp_path, monkeypatch):
+    """Configs using type: openai_codex_http pass when access_token_env is set."""
+    monkeypatch.setenv("OPENAI_CODEX_TOKEN", "token")
+
+    config_file = tmp_path / "llm.yaml"
+    config_file.write_text("""\
+llm:
+  default_role: planner
+  providers:
+    codex_sub:
+      type: openai_codex_http
+      base_url: https://chatgpt.com/backend-api/codex
+      access_token_env: OPENAI_CODEX_TOKEN
+  roles:
+    planner:
+      provider: codex_sub
+      model: gpt-5.3-codex
+""")
+    errors, warnings = check_config(str(config_file))
+    assert errors == []
+    assert warnings == []
+
+
 def test_doctor_missing_env_var_reports_error(tmp_path, monkeypatch):
     """HTTP provider whose api_key_env is unset produces an error."""
     monkeypatch.delenv("MISSING_API_KEY_XYZ", raising=False)
@@ -77,9 +100,9 @@ llm:
       provider: codex
 """)
     errors, _ = check_config(str(config_file))
-    assert any("definitely_not_a_real_binary_xyzzy999" in e for e in errors), (
-        f"Expected binary-not-found error, got: {errors}"
-    )
+    assert any(
+        "definitely_not_a_real_binary_xyzzy999" in e for e in errors
+    ), f"Expected binary-not-found error, got: {errors}"
 
 
 def test_template_command_outputs_yaml():

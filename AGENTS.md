@@ -12,7 +12,7 @@ Lee LLM Router is a Python 3.10+ package that centralizes LLM routing, telemetry
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"            # install runtime + tooling deps
-pytest                               # run the full suite (54 tests today)
+pytest                               # run the full suite (63 tests today)
 pytest tests/test_router.py -v       # focused router coverage
 python -m build                      # create wheel + sdist for release smoke
 lee-llm-router doctor --config tests/fixtures/llm_test.yaml

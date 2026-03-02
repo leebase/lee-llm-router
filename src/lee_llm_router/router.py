@@ -60,12 +60,18 @@ class LLMRouter:
         """Emit a RouterEvent to the EventSink. Swallows all exceptions."""
         if self._event_sink is not None:
             try:
-                self._event_sink.emit(RouterEvent(event=event, request_id=request_id, data=data))
+                self._event_sink.emit(
+                    RouterEvent(event=event, request_id=request_id, data=data)
+                )
             except Exception:
                 pass
 
     def _build_request(
-        self, role: str, messages: list[dict[str, str]], role_cfg: RoleConfig, overrides: dict[str, Any]
+        self,
+        role: str,
+        messages: list[dict[str, str]],
+        role_cfg: RoleConfig,
+        overrides: dict[str, Any],
     ) -> LLMRequest:
         return LLMRequest(
             role=role,
@@ -78,7 +84,9 @@ class LLMRouter:
             workspace=self.workspace,
         )
 
-    def _log_policy_choice(self, request: LLMRequest, role: str, provider_name: str) -> None:
+    def _log_policy_choice(
+        self, request: LLMRequest, role: str, provider_name: str
+    ) -> None:
         logger.info(
             "policy.choice",
             extra={
@@ -89,9 +97,13 @@ class LLMRouter:
                 "policy": type(self._policy).__name__,
             },
         )
-        self._emit("policy.choice", request.request_id, role=role, provider=provider_name)
+        self._emit(
+            "policy.choice", request.request_id, role=role, provider=provider_name
+        )
 
-    def _log_fallback(self, request: LLMRequest, role: str, provider_name: str, attempt: int) -> None:
+    def _log_fallback(
+        self, request: LLMRequest, role: str, provider_name: str, attempt: int
+    ) -> None:
         logger.info(
             "policy.fallback",
             extra={
@@ -102,9 +114,17 @@ class LLMRouter:
                 "attempt": attempt,
             },
         )
-        self._emit("policy.fallback", request.request_id, role=role, provider=provider_name, attempt=attempt)
+        self._emit(
+            "policy.fallback",
+            request.request_id,
+            role=role,
+            provider=provider_name,
+            attempt=attempt,
+        )
 
-    def _call_token_hook(self, response: LLMResponse, role: str, provider_name: str) -> None:
+    def _call_token_hook(
+        self, response: LLMResponse, role: str, provider_name: str
+    ) -> None:
         if self._on_token_usage is not None:
             try:
                 self._on_token_usage(response.usage, role, provider_name)
@@ -165,28 +185,47 @@ class LLMRouter:
                 elapsed_ms = (time.monotonic() - t0) * 1000
                 record_success(trace, response, elapsed_ms=elapsed_ms)
                 self._trace_store.write(trace)
-                self._emit("llm.complete.success", request.request_id, provider=pname, elapsed_ms=elapsed_ms)
+                self._emit(
+                    "llm.complete.success",
+                    request.request_id,
+                    provider=pname,
+                    elapsed_ms=elapsed_ms,
+                )
                 self._call_token_hook(response, role, pname)
                 return response
             except LLMRouterError as exc:
                 elapsed_ms = (time.monotonic() - t0) * 1000
                 record_error(trace, exc, elapsed_ms=elapsed_ms)
                 self._trace_store.write(trace)
-                self._emit("llm.complete.error", request.request_id, provider=pname, failure_type=exc.failure_type.value)
+                self._emit(
+                    "llm.complete.error",
+                    request.request_id,
+                    provider=pname,
+                    failure_type=exc.failure_type.value,
+                )
                 is_last = attempt == len(providers_to_try) - 1
                 if not should_retry(exc) or is_last:
                     raise
                 last_error = exc
             except Exception as exc:
                 elapsed_ms = (time.monotonic() - t0) * 1000
-                wrapped = LLMRouterError(str(exc), failure_type=FailureType.UNKNOWN, cause=exc)
+                wrapped = LLMRouterError(
+                    str(exc), failure_type=FailureType.UNKNOWN, cause=exc
+                )
                 record_error(trace, wrapped, elapsed_ms=elapsed_ms)
                 self._trace_store.write(trace)
-                self._emit("llm.complete.error", request.request_id, provider=pname, failure_type="UNKNOWN")
+                self._emit(
+                    "llm.complete.error",
+                    request.request_id,
+                    provider=pname,
+                    failure_type="UNKNOWN",
+                )
                 raise wrapped from exc
 
         # Defensive: should only be reached if all providers were skipped
-        raise last_error or LLMRouterError("No providers available", failure_type=FailureType.PROVIDER_ERROR)
+        raise last_error or LLMRouterError(
+            "No providers available", failure_type=FailureType.PROVIDER_ERROR
+        )
 
     # ------------------------------------------------------------------
     # Async completion
@@ -231,31 +270,52 @@ class LLMRouter:
                 if hasattr(provider, "complete_async"):
                     response = await provider.complete_async(request, call_config)
                 else:
-                    response = await asyncio.to_thread(provider.complete, request, call_config)
+                    response = await asyncio.to_thread(
+                        provider.complete, request, call_config
+                    )
                 elapsed_ms = (time.monotonic() - t0) * 1000
                 record_success(trace, response, elapsed_ms=elapsed_ms)
                 self._trace_store.write(trace)
-                self._emit("llm.complete.success", request.request_id, provider=pname, elapsed_ms=elapsed_ms)
+                self._emit(
+                    "llm.complete.success",
+                    request.request_id,
+                    provider=pname,
+                    elapsed_ms=elapsed_ms,
+                )
                 self._call_token_hook(response, role, pname)
                 return response
             except LLMRouterError as exc:
                 elapsed_ms = (time.monotonic() - t0) * 1000
                 record_error(trace, exc, elapsed_ms=elapsed_ms)
                 self._trace_store.write(trace)
-                self._emit("llm.complete.error", request.request_id, provider=pname, failure_type=exc.failure_type.value)
+                self._emit(
+                    "llm.complete.error",
+                    request.request_id,
+                    provider=pname,
+                    failure_type=exc.failure_type.value,
+                )
                 is_last = attempt == len(providers_to_try) - 1
                 if not should_retry(exc) or is_last:
                     raise
                 last_error = exc
             except Exception as exc:
                 elapsed_ms = (time.monotonic() - t0) * 1000
-                wrapped = LLMRouterError(str(exc), failure_type=FailureType.UNKNOWN, cause=exc)
+                wrapped = LLMRouterError(
+                    str(exc), failure_type=FailureType.UNKNOWN, cause=exc
+                )
                 record_error(trace, wrapped, elapsed_ms=elapsed_ms)
                 self._trace_store.write(trace)
-                self._emit("llm.complete.error", request.request_id, provider=pname, failure_type="UNKNOWN")
+                self._emit(
+                    "llm.complete.error",
+                    request.request_id,
+                    provider=pname,
+                    failure_type="UNKNOWN",
+                )
                 raise wrapped from exc
 
-        raise last_error or LLMRouterError("No providers available", failure_type=FailureType.PROVIDER_ERROR)
+        raise last_error or LLMRouterError(
+            "No providers available", failure_type=FailureType.PROVIDER_ERROR
+        )
 
     # ------------------------------------------------------------------
     # Helpers

@@ -15,7 +15,6 @@ from lee_llm_router.response import LLMRequest, LLMResponse, LLMUsage
 from lee_llm_router.router import LLMRouter
 from lee_llm_router.telemetry import EventSink, RouterEvent
 
-
 # ---------------------------------------------------------------------------
 # Config factory helpers
 # ---------------------------------------------------------------------------
@@ -80,7 +79,10 @@ def test_complete_async_uses_provider_complete_async(tmp_path: Path):
         usage=LLMUsage(),
     )
 
-    with patch("lee_llm_router.providers.mock.MockProvider.complete_async", new=AsyncMock(return_value=fake_response)):
+    with patch(
+        "lee_llm_router.providers.mock.MockProvider.complete_async",
+        new=AsyncMock(return_value=fake_response),
+    ):
         response = asyncio.run(
             router.complete_async("test", [{"role": "user", "content": "hi"}])
         )
@@ -105,10 +107,13 @@ def test_complete_fallback_chain_sync(tmp_path: Path, caplog):
         call_count += 1
         if call_count == 1:
             raise LLMRouterError("rate limited", failure_type=FailureType.RATE_LIMIT)
-        return LLMResponse(text="fallback ok", provider="mock2", model="mock-model", usage=LLMUsage())
+        return LLMResponse(
+            text="fallback ok", provider="mock2", model="mock-model", usage=LLMUsage()
+        )
 
     with patch("lee_llm_router.providers.mock.MockProvider.complete", _complete):
         import logging
+
         with caplog.at_level(logging.INFO, logger="lee_llm_router"):
             response = router.complete("test", [{"role": "user", "content": "hi"}])
 
@@ -128,7 +133,9 @@ def test_fallback_writes_trace_per_attempt(tmp_path: Path):
         call_count += 1
         if call_count == 1:
             raise LLMRouterError("rate limited", failure_type=FailureType.RATE_LIMIT)
-        return LLMResponse(text="fallback ok", provider="mock2", model="mock-model", usage=LLMUsage())
+        return LLMResponse(
+            text="fallback ok", provider="mock2", model="mock-model", usage=LLMUsage()
+        )
 
     with patch("lee_llm_router.providers.mock.MockProvider.complete", _complete):
         router.complete("test", [{"role": "user", "content": "hi"}])
@@ -157,10 +164,18 @@ def test_complete_async_fallback_chain(tmp_path: Path, caplog):
         call_count += 1
         if call_count == 1:
             raise LLMRouterError("timed out", failure_type=FailureType.TIMEOUT)
-        return LLMResponse(text="async fallback", provider="mock2", model="mock-model", usage=LLMUsage())
+        return LLMResponse(
+            text="async fallback",
+            provider="mock2",
+            model="mock-model",
+            usage=LLMUsage(),
+        )
 
-    with patch("lee_llm_router.providers.mock.MockProvider.complete_async", new=_complete_async):
+    with patch(
+        "lee_llm_router.providers.mock.MockProvider.complete_async", new=_complete_async
+    ):
         import logging
+
         with caplog.at_level(logging.INFO, logger="lee_llm_router"):
             response = asyncio.run(
                 router.complete_async("test", [{"role": "user", "content": "hi"}])
@@ -293,6 +308,7 @@ def test_event_sink_exception_does_not_propagate(tmp_path: Path):
 
 def test_event_sink_importable():
     from lee_llm_router import EventSink, RouterEvent
+
     assert EventSink is not None
     assert RouterEvent is not None
 
@@ -334,6 +350,7 @@ def test_trace_cli_empty_directory(tmp_path: Path, capsys):
     trace_dir.mkdir()
 
     from lee_llm_router.doctor import main
+
     with pytest.raises(SystemExit) as exc_info:
         main(["trace", "--last", "5", "--dir", str(trace_dir)])
     assert exc_info.value.code == 0

@@ -61,6 +61,38 @@ config = LLMConfig(
 )
 ```
 
+### ChatGPT subscription-backed Codex provider
+```python
+from lee_llm_router.config import LLMConfig, ProviderConfig, RoleConfig
+
+config = LLMConfig(
+    default_role="codex",
+    providers={
+        "codex_sub": ProviderConfig(
+            name="codex_sub",
+            type="openai_codex_subscription_http",
+            raw={
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                # Optional for CI/non-interactive environments:
+                # "access_token_env": "OPENAI_CODEX_ACCESS_TOKEN",
+            },
+        )
+    },
+    roles={
+        "codex": RoleConfig(
+            name="codex",
+            provider="codex_sub",
+            model="gpt-5.3-codex",
+        )
+    },
+)
+```
+
+Credential resolution order for `openai_codex_subscription_http`:
+1. `access_token_env` (if configured)
+2. macOS keychain (`Codex Auth`)
+3. `CODEX_HOME/auth.json` or `~/.codex/auth.json`
+
 ### Test config with MockProvider (no API calls)
 ```python
 from lee_llm_router.config import LLMConfig, ProviderConfig, RoleConfig
@@ -144,9 +176,9 @@ class CheapFirstPolicy(RoutingPolicy):
         if role == "extractor":
             return ProviderChoice(
                 provider_name="openrouter",
-                overrides={"model": "openai/gpt-4o-mini"}
+                request_overrides={"model": "openai/gpt-4o-mini"}
             )
-        return ProviderChoice(provider_name="openrouter", overrides={})
+        return ProviderChoice(provider_name="openrouter")
 
 router = LLMRouter(config, policy=CheapFirstPolicy())
 ```

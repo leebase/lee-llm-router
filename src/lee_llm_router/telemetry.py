@@ -55,7 +55,7 @@ class TraceRecord:
 class RouterEvent:
     """Emitted at every significant step; consumable by external SessionLoggers."""
 
-    event: str           # e.g. "llm.complete.start", "policy.choice"
+    event: str  # e.g. "llm.complete.start", "policy.choice"
     request_id: str
     data: dict[str, Any] = _field(default_factory=dict)
 
@@ -98,7 +98,9 @@ class LocalFileTraceStore:
 # ---------------------------------------------------------------------------
 
 
-def start_trace(request: LLMRequest, provider: str = "", attempt: int = 0) -> TraceRecord:
+def start_trace(
+    request: LLMRequest, provider: str = "", attempt: int = 0
+) -> TraceRecord:
     """Create a TraceRecord and emit llm.complete.start."""
     trace = TraceRecord(
         request_id=request.request_id,

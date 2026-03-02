@@ -41,7 +41,9 @@ class MockProvider:
             provider="mock",
         )
 
-    async def complete_async(self, request: LLMRequest, config: dict[str, Any]) -> LLMResponse:
+    async def complete_async(
+        self, request: LLMRequest, config: dict[str, Any]
+    ) -> LLMResponse:
         if config.get("raise_timeout"):
             raise LLMRouterError("mock timeout", failure_type=FailureType.TIMEOUT)
 

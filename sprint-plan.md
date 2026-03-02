@@ -4,7 +4,7 @@
 
 > ## ✅ SPRINT 5 COMPLETE: Async, Fallbacks, Extended Telemetry
 >
-> **Status:** 100% complete — All acceptance criteria met, 54/54 tests passing.
+> **Status:** 100% complete — All acceptance criteria met, 63/63 tests passing.
 >
 > See [Sprint 5 details](#sprint-5--async-fallbacks-extended-telemetry) below.
 

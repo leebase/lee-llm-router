@@ -15,7 +15,12 @@ from lee_llm_router.router import LLMRouter
 
 # Phase 1 abstractions (additive — not required for basic usage)
 from lee_llm_router.policy import ProviderChoice, RoutingPolicy, SimpleRoutingPolicy
-from lee_llm_router.telemetry import EventSink, LocalFileTraceStore, RouterEvent, TraceStore
+from lee_llm_router.telemetry import (
+    EventSink,
+    LocalFileTraceStore,
+    RouterEvent,
+    TraceStore,
+)
 
 __all__ = [
     "__version__",

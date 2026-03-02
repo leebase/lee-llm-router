@@ -34,6 +34,9 @@ providers:
 |-------|---------|-------------|
 | `openrouter_http` | `OpenRouterHTTPProvider` | OpenRouter / OpenAI-compatible REST |
 | `openai_http` | `OpenRouterHTTPProvider` | Alias — same adapter |
+| `openai_codex_subscription_http` | `OpenAICodexSubscriptionHTTPProvider` | ChatGPT subscription-backed Codex responses API |
+| `openai_codex_http` | `OpenAICodexSubscriptionHTTPProvider` | Alias — same adapter |
+| `chatgpt_subscription_http` | `OpenAICodexSubscriptionHTTPProvider` | Alias — same adapter |
 | `codex_cli` | `CodexCLIProvider` | Subprocess provider |
 | `mock` | `MockProvider` | Deterministic echo — tests only |
 
@@ -48,6 +51,22 @@ providers:
 
 > `api_key_env` stores the variable *name*, not the secret. The value is read from
 > `os.environ` at call time so secrets never appear in config files or logs.
+
+### openai_codex_subscription_http keys
+
+| Key | Required | Default | Description |
+|-----|----------|---------|-------------|
+| `base_url` | no | `https://chatgpt.com/backend-api/codex` | Codex responses base URL |
+| `access_token_env` | no | — | Env var containing ChatGPT/Codex access token |
+| `account_id_env` | no | — | Optional env var for `ChatGPT-Account-Id` header |
+| `account_id` | no | — | Optional fixed `ChatGPT-Account-Id` header |
+| `headers` | no | `{}` | Extra HTTP headers |
+| `timeout` | no | role timeout | Request timeout in seconds |
+
+Credential resolution order:
+1. `access_token_env` (if configured)
+2. macOS keychain (`Codex Auth`)
+3. `CODEX_HOME/auth.json` or `~/.codex/auth.json`
 
 ### codex_cli keys
 
@@ -129,6 +148,10 @@ llm:
       model_flag: --model
       output_flag: --output-last-message
 
+    codex_subscription:
+      type: openai_codex_subscription_http
+      base_url: https://chatgpt.com/backend-api/codex
+
     mock:
       type: mock
 
@@ -149,6 +172,10 @@ llm:
     local:
       provider: codex_local
       model: o3
+
+    codex_sub:
+      provider: codex_subscription
+      model: gpt-5.3-codex
 
     test:
       provider: mock

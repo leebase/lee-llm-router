@@ -42,9 +42,7 @@ def check_config(
         if pcfg.type in ("openrouter_http", "openai_http"):
             api_key_env = pcfg.raw.get("api_key_env")
             if api_key_env and not os.environ.get(api_key_env):
-                errors.append(
-                    f"Provider {pname!r}: env var {api_key_env!r} is not set"
-                )
+                errors.append(f"Provider {pname!r}: env var {api_key_env!r} is not set")
             if not pcfg.raw.get("base_url"):
                 warnings.append(
                     f"Provider {pname!r}: 'base_url' not set — will use default"
@@ -56,6 +54,25 @@ def check_config(
                 errors.append(
                     f"Provider {pname!r}: binary {command!r} not found in PATH"
                 )
+
+        elif pcfg.type in (
+            "openai_codex_subscription_http",
+            "openai_codex_http",
+            "chatgpt_subscription_http",
+        ):
+            access_token_env = pcfg.raw.get("access_token_env")
+            if access_token_env:
+                if not os.environ.get(access_token_env):
+                    errors.append(
+                        f"Provider {pname!r}: env var {access_token_env!r} is not set"
+                    )
+            else:
+                codex_home = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
+                auth_path = codex_home / "auth.json"
+                if not auth_path.exists():
+                    warnings.append(
+                        f"Provider {pname!r}: no access_token_env set and no auth file found at {auth_path}"
+                    )
 
         elif pcfg.type == "mock":
             pass  # mock provider always available

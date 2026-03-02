@@ -52,7 +52,7 @@ Controllable error flags (for testing error paths):
 **Registry names:** `openrouter_http`, `openai_http`
 
 Calls any OpenRouter or OpenAI-compatible `/chat/completions` endpoint using
-`requests`. Supports JSON mode and custom headers.
+`httpx`. Supports JSON mode and custom headers.
 
 ```yaml
 providers:
@@ -66,11 +66,44 @@ Error mapping:
 
 | HTTP / exception | FailureType |
 |-----------------|------------|
-| `requests.Timeout` | `TIMEOUT` |
+| `httpx.TimeoutException` | `TIMEOUT` |
 | HTTP 429 | `RATE_LIMIT` |
 | HTTP 4xx / 5xx | `PROVIDER_ERROR` |
 | Missing `choices[0]` | `INVALID_RESPONSE` |
-| `requests.RequestException` | `PROVIDER_ERROR` |
+| `httpx.RequestError` | `PROVIDER_ERROR` |
+
+---
+
+## OpenAICodexSubscriptionHTTPProvider
+
+**Registry names:** `openai_codex_subscription_http`, `openai_codex_http`, `chatgpt_subscription_http`
+
+Calls ChatGPT backend Codex Responses API (`/codex/responses`) using subscription
+credentials from Codex login.
+
+```yaml
+providers:
+  codex_sub:
+    type: openai_codex_subscription_http
+    base_url: https://chatgpt.com/backend-api/codex
+    # Optional override for CI:
+    # access_token_env: OPENAI_CODEX_ACCESS_TOKEN
+```
+
+Credential resolution order:
+1. `access_token_env` (if configured)
+2. macOS keychain entry `Codex Auth`
+3. `CODEX_HOME/auth.json` (or `~/.codex/auth.json`)
+
+Error mapping:
+
+| HTTP / exception | FailureType |
+|-----------------|------------|
+| `httpx.TimeoutException` | `TIMEOUT` |
+| HTTP 429 | `RATE_LIMIT` |
+| HTTP 4xx / 5xx | `PROVIDER_ERROR` |
+| Missing output text in responses payload | `INVALID_RESPONSE` |
+| Missing subscription credentials | `PROVIDER_ERROR` |
 
 ---
 

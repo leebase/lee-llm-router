@@ -6,6 +6,36 @@
 
 ---
 
+## 2026-03-02 — OpenAI Codex Subscription Provider (ChatGPT Subscription Auth)
+
+**What was built:** Added `OpenAICodexSubscriptionHTTPProvider` with registry type `openai_codex_subscription_http` (aliases: `openai_codex_http`, `chatgpt_subscription_http`). The provider calls ChatGPT backend Codex Responses API, enforces `store: false`, and converts responses payloads into `LLMResponse`. Credential discovery mirrors OpenClaw patterns: `access_token_env` first, then macOS keychain (`Codex Auth`), then `CODEX_HOME/auth.json` / `~/.codex/auth.json`. Added doctor checks for this provider type and updated docs/template examples.
+
+**Why it matters:** Projects can route through OpenAI ChatGPT subscription credentials directly from `lee-llm-router` without forcing usage-based OpenAI API keys. This enables the same Codex-subscription connectivity pattern used in OpenClaw while preserving router telemetry/fallback behavior.
+
+**Created / Modified**
+
+| File | Purpose |
+|------|---------|
+| `src/lee_llm_router/providers/openai_codex_subscription.py` | New subscription-backed HTTP provider with env/keychain/auth.json credential resolution |
+| `src/lee_llm_router/providers/registry.py` | Built-in registration + aliases |
+| `src/lee_llm_router/doctor.py` | Provider validation for subscription auth config |
+| `tests/test_providers.py` | Provider success + auth file + missing credential coverage |
+| `tests/test_doctor.py` | Alias + token env validation coverage |
+| `src/lee_llm_router/templates/llm.example.yaml` | New provider example stanza |
+| `docs/config.md` | Provider type + key schema docs |
+| `docs/providers.md` | Adapter behavior and failure mapping docs |
+| `README.md` | Provider matrix and architecture list updated |
+
+**How to Verify**
+
+```bash
+.venv/bin/pytest -q
+.venv/bin/pytest -q tests/test_providers.py tests/test_doctor.py
+.venv/bin/lee-llm-router doctor --config tests/fixtures/llm_test.yaml
+```
+
+---
+
 ## 2026-02-18 — Sprint 6 Prep: Provider Aliases, Policy Overrides, Trace Integrity
 
 **What was built:** Added `openai_http` as a first-class alias in the provider registry plus doctor + router tests; policies can now override request attributes via `ProviderChoice.request_overrides` (without colliding with provider config overrides), and per-call kwargs now win over policy defaults. Trace attempts are persisted individually (`<request>-<attempt>-<provider>.json`), fallback runs write one file per attempt, and `lee-llm-router trace --last` shows attempt metadata.

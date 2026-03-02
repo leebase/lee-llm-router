@@ -85,6 +85,7 @@ lee-llm-router template > config/llm.yaml
 | Type | Description |
 |------|-------------|
 | `openrouter_http` | OpenRouter / OpenAI-compatible REST API |
+| `openai_codex_subscription_http` | ChatGPT subscription-backed Codex Responses API |
 | `codex_cli` | Subprocess wrapper for Codex CLI |
 | `mock` | Deterministic echo provider for tests and CI |
 
@@ -179,6 +180,7 @@ lee_llm_router/
     ├── registry.py — register() / get() / available()
     ├── mock.py     — Deterministic echo provider
     ├── http.py     — OpenRouter / OpenAI-compatible REST
+    ├── openai_codex_subscription.py — ChatGPT subscription-backed Codex responses
     └── codex_cli.py — Subprocess provider
 ```
 
