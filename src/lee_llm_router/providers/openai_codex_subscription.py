@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from collections.abc import Iterable
 from typing import Any
 
 import httpx
@@ -158,26 +159,101 @@ def _build_request_parts(
     headers: dict[str, str] = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
-        "Accept": "application/json",
+        "Accept": "text/event-stream",
     }
     if account_id:
         headers["ChatGPT-Account-Id"] = account_id
     headers.update(config.get("headers", {}))
 
+    instructions_parts: list[str] = []
+    input_messages: list[dict[str, Any]] = []
+    for message in request.messages:
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role", "")).strip().lower()
+        content = message.get("content")
+        if role == "system" and isinstance(content, str) and content.strip():
+            instructions_parts.append(content.strip())
+            continue
+        input_messages.append(message)
+
+    instructions = "\n\n".join(instructions_parts).strip()
+    if not instructions:
+        instructions = str(config.get("instructions") or "You are a helpful assistant.")
+    if not input_messages:
+        input_messages = [{"role": "user", "content": ""}]
+
     payload: dict[str, Any] = {
         "model": request.model,
-        "input": request.messages,
+        "instructions": instructions,
+        "input": input_messages,
+        "stream": True,
         # ChatGPT backend Codex responses require store=false.
         "store": False,
     }
-    if request.temperature is not None:
-        payload["temperature"] = request.temperature
     if request.max_tokens is not None:
         payload["max_output_tokens"] = request.max_tokens
     if request.json_mode:
         payload["text"] = {"format": {"type": "json_object"}}
 
     return _build_endpoint(base_url), headers, payload, timeout
+
+
+def _iter_sse_events(chunks: Iterable[str]) -> Iterable[dict[str, Any]]:
+    buffer = ""
+    for chunk in chunks:
+        if not chunk:
+            continue
+        buffer += chunk.replace("\r\n", "\n").replace("\r", "\n")
+        while "\n\n" in buffer:
+            raw_event, buffer = buffer.split("\n\n", 1)
+            data_lines = [
+                line[5:].strip()
+                for line in raw_event.splitlines()
+                if line.startswith("data:")
+            ]
+            if not data_lines:
+                continue
+            data = "\n".join(data_lines).strip()
+            if not data:
+                continue
+            if data == "[DONE]":
+                return
+            try:
+                event = json.loads(data)
+            except json.JSONDecodeError as exc:
+                raise LLMRouterError(
+                    f"Invalid SSE event payload: {data[:200]}",
+                    failure_type=FailureType.INVALID_RESPONSE,
+                    cause=exc,
+                ) from exc
+            if isinstance(event, dict):
+                yield event
+                event_type = str(event.get("type", "")).strip()
+                if event_type in {"response.done", "response.completed"}:
+                    return
+
+    trailing = buffer.strip()
+    if trailing:
+        data_lines = [
+            line[5:].strip()
+            for line in trailing.splitlines()
+            if line.startswith("data:")
+        ]
+        if data_lines:
+            data = "\n".join(data_lines).strip()
+            if not data or data == "[DONE]":
+                return
+            try:
+                event = json.loads(data)
+            except json.JSONDecodeError as exc:
+                raise LLMRouterError(
+                    f"Invalid trailing SSE event payload: {data[:200]}",
+                    failure_type=FailureType.INVALID_RESPONSE,
+                    cause=exc,
+                ) from exc
+            if isinstance(event, dict):
+                yield event
 
 
 def _extract_text(resp_data: dict[str, Any]) -> str:
@@ -216,6 +292,36 @@ def _extract_text(resp_data: dict[str, Any]) -> str:
     return text
 
 
+def _extract_streamed_text(event: dict[str, Any]) -> str:
+    if not isinstance(event, dict):
+        return ""
+    if isinstance(event.get("delta"), str):
+        return str(event["delta"])
+    if isinstance(event.get("text"), str):
+        return str(event["text"])
+    part = event.get("part")
+    if isinstance(part, dict):
+        part_text = part.get("text")
+        if isinstance(part_text, str):
+            return part_text
+    item = event.get("item")
+    if isinstance(item, dict):
+        item_text = item.get("text")
+        if isinstance(item_text, str):
+            return item_text
+        content = item.get("content")
+        if isinstance(content, list):
+            collected: list[str] = []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                block_text = block.get("text")
+                if isinstance(block_text, str) and block_text:
+                    collected.append(block_text)
+            return "".join(collected)
+    return ""
+
+
 def _parse_usage(resp_data: dict[str, Any]) -> LLMUsage:
     usage_data = resp_data.get("usage", {})
     if not isinstance(usage_data, dict):
@@ -243,6 +349,75 @@ def _parse_response(resp_data: dict[str, Any], request: LLMRequest) -> LLMRespon
         usage=_parse_usage(resp_data),
         request_id=request.request_id,
         model=str(resp_data.get("model", request.model)),
+        provider="openai_codex_subscription_http",
+    )
+
+
+def _parse_stream_response(
+    events: Iterable[dict[str, Any]], request: LLMRequest
+) -> LLMResponse:
+    event_list = list(events)
+    collected_chunks: list[str] = []
+    final_response: dict[str, Any] | None = None
+
+    for event in event_list:
+        event_type = str(event.get("type", "")).strip()
+        if event_type == "error":
+            message = str(event.get("message") or event.get("code") or "").strip()
+            raise LLMRouterError(
+                f"Codex error: {message or json.dumps(event)[:200]}",
+                failure_type=FailureType.PROVIDER_ERROR,
+            )
+        if event_type == "response.failed":
+            response_data = event.get("response")
+            if isinstance(response_data, dict):
+                error_data = response_data.get("error")
+                if isinstance(error_data, dict):
+                    message = str(error_data.get("message") or "").strip()
+                    if message:
+                        raise LLMRouterError(
+                            message,
+                            failure_type=FailureType.PROVIDER_ERROR,
+                        )
+            raise LLMRouterError(
+                "Codex response failed",
+                failure_type=FailureType.PROVIDER_ERROR,
+            )
+        if event_type in {
+            "response.output_text.delta",
+            "response.output_text.done",
+            "response.content_part.added",
+        }:
+            chunk = _extract_streamed_text(event)
+            if chunk:
+                collected_chunks.append(chunk)
+            continue
+        if event_type in {"response.done", "response.completed"}:
+            response_data = event.get("response")
+            if isinstance(response_data, dict):
+                final_response = response_data
+
+    if final_response is not None:
+        try:
+            return _parse_response(final_response, request)
+        except LLMRouterError:
+            raise
+        except Exception:
+            pass
+
+    text = "".join(collected_chunks).strip()
+    if not text:
+        raise LLMRouterError(
+            "Unexpected responses stream: no output text found",
+            failure_type=FailureType.INVALID_RESPONSE,
+        )
+
+    return LLMResponse(
+        text=text,
+        raw={"events": event_list},
+        usage=LLMUsage(),
+        request_id=request.request_id,
+        model=request.model,
         provider="openai_codex_subscription_http",
     )
 
@@ -289,7 +464,16 @@ class OpenAICodexSubscriptionHTTPProvider:
 
         try:
             with httpx.Client(timeout=timeout) as client:
-                resp = client.post(url, json=payload, headers=headers)
+                with client.stream(
+                    "POST",
+                    url,
+                    json=payload,
+                    headers=headers,
+                ) as resp:
+                    if resp.status_code >= 400:
+                        error_text = resp.read().decode("utf-8", errors="replace")
+                        _check_status(resp.status_code, error_text)
+                    events = list(_iter_sse_events(resp.iter_text()))
         except httpx.TimeoutException as exc:
             raise LLMRouterError(
                 f"Request timed out after {timeout}s",
@@ -303,8 +487,7 @@ class OpenAICodexSubscriptionHTTPProvider:
                 cause=exc,
             ) from exc
 
-        _check_status(resp.status_code, resp.text)
-        return _parse_response(resp.json(), request)
+        return _parse_stream_response(events, request)
 
     async def complete_async(
         self, request: LLMRequest, config: dict[str, Any]
@@ -313,7 +496,20 @@ class OpenAICodexSubscriptionHTTPProvider:
 
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
-                resp = await client.post(url, json=payload, headers=headers)
+                async with client.stream(
+                    "POST",
+                    url,
+                    json=payload,
+                    headers=headers,
+                ) as resp:
+                    if resp.status_code >= 400:
+                        error_text = (await resp.aread()).decode(
+                            "utf-8", errors="replace"
+                        )
+                        _check_status(resp.status_code, error_text)
+                    chunks: list[str] = []
+                    async for chunk in resp.aiter_text():
+                        chunks.append(chunk)
         except httpx.TimeoutException as exc:
             raise LLMRouterError(
                 f"Request timed out after {timeout}s",
@@ -327,5 +523,4 @@ class OpenAICodexSubscriptionHTTPProvider:
                 cause=exc,
             ) from exc
 
-        _check_status(resp.status_code, resp.text)
-        return _parse_response(resp.json(), request)
+        return _parse_stream_response(_iter_sse_events(chunks), request)

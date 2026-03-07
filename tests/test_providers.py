@@ -179,18 +179,22 @@ def test_openai_codex_subscription_provider_success(monkeypatch):
 
     mock_resp = MagicMock()
     mock_resp.status_code = 200
-    mock_resp.json.return_value = {
-        "id": "resp_123",
-        "model": "gpt-5.3-codex",
-        "output_text": "Hello from codex subscription",
-        "usage": {"input_tokens": 11, "output_tokens": 7, "total_tokens": 18},
-    }
+    mock_resp.iter_text.return_value = [
+        'data: {"type":"response.output_text.delta","delta":"Hello from "}\n\n',
+        'data: {"type":"response.output_text.delta","delta":"codex subscription"}\n\n',
+        (
+            'data: {"type":"response.completed","response":{"id":"resp_123",'
+            '"model":"gpt-5.3-codex","output_text":"Hello from codex subscription",'
+            '"usage":{"input_tokens":11,"output_tokens":7,"total_tokens":18}}}\n\n'
+        ),
+        "data: [DONE]\n\n",
+    ]
 
     with patch(
         "lee_llm_router.providers.openai_codex_subscription.httpx.Client"
     ) as MockClient:
         client = MockClient.return_value.__enter__.return_value
-        client.post.return_value = mock_resp
+        client.stream.return_value.__enter__.return_value = mock_resp
 
         response = provider.complete(request, config)
 
@@ -199,10 +203,56 @@ def test_openai_codex_subscription_provider_success(monkeypatch):
     assert response.usage.total_tokens == 18
     assert response.provider == "openai_codex_subscription_http"
 
-    _, kwargs = client.post.call_args
+    _, kwargs = client.stream.call_args
     assert kwargs["headers"]["Authorization"] == "Bearer token-123"
     assert kwargs["headers"]["ChatGPT-Account-Id"] == "acct-xyz"
     assert kwargs["json"]["store"] is False
+    assert kwargs["json"]["stream"] is True
+    assert kwargs["json"]["instructions"] == "You are a helpful assistant."
+    assert kwargs["headers"]["Accept"] == "text/event-stream"
+    assert "temperature" not in kwargs["json"]
+
+
+def test_openai_codex_subscription_provider_lifts_system_message_into_instructions(
+    monkeypatch,
+):
+    from lee_llm_router.providers.openai_codex_subscription import (
+        OpenAICodexSubscriptionHTTPProvider,
+    )
+
+    provider = OpenAICodexSubscriptionHTTPProvider()
+    request = make_request(
+        model="gpt-5.4",
+        messages=[
+            {"role": "system", "content": "Return JSON only."},
+            {"role": "user", "content": "Plan the tutorial."},
+        ],
+    )
+    config = {
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "access_token_env": "OPENAI_CODEX_ACCESS_TOKEN",
+    }
+    monkeypatch.setenv("OPENAI_CODEX_ACCESS_TOKEN", "token-123")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.iter_text.return_value = [
+        'data: {"type":"response.completed","response":{"model":"gpt-5.4","output_text":"planned"}}\n\n'
+    ]
+
+    with patch(
+        "lee_llm_router.providers.openai_codex_subscription.httpx.Client"
+    ) as MockClient:
+        client = MockClient.return_value.__enter__.return_value
+        client.stream.return_value.__enter__.return_value = mock_resp
+
+        provider.complete(request, config)
+
+    _, kwargs = client.stream.call_args
+    assert kwargs["json"]["instructions"] == "Return JSON only."
+    assert kwargs["json"]["input"] == [
+        {"role": "user", "content": "Plan the tutorial."}
+    ]
 
 
 def test_openai_codex_subscription_provider_reads_codex_auth_file(
@@ -230,31 +280,94 @@ def test_openai_codex_subscription_provider_reads_codex_auth_file(
 
     mock_resp = MagicMock()
     mock_resp.status_code = 200
-    mock_resp.json.return_value = {
-        "model": "gpt-5.3-codex",
-        "output": [
-            {
-                "type": "message",
-                "content": [{"type": "output_text", "text": "ok from file auth"}],
-            }
-        ],
-    }
+    mock_resp.iter_text.return_value = [
+        'data: {"type":"response.completed","response":{"model":"gpt-5.3-codex","output":[{"type":"message","content":[{"type":"output_text","text":"ok from file auth"}]}]}}\n\n'
+    ]
 
     with patch(
         "lee_llm_router.providers.openai_codex_subscription.httpx.Client"
     ) as MockClient:
         client = MockClient.return_value.__enter__.return_value
-        client.post.return_value = mock_resp
+        client.stream.return_value.__enter__.return_value = mock_resp
 
         response = provider.complete(
             request, {"base_url": "https://chatgpt.com/backend-api"}
         )
 
     assert response.text == "ok from file auth"
-    _, kwargs = client.post.call_args
+    _, kwargs = client.stream.call_args
     assert kwargs["headers"]["Authorization"] == "Bearer file-token-abc"
     assert kwargs["headers"]["ChatGPT-Account-Id"] == "acct-file"
     assert kwargs["json"]["store"] is False
+
+
+def test_openai_codex_subscription_provider_assembles_stream_without_final_response(
+    monkeypatch,
+):
+    from lee_llm_router.providers.openai_codex_subscription import (
+        OpenAICodexSubscriptionHTTPProvider,
+    )
+
+    provider = OpenAICodexSubscriptionHTTPProvider()
+    request = make_request(model="gpt-5.4")
+    config = {
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "access_token_env": "OPENAI_CODEX_ACCESS_TOKEN",
+    }
+    monkeypatch.setenv("OPENAI_CODEX_ACCESS_TOKEN", "token-123")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.iter_text.return_value = [
+        'data: {"type":"response.output_text.delta","delta":"hello "}\n\n',
+        'data: {"type":"response.output_text.delta","delta":"world"}\n\n',
+        "data: [DONE]\n\n",
+    ]
+
+    with patch(
+        "lee_llm_router.providers.openai_codex_subscription.httpx.Client"
+    ) as MockClient:
+        client = MockClient.return_value.__enter__.return_value
+        client.stream.return_value.__enter__.return_value = mock_resp
+
+        response = provider.complete(request, config)
+
+    assert response.text == "hello world"
+    assert response.model == "gpt-5.4"
+
+
+def test_openai_codex_subscription_provider_handles_crlf_sse_chunks(monkeypatch):
+    from lee_llm_router.providers.openai_codex_subscription import (
+        OpenAICodexSubscriptionHTTPProvider,
+    )
+
+    provider = OpenAICodexSubscriptionHTTPProvider()
+    request = make_request(model="gpt-5.4")
+    config = {
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "access_token_env": "OPENAI_CODEX_ACCESS_TOKEN",
+    }
+    monkeypatch.setenv("OPENAI_CODEX_ACCESS_TOKEN", "token-123")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.iter_text.return_value = [
+        'data: {"type":"response.output_text.delta","delta":"hello"}\r\n\r\n',
+        'data: {"type":"response.completed","response":{"model":"gpt-5.4","output_text":"hello"}}\r\n\r\n',
+        "data: [DONE]\r\n\r\n",
+    ]
+
+    with patch(
+        "lee_llm_router.providers.openai_codex_subscription.httpx.Client"
+    ) as MockClient:
+        client = MockClient.return_value.__enter__.return_value
+        client.stream.return_value.__enter__.return_value = mock_resp
+
+        response = provider.complete(request, config)
+
+    assert response.text == "hello"
+    _, kwargs = client.stream.call_args
+    assert kwargs["headers"]["Accept"] == "text/event-stream"
 
 
 def test_openai_codex_subscription_provider_missing_credentials_raises(monkeypatch):
