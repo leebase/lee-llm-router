@@ -237,7 +237,10 @@ def test_openai_codex_subscription_provider_lifts_system_message_into_instructio
     mock_resp = MagicMock()
     mock_resp.status_code = 200
     mock_resp.iter_text.return_value = [
-        'data: {"type":"response.completed","response":{"model":"gpt-5.4","output_text":"planned"}}\n\n'
+        (
+            'data: {"type":"response.completed","response":{"model":"gpt-5.4",'
+            '"output_text":"planned"}}\n\n'
+        )
     ]
 
     with patch(
@@ -281,7 +284,11 @@ def test_openai_codex_subscription_provider_reads_codex_auth_file(
     mock_resp = MagicMock()
     mock_resp.status_code = 200
     mock_resp.iter_text.return_value = [
-        'data: {"type":"response.completed","response":{"model":"gpt-5.3-codex","output":[{"type":"message","content":[{"type":"output_text","text":"ok from file auth"}]}]}}\n\n'
+        (
+            'data: {"type":"response.completed","response":{"model":"gpt-5.3-codex",'
+            '"output":[{"type":"message","content":[{"type":"output_text",'
+            '"text":"ok from file auth"}]}]}}\n\n'
+        )
     ]
 
     with patch(
@@ -353,7 +360,10 @@ def test_openai_codex_subscription_provider_handles_crlf_sse_chunks(monkeypatch)
     mock_resp.status_code = 200
     mock_resp.iter_text.return_value = [
         'data: {"type":"response.output_text.delta","delta":"hello"}\r\n\r\n',
-        'data: {"type":"response.completed","response":{"model":"gpt-5.4","output_text":"hello"}}\r\n\r\n',
+        (
+            'data: {"type":"response.completed","response":{"model":"gpt-5.4",'
+            '"output_text":"hello"}}\r\n\r\n'
+        ),
         "data: [DONE]\r\n\r\n",
     ]
 
@@ -368,6 +378,46 @@ def test_openai_codex_subscription_provider_handles_crlf_sse_chunks(monkeypatch)
     assert response.text == "hello"
     _, kwargs = client.stream.call_args
     assert kwargs["headers"]["Accept"] == "text/event-stream"
+
+
+def test_openai_codex_subscription_provider_enforces_wall_clock_timeout(
+    monkeypatch,
+):
+    from lee_llm_router.providers.openai_codex_subscription import (
+        OpenAICodexSubscriptionHTTPProvider,
+    )
+
+    provider = OpenAICodexSubscriptionHTTPProvider()
+    request = make_request(model="gpt-5.4", timeout=1.0)
+    config = {
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "access_token_env": "OPENAI_CODEX_ACCESS_TOKEN",
+    }
+    monkeypatch.setenv("OPENAI_CODEX_ACCESS_TOKEN", "token-123")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.iter_text.return_value = [
+        'data: {"type":"response.output_text.delta","delta":"hello"}\n\n',
+        'data: {"type":"response.output_text.delta","delta":"world"}\n\n',
+    ]
+
+    with (
+        patch(
+            "lee_llm_router.providers.openai_codex_subscription.httpx.Client"
+        ) as MockClient,
+        patch(
+            "lee_llm_router.providers.openai_codex_subscription.time.monotonic",
+            side_effect=[0.0, 1.5],
+        ),
+    ):
+        client = MockClient.return_value.__enter__.return_value
+        client.stream.return_value.__enter__.return_value = mock_resp
+
+        with pytest.raises(LLMRouterError) as exc_info:
+            provider.complete(request, config)
+
+    assert exc_info.value.failure_type == FailureType.TIMEOUT
 
 
 def test_openai_codex_subscription_provider_missing_credentials_raises(monkeypatch):

@@ -13,8 +13,9 @@ import json
 import os
 import subprocess
 import sys
-from pathlib import Path
+import time
 from collections.abc import Iterable
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -97,7 +98,8 @@ def _resolve_credentials(config: dict[str, Any]) -> tuple[str, str | None]:
         token = os.environ.get(access_token_env, "").strip()
         if not token:
             raise LLMRouterError(
-                f"Codex subscription access token env var is unset: {access_token_env!r}",
+                "Codex subscription access token env var is unset: "
+                f"{access_token_env!r}",
                 failure_type=FailureType.PROVIDER_ERROR,
             )
 
@@ -119,7 +121,8 @@ def _resolve_credentials(config: dict[str, Any]) -> tuple[str, str | None]:
     )
     if creds is None:
         raise LLMRouterError(
-            "No Codex subscription credentials found. Set access_token_env or run `codex login`.",
+            "No Codex subscription credentials found. Set access_token_env "
+            "or run `codex login`.",
             failure_type=FailureType.PROVIDER_ERROR,
         )
 
@@ -254,6 +257,26 @@ def _iter_sse_events(chunks: Iterable[str]) -> Iterable[dict[str, Any]]:
                 ) from exc
             if isinstance(event, dict):
                 yield event
+
+
+def _collect_stream_events(
+    resp: httpx.Response, timeout: float
+) -> list[dict[str, Any]]:
+    deadline = time.monotonic() + timeout
+    chunks: list[str] = []
+    for chunk in resp.iter_text():
+        if time.monotonic() > deadline:
+            raise LLMRouterError(
+                f"Request timed out after {timeout}s",
+                failure_type=FailureType.TIMEOUT,
+            )
+        chunks.append(chunk)
+    if time.monotonic() > deadline:
+        raise LLMRouterError(
+            f"Request timed out after {timeout}s",
+            failure_type=FailureType.TIMEOUT,
+        )
+    return list(_iter_sse_events(chunks))
 
 
 def _extract_text(resp_data: dict[str, Any]) -> str:
@@ -473,7 +496,7 @@ class OpenAICodexSubscriptionHTTPProvider:
                     if resp.status_code >= 400:
                         error_text = resp.read().decode("utf-8", errors="replace")
                         _check_status(resp.status_code, error_text)
-                    events = list(_iter_sse_events(resp.iter_text()))
+                    events = _collect_stream_events(resp, timeout)
         except httpx.TimeoutException as exc:
             raise LLMRouterError(
                 f"Request timed out after {timeout}s",
