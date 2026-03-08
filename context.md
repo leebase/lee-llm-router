@@ -1,6 +1,6 @@
-# Lee LLM Router Session Context
+﻿# Lee LLM Router Session Context
 
-> **Purpose**: Working memory for session continuity. If power drops, a new AI takes over, or we return after a break—read this first.
+> **Purpose**: Working memory for session continuity. If power drops, a new AI takes over, or we return after a break - read this first.
 
 ---
 
@@ -8,45 +8,42 @@
 
 | Attribute | Value |
 |-----------|-------|
-| **Phase** | P2 — Enhancements Complete |
+| **Phase** | P3 - Self-Contained Adoption complete |
 | **Mode** | 2 (Implementation with approval) |
-| **Last Updated** | 2026-03-02 (OpenAI Codex subscription provider + docs/tests refresh) |
+| **Last Updated** | 2026-03-08 (vendored source snapshot workflow) |
 
 ### Sprint Status
 | Sprint | Status | Completion |
 |--------|--------|------------|
-| Sprint 1 — Package Setup | ✅ Done | 100% |
-| Sprint 2 — Provider Layer | ✅ Done | 100% |
-| Sprint 3 — Config, Router, Telemetry | ✅ Done | 100% — P0 complete |
-| Sprint 4 — Doctor CLI, Template, Docs, PyPI | ✅ Done | 100% — P1 complete |
-| Sprint 5 — Async, Fallbacks, Extended Telemetry | ✅ Done | 100% — **P2 complete** |
+| Sprint 1 - Package Setup | Done | 100% |
+| Sprint 2 - Provider Layer | Done | 100% |
+| Sprint 3 - Config, Router, Telemetry | Done | 100% |
+| Sprint 4 - Doctor CLI, Template, Docs, PyPI | Done | 100% |
+| Sprint 5 - Async, Fallbacks, Extended Telemetry | Done | 100% |
+| Sprint 6 - Vendored Source Snapshot Workflow | Done | 100% |
 
 ---
 
 ## What's Happening Now
 
 ### Current Work Stream
-All planned sprints complete. Lee LLM Router v0.1.0 is feature-complete per product-definition.md.
+Sprint 6 is complete. `lee-llm-router` now supports explicit vendored-snapshot adoption in addition to package installation.
 
 ### Recently Completed
-- ✅ OpenAI Codex subscription provider added (`openai_codex_subscription_http`) with credential discovery from env, macOS keychain, and `CODEX_HOME/auth.json`
-- ✅ Doctor CLI validation for Codex subscription provider aliases and token env checks
-- ✅ Config/docs/template updates for subscription-backed provider usage
-- ✅ Test suite expanded and green (`63 passed`)
-- ✅ Sprint 6 prep: provider alias, policy overrides, per-attempt traces + CLI metadata
-- ✅ Repository guidelines in `AGENTS.md` condensed for contributors
-- ✅ Project scaffolded with init-agent
-- ✅ AGENTS.md created
-- ✅ sprint-plan.md created (5 sprints across 3 phases)
-- ✅ context.md document inventory corrected
-- ✅ Sprint 1 complete: `src/lee_llm_router/` skeleton, fixed pyproject.toml, .venv created, 4 smoke tests green
-- ✅ Sprint 2 complete: `response.py`, full provider layer (base/mock/http/codex_cli/registry), 13 tests green (17 total)
-- ✅ Sprint 3 complete: `config.py`, `router.py`, `client.py`, `telemetry.py`, `compression.py`, 14 new tests green (31 total) — P0 complete
-- ✅ Sprint 4 complete: `doctor.py` CLI, `policy.py` (RoutingPolicy+SimpleRoutingPolicy), TraceStore abstraction, README+docs, `.whl` built, 7 doctor tests green (38 total) — **P1 complete**
-- ✅ Sprint 5 complete: `httpx` async HTTP, `complete_async()` in router, fallback chain orchestration, token accounting hook, `EventSink` protocol, `lee-llm-router trace --last N` CLI, 16 new tests green (54 total) — **P2 complete**
+- Added `lee-llm-router export-source --dest <path> [--force]`
+- Export now copies the full `src/lee_llm_router/` package tree for downstream vendoring
+- Export writes `.lee_llm_router_export.json` with package version, source repo, source commit, and export timestamp
+- Added overwrite protection for non-empty destinations unless `--force` is passed
+- Expanded doctor CLI tests for export success, overwrite protection, forced replacement, and CLI summary output
+- Updated sprint/product/README docs to shift downstream adoption toward explicit vendored snapshots
+- Validation complete:
+  - `PYTHONPATH=src python -m pytest tests/test_doctor.py -q` -> `13 passed`
+  - `PYTHONPATH=src python -m pytest -q` -> `71 passed`
+  - Test As Lee: `python -m lee_llm_router.doctor doctor --config tests/fixtures/llm_test.yaml`
+  - Test As Lee: `python -m lee_llm_router.doctor export-source --dest <temp>`
 
 ### In Progress
-- ⏳ None — all sprints complete
+- None
 
 ---
 
@@ -57,37 +54,15 @@ All planned sprints complete. Lee LLM Router v0.1.0 is feature-complete per prod
 | TinyClaw methodology | Build from scratch with small primitives; validate before scale | 2026-02-17 |
 | httpx over requests | Native async support, modern HTTP client | 2026-02-18 |
 | Add Codex subscription HTTP provider | Enable ChatGPT subscription routing without requiring API-key billing | 2026-03-02 |
-
----
-
-## Document Inventory
-
-### Planning (Stable)
-| File | Purpose | Status |
-|------|---------|--------|
-| `product-definition.md` | Product vision, constraints | ✅ Created |
-| `project-plan.md` | Strategic roadmap, phases, success metrics | ✅ Created |
-| `sprint-plan.md` | Tactical execution | ✅ Created |
-| `AGENTS.md` | AI agent guide, conventions, operational modes | ✅ Created |
-
-### Session Memory (Dynamic)
-| File | Purpose | Status |
-|------|---------|--------|
-| `context.md` | Working state, current focus, next actions | 🔄 Active |
-| `result-review.md` | Running log of completed work | 🔄 Active |
-
-### Backlog System
-| File | Purpose | Status |
-|------|---------|--------|
-| `backlog/schema.md` | Unified backlog item schema | ✅ Created |
-| `backlog/template.md` | Copy-paste template for new backlog items | ✅ Created |
+| Downstream repos should treat `lee-llm-router` as an upstream improvement lane, not a required live runtime dependency | Preserves shared evolution while reducing install/auth/reproducibility friction in consumers | 2026-03-08 |
 
 ---
 
 ## Open Questions (keep short)
 
-1. Should LeeClaw source modules be copied verbatim or do they need to be located first?
-2. What's the target Python version floor — 3.10 or 3.11?
+1. Should LeeClaw vendor the exported package under `src/leeclaw/vendor/` or copy it into its primary package tree?
+2. Do Meridian and LeeClaw need the same downstream sync cadence, or should each repo update snapshots independently?
+3. Should the export manifest grow to include compatibility metadata for consumers (for example required Python floor and known provider deps)?
 
 ---
 
@@ -95,33 +70,37 @@ All planned sprints complete. Lee LLM Router v0.1.0 is feature-complete per prod
 
 | Rank | Action | Owner | Done When |
 |------|--------|-------|----------|
-| 1 | Await human direction for next phase (backlog items, PyPI publish, or new features) | Human | TBD |
+| 1 | Migrate LeeClaw from external router dependency to vendored snapshot consumption | AI | LeeClaw imports the vendored router without runtime package fetches |
+| 2 | Document a downstream sync/update protocol for vendored snapshots | AI | README/docs include a repeatable update workflow |
+| 3 | Decide whether to tag/release a post-Sprint-6 package version | Human | Release strategy for package vs vendored adoption is explicit |
 
 ---
 
 ## Working Conventions
 
 ### Start of session
-1. Read `product-definition.md` (if exists)
-2. Read this file
-3. Execute the top-ranked item only
-4. Update **Last Updated** if you changed any state here
+1. Read `AGENTS.md`
+2. Read `context.md`
+3. Read `result-review.md`
+4. Read `product-definition.md`
+5. Read `sprint-plan.md`
+6. Execute the top-ranked item unless explicitly redirected by the user
 
 ### End of work unit
-1. Move completed items into "Recently Completed"
+1. Move completed work into "Recently Completed"
 2. Update "Next Actions Queue"
-3. Add any new "Decisions Locked"
-4. Keep "Open Questions" ≤ 5
+3. Add any new locked decisions
+4. Keep "Open Questions" <= 5
 
 ---
 
 ## Environment Notes
 
-- **Working Directory**: /Users/leeharrington/projects/lee-llm-router
+- **Working Directory**: `C:\Users\leeba\projects\lee-llm-router`
 - **Project Name**: Lee LLM Router
-- **Profile**: Python Package
-- **Author**: Lee Harrington
+- **Profile**: Python package plus vendorable source export reference
+- **Primary validation**: `PYTHONPATH=src python -m pytest -q`
 
 ---
 
-*This file is a living document—update it frequently.*
+*This file is a living document - update it frequently.*

@@ -1,18 +1,24 @@
-"""Doctor CLI tests (Sprint 4)."""
+﻿"""Doctor CLI tests (Sprint 4 + Sprint 6 export workflow)."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
-from lee_llm_router.doctor import check_config, get_template
+from lee_llm_router.doctor import (
+    MANIFEST_NAME,
+    check_config,
+    export_source,
+    get_template,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def test_doctor_valid_config_exit_0():
-    """Mock-only config has no env var or binary requirements — zero errors."""
+    """Mock-only config has no env var or binary requirements - zero errors."""
     errors, warnings = check_config(str(FIXTURES / "llm_test.yaml"))
     assert errors == [], f"Unexpected errors: {errors}"
 
@@ -22,7 +28,8 @@ def test_doctor_allows_openai_http_alias(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_ALIAS_KEY", "token")
 
     config_file = tmp_path / "llm.yaml"
-    config_file.write_text("""\
+    config_file.write_text(
+        """\
 llm:
   default_role: planner
   providers:
@@ -34,7 +41,9 @@ llm:
     planner:
       provider: openrouter
       model: gpt-4o-mini
-""")
+""",
+        encoding="utf-8",
+    )
     errors, warnings = check_config(str(config_file))
     assert errors == []
     assert warnings == []
@@ -45,7 +54,8 @@ def test_doctor_allows_openai_codex_subscription_alias_with_env(tmp_path, monkey
     monkeypatch.setenv("OPENAI_CODEX_TOKEN", "token")
 
     config_file = tmp_path / "llm.yaml"
-    config_file.write_text("""\
+    config_file.write_text(
+        """\
 llm:
   default_role: planner
   providers:
@@ -57,7 +67,9 @@ llm:
     planner:
       provider: codex_sub
       model: gpt-5.3-codex
-""")
+""",
+        encoding="utf-8",
+    )
     errors, warnings = check_config(str(config_file))
     assert errors == []
     assert warnings == []
@@ -68,7 +80,8 @@ def test_doctor_missing_env_var_reports_error(tmp_path, monkeypatch):
     monkeypatch.delenv("MISSING_API_KEY_XYZ", raising=False)
 
     config_file = tmp_path / "llm.yaml"
-    config_file.write_text("""\
+    config_file.write_text(
+        """\
 llm:
   default_role: http_role
   providers:
@@ -80,15 +93,18 @@ llm:
     http_role:
       provider: openrouter
       model: gpt-4o
-""")
+""",
+        encoding="utf-8",
+    )
     errors, _ = check_config(str(config_file))
-    assert any("MISSING_API_KEY_XYZ" in e for e in errors), f"Errors: {errors}"
+    assert any("MISSING_API_KEY_XYZ" in error for error in errors), f"Errors: {errors}"
 
 
 def test_doctor_missing_binary_reports_error(tmp_path):
     """CLI provider whose command binary does not exist produces an error."""
     config_file = tmp_path / "llm.yaml"
-    config_file.write_text("""\
+    config_file.write_text(
+        """\
 llm:
   default_role: local
   providers:
@@ -98,10 +114,12 @@ llm:
   roles:
     local:
       provider: codex
-""")
+""",
+        encoding="utf-8",
+    )
     errors, _ = check_config(str(config_file))
     assert any(
-        "definitely_not_a_real_binary_xyzzy999" in e for e in errors
+        "definitely_not_a_real_binary_xyzzy999" in error for error in errors
     ), f"Expected binary-not-found error, got: {errors}"
 
 
@@ -116,13 +134,51 @@ def test_template_command_outputs_yaml():
 def test_doctor_invalid_config_returns_error(tmp_path):
     """Malformed YAML config returns config-level error, not an exception."""
     config_file = tmp_path / "bad.yaml"
-    config_file.write_text("not_llm_key: value\n")
+    config_file.write_text("not_llm_key: value\n", encoding="utf-8")
     errors, _ = check_config(str(config_file))
     assert len(errors) == 1
     assert "Config invalid" in errors[0] or "Config" in errors[0]
 
 
-def test_doctor_cli_main_exit_0(tmp_path):
+def test_export_source_writes_package_tree_and_manifest(tmp_path):
+    destination = tmp_path / "vendor" / "lee_llm_router"
+
+    result = export_source(destination)
+
+    assert destination.exists()
+    assert (destination / "__init__.py").exists()
+    assert (destination / "providers" / "registry.py").exists()
+    manifest_path = destination / MANIFEST_NAME
+    assert manifest_path.exists()
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["package"] == "lee_llm_router"
+    assert manifest["version"] == result["version"]
+    assert manifest["source_subdir"] == "src/lee_llm_router"
+    assert "exported_at_utc" in manifest
+
+
+def test_export_source_refuses_non_empty_destination_without_force(tmp_path):
+    destination = tmp_path / "vendor" / "lee_llm_router"
+    destination.mkdir(parents=True)
+    (destination / "sentinel.txt").write_text("keep", encoding="utf-8")
+
+    with pytest.raises(FileExistsError, match="Destination is not empty"):
+        export_source(destination)
+
+
+def test_export_source_force_overwrites_existing_destination(tmp_path):
+    destination = tmp_path / "vendor" / "lee_llm_router"
+    destination.mkdir(parents=True)
+    (destination / "sentinel.txt").write_text("stale", encoding="utf-8")
+
+    export_source(destination, force=True)
+
+    assert not (destination / "sentinel.txt").exists()
+    assert (destination / MANIFEST_NAME).exists()
+
+
+def test_doctor_cli_main_exit_0():
     """main() with valid mock config exits 0 without raising SystemExit(1)."""
     from lee_llm_router.doctor import main
 
@@ -140,3 +196,19 @@ def test_doctor_cli_template_prints_yaml(capsys):
     assert exc_info.value.code == 0
     captured = capsys.readouterr()
     assert "llm:" in captured.out
+
+
+def test_export_source_cli_main_prints_summary(tmp_path, capsys):
+    """main() export-source subcommand writes files and prints a summary."""
+    from lee_llm_router.doctor import main
+
+    destination = tmp_path / "vendor" / "lee_llm_router"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["export-source", "--dest", str(destination)])
+    assert exc_info.value.code == 0
+
+    captured = capsys.readouterr()
+    assert "Lee LLM Router Source Export" in captured.out
+    assert str(destination) in captured.out
+    assert (destination / MANIFEST_NAME).exists()

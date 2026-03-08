@@ -1,6 +1,6 @@
-# Lee LLM Router
+﻿# Lee LLM Router
 
-A lightweight, battle-tested LLM routing kernel extracted from LeeClaw and Meridian. Drop in one YAML config, point at multiple providers, and inherit consistent routing, tracing, and governance.
+A lightweight LLM routing kernel extracted from LeeClaw and Meridian. It supports config-driven routing, provider adapters, telemetry, doctor tooling, and explicit source export for downstream vendoring.
 
 ## Installation
 
@@ -9,6 +9,21 @@ pip install lee-llm-router
 # or, for development:
 pip install -e ".[dev]"
 ```
+
+## Vendored Snapshot Workflow
+
+Use this when a downstream repo should own a pinned router snapshot instead of taking a live runtime dependency on this package.
+
+```bash
+lee-llm-router export-source --dest ../consumer/src/lee_llm_router
+lee-llm-router export-source --dest ../consumer/src/lee_llm_router --force
+```
+
+The export copies the full `src/lee_llm_router/` package tree and writes `.lee_llm_router_export.json` with:
+- package version
+- source repo path
+- source git commit
+- export timestamp
 
 ## Quick Start
 
@@ -51,7 +66,7 @@ llm:
     openrouter:
       type: openrouter_http
       base_url: https://openrouter.ai/api/v1
-      api_key_env: OPENROUTER_API_KEY   # env var name, not the secret
+      api_key_env: OPENROUTER_API_KEY
   roles:
     planner:
       provider: openrouter
@@ -59,25 +74,35 @@ llm:
       temperature: 0.2
 ```
 
-See [`docs/config.md`](docs/config.md) for the full schema.
+See [docs/config.md](docs/config.md) for the full schema.
 
 ## CLI
 
 ### Doctor
-
-Validates your config, checks environment variables, verifies CLI binaries, and performs a mock dry-run:
 
 ```bash
 lee-llm-router doctor --config config/llm.yaml
 lee-llm-router doctor --config config/llm.yaml --role planner
 ```
 
-Exit code 0 = healthy. Non-zero = blocking errors found.
+Validates config, checks env vars, verifies CLI binaries, and does a mock dry-run.
 
 ### Template
 
 ```bash
 lee-llm-router template > config/llm.yaml
+```
+
+### Trace
+
+```bash
+lee-llm-router trace --last 5
+```
+
+### Export Source
+
+```bash
+lee-llm-router export-source --dest ../consumer/src/lee_llm_router
 ```
 
 ## Providers
@@ -89,99 +114,49 @@ lee-llm-router template > config/llm.yaml
 | `codex_cli` | Subprocess wrapper for Codex CLI |
 | `mock` | Deterministic echo provider for tests and CI |
 
-See [`docs/providers.md`](docs/providers.md) for configuration details.
+See [docs/providers.md](docs/providers.md) for configuration details.
 
 ## Telemetry
 
-Every completion emits structured log events and writes a JSON trace file:
+Every completion emits structured log events and writes a JSON trace file.
 
-- **Events**: `llm.complete.start`, `llm.complete.success`, `llm.complete.error`, `policy.choice`
-- **Trace files**: `<workspace>/.agentleeops/traces/YYYYMMDD/<request_id>-<attempt>-<provider>.json`
-
-```python
-# Control trace location
-router = LLMRouter(config, workspace="/path/to/project")
-router = LLMRouter(config, trace_dir=Path("/tmp/traces"))  # test override
-```
-
-## Custom Routing Policy (Phase 1)
-
-```python
-from lee_llm_router import LLMRouter, ProviderChoice
-from lee_llm_router.policy import RoutingPolicy
-
-class CheapFirstPolicy:
-    def choose(self, role, config):
-        # Route to cheap provider by default
-        return ProviderChoice(
-            provider_name="openrouter",
-            request_overrides={"model": "openai/gpt-4o-mini"},
-        )
-
-router = LLMRouter(config, policy=CheapFirstPolicy())
-```
-
-Request attribute precedence:
-
-1. Role defaults from `config.roles[role]`
-2. `ProviderChoice.request_overrides`
-3. `router.complete(..., model=..., temperature=...)` per-call overrides
-
-Provider configuration overrides go through `ProviderChoice.provider_overrides`.
-
-## Custom Trace Store (Phase 1)
-
-```python
-from lee_llm_router import LLMRouter
-from lee_llm_router.telemetry import TraceStore, TraceRecord
-
-class MyS3Store:
-    def write(self, trace: TraceRecord) -> None:
-        s3.put_object(Key=trace.request_id, Body=json.dumps(...))
-
-router = LLMRouter(config, trace_store=MyS3Store())
-```
+- Events: `llm.complete.start`, `llm.complete.success`, `llm.complete.error`, `policy.choice`
+- Trace files: `<workspace>/.agentleeops/traces/YYYYMMDD/<request_id>-<attempt>-<provider>.json`
 
 ## Development
 
 ```bash
-# Install with dev deps (creates .venv first if needed)
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv
+.venv\Scripts\activate
 pip install -e ".[dev]"
 
-# Run tests
 pytest
+black src tests
+ruff check src tests
 
-# Format / lint
-black src/
-ruff check src/
-
-# Validate your own config
-lee-llm-router doctor --config config/llm.yaml
-
-# Build distribution
+lee-llm-router doctor --config tests/fixtures/llm_test.yaml
 python -m build
 ```
 
 ## Architecture
 
-```
+```text
 lee_llm_router/
-├── config.py       — YAML loader + dataclasses (LLMConfig, RoleConfig, ProviderConfig)
-├── router.py       — LLMRouter facade (resolve → policy → compress → invoke → trace)
-├── client.py       — LLMClient legacy wrapper (same interface as LeeClaw)
-├── response.py     — LLMRequest / LLMResponse / LLMUsage dataclasses
-├── policy.py       — RoutingPolicy protocol + SimpleRoutingPolicy default
-├── telemetry.py    — Structured logging + TraceStore + LocalFileTraceStore
-├── compression.py  — Prompt compression hook (pass-through in Phase 0)
-├── doctor.py       — CLI entry point
-└── providers/
-    ├── base.py     — Provider protocol + LLMRouterError + FailureType
-    ├── registry.py — register() / get() / available()
-    ├── mock.py     — Deterministic echo provider
-    ├── http.py     — OpenRouter / OpenAI-compatible REST
-    ├── openai_codex_subscription.py — ChatGPT subscription-backed Codex responses
-    └── codex_cli.py — Subprocess provider
+|-- config.py
+|-- router.py
+|-- client.py
+|-- response.py
+|-- policy.py
+|-- telemetry.py
+|-- compression.py
+|-- doctor.py
+`-- providers/
+    |-- base.py
+    |-- registry.py
+    |-- mock.py
+    |-- http.py
+    |-- openai_codex_subscription.py
+    `-- codex_cli.py
 ```
 
 ## License
