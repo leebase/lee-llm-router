@@ -28,7 +28,7 @@
 ## What's Happening Now
 
 ### Current Work Stream
-Sprint 7 is complete. The pi coding harness path now has a repo-local reproduction fixture, stricter CLI harness contract handling, explicit `doctor` validation, regression coverage, and a user-style verification path.
+Sprint 7 is complete. The pi coding harness path now has a repo-local reproduction fixture, stricter CLI harness contract handling, explicit `doctor` validation, regression coverage, and a user-style verification path. No downstream migration work is executed from this repo now; downstream projects are handled separately.
 
 ### Recently Completed
 - Swept the public docs and coder guide so the shipped Sprint 7 pi harness behavior is documented consistently
@@ -84,9 +84,8 @@ Sprint 7 is complete. The pi coding harness path now has a repo-local reproducti
 
 | Rank | Action | Owner | Done When |
 |------|--------|-------|----------|
-| 1 | Resume downstream vendored-snapshot migration work now that the pi harness path is proven locally | AI | Consumer migration no longer depends on an unproven harness path |
-| 2 | Decide whether to productize an optional doctor smoke-execution mode for CLI harnesses | Human + AI | We know whether runtime smoke tests should become part of the public CLI |
-| 3 | Reassess broader harness-aware planning as a separate sprint | Human + AI | Follow-on planning is grounded in a stable pi harness baseline |
+| 1 | Decide whether to productize an optional doctor smoke-execution mode for CLI harness roles | Human + AI | We know whether runtime smoke tests should become part of the public CLI |
+| 2 | Reassess broader harness-aware planning as a separate sprint | Human + AI | Follow-on planning is grounded in a stable pi harness baseline |
 
 ---
 
