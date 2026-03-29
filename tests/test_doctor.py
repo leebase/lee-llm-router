@@ -158,6 +158,17 @@ def test_export_source_writes_package_tree_and_manifest(tmp_path):
     assert "exported_at_utc" in manifest
 
 
+def test_export_source_allows_existing_empty_destination(tmp_path):
+    destination = tmp_path / "vendor" / "lee_llm_router"
+    destination.mkdir(parents=True)
+
+    result = export_source(destination)
+
+    assert (destination / "__init__.py").exists()
+    assert (destination / MANIFEST_NAME).exists()
+    assert result["destination"] == str(destination)
+
+
 def test_export_source_refuses_non_empty_destination_without_force(tmp_path):
     destination = tmp_path / "vendor" / "lee_llm_router"
     destination.mkdir(parents=True)

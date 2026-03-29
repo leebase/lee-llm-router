@@ -6,6 +6,21 @@
 
 ---
 
+## 2026-03-29 - Sprint 6 Bugfix: Export Source Supports Existing Empty Destinations
+
+**What was built:** Fixed `lee-llm-router export-source` so it now succeeds when the destination directory already exists but is empty. The implementation now allows `copytree()` to populate an existing empty destination, and the test suite includes a regression test for that exact case.
+
+**Why it matters:** The Sprint 6 contract said the command should refuse non-empty destinations unless `--force` is passed. An already-created empty destination is a normal and safe setup, but the previous implementation failed there unexpectedly. This bugfix makes the export workflow match the intended contract.
+
+**How to Verify**
+
+```bash
+.venv/bin/python -m pytest tests/test_doctor.py -q
+.venv/bin/python -m pytest -q
+```
+
+---
+
 ## 2026-03-08 - Sprint 6 Complete: Vendored Source Snapshot Workflow
 
 **What was built:** Added `lee-llm-router export-source --dest <path> [--force]` to export the full `src/lee_llm_router/` package tree as a vendorable snapshot. The export writes `.lee_llm_router_export.json` with version, source repo, source commit, and export timestamp. Added overwrite protection for non-empty destinations unless `--force` is provided. Updated README/product/sprint docs to shift downstream adoption toward explicit vendored snapshots instead of requiring a live runtime dependency on this package.
@@ -305,4 +320,3 @@ pytest tests/test_smoke.py -v   # â†’ 4 passed
 ---
 
 *Add new entries above this line. Keep the newest work at the top.*
-

@@ -10,7 +10,7 @@
 |-----------|-------|
 | **Phase** | P3 - Self-Contained Adoption complete |
 | **Mode** | 2 (Implementation with approval) |
-| **Last Updated** | 2026-03-08 (vendored source snapshot workflow) |
+| **Last Updated** | 2026-03-29 (Sprint 6 export bugfix) |
 
 ### Sprint Status
 | Sprint | Status | Completion |
@@ -30,6 +30,11 @@
 Sprint 6 is complete. `lee-llm-router` now supports explicit vendored-snapshot adoption in addition to package installation.
 
 ### Recently Completed
+- Fixed `lee-llm-router export-source` so a pre-created empty destination directory now exports successfully
+- Added a regression test covering export into an existing empty destination
+- Validation complete:
+  - `.venv/bin/python -m pytest tests/test_doctor.py -q` -> `21 passed`
+  - `.venv/bin/python -m pytest -q` -> `117 passed`
 - Added `lee-llm-router export-source --dest <path> [--force]`
 - Export now copies the full `src/lee_llm_router/` package tree for downstream vendoring
 - Export writes `.lee_llm_router_export.json` with package version, source repo, source commit, and export timestamp

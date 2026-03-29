@@ -134,6 +134,7 @@ def export_source(dest: str | Path, force: bool = False) -> dict[str, str | None
     shutil.copytree(
         package_root,
         destination,
+        dirs_exist_ok=True,
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
     )
 
@@ -334,4 +335,3 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
-

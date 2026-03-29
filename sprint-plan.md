@@ -74,6 +74,7 @@ Shipped async HTTP, fallback execution, richer telemetry, and trace inspection t
 #### Acceptance Criteria
 
 - [x] `lee-llm-router export-source --dest <tmp>` exits 0 and writes a vendorable package tree
+- [x] Export succeeds when the destination already exists but is empty
 - [x] Destination contains `__init__.py`, provider modules, templates, and a provenance manifest
 - [x] Rerunning without `--force` on a non-empty destination exits non-zero with a clear error
 - [x] `pytest` is all-green after the export workflow lands

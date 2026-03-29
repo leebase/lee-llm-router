@@ -1,6 +1,6 @@
 ﻿# WHERE_AM_I - Lee LLM Router
 
-> **Quick orientation for AI agents.** Last updated: 2026-03-08
+> **Quick orientation for AI agents.** Last updated: 2026-03-29
 
 ---
 
@@ -18,12 +18,13 @@
 
 ## Last Session Summary
 
-**2026-03-08 - Sprint 6 complete**
+**2026-03-29 - Sprint 6 export workflow polished**
 
 - Added `export-source` CLI for vendored package snapshots
 - Export now emits provenance metadata (`.lee_llm_router_export.json`)
 - Downstream architecture direction shifted from required runtime dependency to explicit snapshot adoption
 - Validation passed: `71` tests green plus CLI doctor/export workflow checks
+- Fixed the edge case where an existing empty export destination failed unexpectedly
 
 ---
 
@@ -59,6 +60,7 @@ Blockers:
 Recent decisions:
 - keep this repo as the upstream improvement lane
 - downstream repos can adopt via explicit vendored snapshots instead of a live runtime dependency
+- treat existing empty export destinations as valid targets, and reserve `--force` for non-empty replacement
 ```
 
 ---

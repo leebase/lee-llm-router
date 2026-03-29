@@ -25,6 +25,9 @@ The export copies the full `src/lee_llm_router/` package tree and writes `.lee_l
 - source git commit
 - export timestamp
 
+The destination may be missing or already exist as an empty directory. Use
+`--force` only when replacing a non-empty destination.
+
 ## Quick Start
 
 ```python
