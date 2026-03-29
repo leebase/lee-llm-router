@@ -6,7 +6,7 @@ Lee LLM Router loads config from a YAML file via `load_config(path)`.
 
 ```yaml
 llm:
-  default_role: <string>       # required — used when role not specified
+  default_role: <string>       # required — must reference a role below
   providers:
     <name>: <ProviderConfig>   # one or more provider entries
   roles:
@@ -74,14 +74,17 @@ Credential resolution order:
 |-----|----------|---------|-------------|
 | `command` | yes | — | Binary name or path (e.g. `codex`) |
 | `args` | no | `[]` | Fixed positional args inserted before the prompt |
-| `model_flag` | no | `--model` | Flag used to pass the model name |
-| `output_flag` | no | `--output-last-message` | Flag for output format |
+| `model_flag` | no | `--model` | Flag used to pass the model name; set to `null` to disable |
+| `output_flag` | no | `--output-last-message` | Flag for output format; set to `null` to disable |
 | `response_format` | no | `text` | Parse stdout as plain text or JSON (`text`, `json`) |
 | `text_field` | no | `output_text` / `text` | JSON field containing the returned message text |
 | `timeout` | no | role timeout | Subprocess timeout in seconds |
 
 For pi-style harness wrappers, prefer `response_format: json` so malformed output is
 treated as a `CONTRACT_VIOLATION` instead of a generic runtime mystery.
+
+Set `model_flag: null` and `output_flag: null` for wrappers that do not accept the
+default Codex CLI flags.
 
 ### mock keys
 

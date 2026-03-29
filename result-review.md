@@ -6,6 +6,22 @@
 
 ---
 
+## 2026-03-29 - Sprint 7 Follow-Up: Documentation Sweep
+
+**What was built:** Swept the public docs after the Sprint 7 implementation and review-fix passes to ensure the published behavior matches the shipped pi harness contract. Updated the config schema docs to state that `default_role` must reference an existing role and that `model_flag` / `output_flag` can be set to `null` to disable default CLI flags. Expanded the LLM coder guide with a pi-style subprocess harness example and clarified what `doctor` validates for `codex_cli` roles.
+
+**Why it matters:** The public docs now match the real invocation and validation behavior that shipped in Sprint 7, so downstream consumers can copy the pi harness config safely without discovering contract details only by reading source or test fixtures.
+
+**How to Verify**
+
+```bash
+sed -n '1,220p' docs/config.md
+sed -n '1,220p' docs/llm-coder-guide.md
+PYTHONPATH=src /Users/lee/projects/lee-llm-router/.venv/bin/python -m pytest -q
+```
+
+---
+
 ## 2026-03-29 - Sprint 7 Follow-Up: Review Fixes for Pi Harness Contract
 
 **What was built:** Fixed the two code review findings from the Sprint 7 hardening pass. `codex_cli` now allows wrappers to disable the default `model_flag` by setting it to `null`, and the docs/examples were updated so the pi harness configuration no longer implies unsupported default flags. The JSON parsing path also now validates `usage` fields as part of the harness contract, raising `CONTRACT_VIOLATION` instead of leaking `ValueError` into the router's generic `UNKNOWN` bucket. Added regression tests for both cases.

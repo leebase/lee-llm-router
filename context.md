@@ -10,7 +10,7 @@
 |-----------|-------|
 | **Phase** | P4 complete; pi harness reliability shipped |
 | **Mode** | 2 (Implementation with approval) |
-| **Last Updated** | 2026-03-29 (Sprint 7 pi harness review fixes complete) |
+| **Last Updated** | 2026-03-29 (Sprint 7 documentation sweep complete) |
 
 ### Sprint Status
 | Sprint | Status | Completion |
@@ -31,6 +31,9 @@
 Sprint 7 is complete. The pi coding harness path now has a repo-local reproduction fixture, stricter CLI harness contract handling, explicit `doctor` validation, regression coverage, and a user-style verification path.
 
 ### Recently Completed
+- Swept the public docs and coder guide so the shipped Sprint 7 pi harness behavior is documented consistently
+- Clarified that `default_role` must reference an existing role and that `model_flag` / `output_flag` can be set to `null` to disable default CLI flags
+- Added a pi-style subprocess harness example plus updated `doctor` behavior notes in `docs/llm-coder-guide.md`
 - Fixed the Sprint 7 review findings around pi harness flag handling and malformed JSON usage typing
 - `codex_cli` now allows `model_flag: null` for wrappers that do not accept the default Codex CLI flags
 - Invalid JSON `usage` fields from pi-style harnesses now raise typed `CONTRACT_VIOLATION` errors instead of falling through as `UNKNOWN`
