@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -10,6 +12,9 @@ from lee_llm_router.providers.base import FailureType, LLMRouterError, should_re
 from lee_llm_router.providers.mock import MockProvider
 from lee_llm_router.providers.registry import available, get, register
 from lee_llm_router.response import LLMRequest, LLMResponse
+
+FIXTURES = Path(__file__).parent / "fixtures"
+PI_HARNESS = FIXTURES / "pi_harness.py"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -24,6 +29,17 @@ def make_request(**kwargs) -> LLMRequest:
     )
     defaults.update(kwargs)
     return LLMRequest(**defaults)
+
+
+def make_pi_harness_config(mode: str, **overrides):
+    config = {
+        "command": sys.executable,
+        "args": [str(PI_HARNESS), mode],
+        "model_flag": "--model",
+        "output_flag": "--output-last-message",
+    }
+    config.update(overrides)
+    return config
 
 
 # ---------------------------------------------------------------------------
@@ -453,21 +469,11 @@ def test_codex_cli_provider_success():
 
     provider = CodexCLIProvider()
     request = make_request(model="o3")
-    config = {
-        "command": "codex",
-        "model_flag": "--model",
-        "output_flag": "--output-last-message",
-    }
+    config = make_pi_harness_config("success_text")
 
-    mock_result = MagicMock()
-    mock_result.returncode = 0
-    mock_result.stdout = "This is the codex response\n"
-    mock_result.stderr = ""
+    response = provider.complete(request, config)
 
-    with patch("subprocess.run", return_value=mock_result):
-        response = provider.complete(request, config)
-
-    assert response.text == "This is the codex response"
+    assert response.text == "pi text harness: hello"
     assert response.provider == "codex_cli"
 
 
@@ -483,6 +489,104 @@ def test_codex_cli_binary_not_found_raises():
             provider.complete(request, config)
 
     assert exc_info.value.failure_type == FailureType.PROVIDER_ERROR
+
+
+def test_codex_cli_provider_json_harness_success():
+    from lee_llm_router.providers.codex_cli import CodexCLIProvider
+
+    provider = CodexCLIProvider()
+    request = make_request(model="o3")
+    config = make_pi_harness_config("success_json", response_format="json")
+
+    response = provider.complete(request, config)
+
+    assert response.text == "pi json harness: hello"
+    assert response.model == "pi-harness-o3"
+    assert response.usage.total_tokens == 20
+    assert response.raw["command"][0] == sys.executable
+
+
+def test_codex_cli_provider_allows_disabling_default_flags_for_pi_harness():
+    from lee_llm_router.providers.codex_cli import CodexCLIProvider
+
+    provider = CodexCLIProvider()
+    request = make_request(model="o3")
+    config = make_pi_harness_config(
+        "strict_success_json",
+        response_format="json",
+        model_flag=None,
+        output_flag=None,
+    )
+
+    response = provider.complete(request, config)
+
+    assert response.text == "pi strict harness: hello"
+
+
+def test_codex_cli_provider_malformed_json_is_contract_violation():
+    from lee_llm_router.providers.codex_cli import CodexCLIProvider
+
+    provider = CodexCLIProvider()
+    request = make_request(model="o3")
+    config = make_pi_harness_config("malformed_json", response_format="json")
+
+    with pytest.raises(LLMRouterError) as exc_info:
+        provider.complete(request, config)
+
+    assert exc_info.value.failure_type == FailureType.CONTRACT_VIOLATION
+
+
+def test_codex_cli_provider_missing_text_is_contract_violation():
+    from lee_llm_router.providers.codex_cli import CodexCLIProvider
+
+    provider = CodexCLIProvider()
+    request = make_request(model="o3")
+    config = make_pi_harness_config("missing_text", response_format="json")
+
+    with pytest.raises(LLMRouterError) as exc_info:
+        provider.complete(request, config)
+
+    assert exc_info.value.failure_type == FailureType.CONTRACT_VIOLATION
+
+
+def test_codex_cli_provider_bad_usage_is_contract_violation():
+    from lee_llm_router.providers.codex_cli import CodexCLIProvider
+
+    provider = CodexCLIProvider()
+    request = make_request(model="o3")
+    config = make_pi_harness_config("bad_usage", response_format="json")
+
+    with pytest.raises(LLMRouterError) as exc_info:
+        provider.complete(request, config)
+
+    assert exc_info.value.failure_type == FailureType.CONTRACT_VIOLATION
+
+
+def test_codex_cli_provider_timeout_raises():
+    from lee_llm_router.providers.codex_cli import CodexCLIProvider
+
+    provider = CodexCLIProvider()
+    request = make_request(model="o3", timeout=0.1)
+    config = make_pi_harness_config("timeout")
+
+    with pytest.raises(LLMRouterError) as exc_info:
+        provider.complete(request, config)
+
+    assert exc_info.value.failure_type == FailureType.TIMEOUT
+
+
+def test_codex_cli_provider_nonzero_exit_raises_provider_error():
+    from lee_llm_router.providers.codex_cli import CodexCLIProvider
+
+    provider = CodexCLIProvider()
+    request = make_request(model="o3")
+    config = make_pi_harness_config("stderr_exit")
+
+    with pytest.raises(LLMRouterError) as exc_info:
+        provider.complete(request, config)
+
+    assert exc_info.value.failure_type == FailureType.PROVIDER_ERROR
+    assert "pi harness exploded" in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------

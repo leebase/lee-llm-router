@@ -93,6 +93,39 @@ Credential resolution order for `openai_codex_subscription_http`:
 2. macOS keychain (`Codex Auth`)
 3. `CODEX_HOME/auth.json` or `~/.codex/auth.json`
 
+### Pi-style subprocess harness
+```python
+from lee_llm_router.config import LLMConfig, ProviderConfig, RoleConfig
+
+config = LLMConfig(
+    default_role="pi_local",
+    providers={
+        "pi_harness": ProviderConfig(
+            name="pi_harness",
+            type="codex_cli",
+            raw={
+                "command": "python3",
+                "args": ["./scripts/pi_harness.py"],
+                "model_flag": None,
+                "output_flag": None,
+                "response_format": "json",
+                "text_field": "output_text",
+            },
+        )
+    },
+    roles={
+        "pi_local": RoleConfig(
+            name="pi_local",
+            provider="pi_harness",
+            model="o3",
+        )
+    },
+)
+```
+
+Use `response_format="json"` for wrappers that return a structured envelope. If the
+wrapper does not accept Codex CLI flags, set `model_flag` / `output_flag` to `None`.
+
 ### Test config with MockProvider (no API calls)
 ```python
 from lee_llm_router.config import LLMConfig, ProviderConfig, RoleConfig
@@ -497,6 +530,10 @@ lee-llm-router trace --last 10
 # View traces from custom directory
 lee-llm-router trace --last 5 --dir /path/to/traces
 ```
+
+`doctor` validates the selected role/provider wiring and checks provider-specific
+requirements. For `codex_cli` harnesses, it validates contract keys like `args`,
+`response_format`, and optional disabled flags before runtime.
 
 ---
 
