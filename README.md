@@ -85,7 +85,9 @@ lee-llm-router doctor --config config/llm.yaml
 lee-llm-router doctor --config config/llm.yaml --role planner
 ```
 
-Validates config, checks env vars, verifies CLI binaries, and does a mock dry-run.
+Validates config, checks env vars, verifies CLI binaries, and validates the
+selected role/provider wiring. For `codex_cli` roles, Doctor now also checks the
+configured harness contract keys so bad pi-harness wiring fails fast.
 
 ### Template
 
@@ -115,6 +117,10 @@ lee-llm-router export-source --dest ../consumer/src/lee_llm_router
 | `mock` | Deterministic echo provider for tests and CI |
 
 See [docs/providers.md](docs/providers.md) for configuration details.
+
+For pi-style subprocess harnesses, configure `codex_cli` with fixed `args` and
+`response_format: json` so malformed harness output is raised as a typed
+`CONTRACT_VIOLATION`.
 
 ## Telemetry
 

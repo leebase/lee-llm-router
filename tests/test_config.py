@@ -26,7 +26,7 @@ def test_load_config_valid():
 
 
 def test_env_interpolation(monkeypatch, tmp_path):
-    """api_key_env: config stores the env var *name*; value is read by provider at call time."""
+    """Config stores the env var name; provider reads the value at call time."""
     monkeypatch.setenv("MY_TEST_KEY", "test-secret-value")
 
     config_file = tmp_path / "llm.yaml"
@@ -110,4 +110,38 @@ def test_missing_top_level_llm_key_raises(tmp_path):
     config_file = tmp_path / "bad.yaml"
     config_file.write_text("other_key: value\n")
     with pytest.raises(ConfigError, match="top-level 'llm' key"):
+        load_config(config_file)
+
+
+def test_default_role_must_exist(tmp_path):
+    config_file = tmp_path / "bad.yaml"
+    config_file.write_text("""\
+llm:
+  default_role: missing
+  providers:
+    mock:
+      type: mock
+  roles:
+    test:
+      provider: mock
+""")
+    with pytest.raises(ConfigError, match="default_role references unknown role"):
+        load_config(config_file)
+
+
+def test_unknown_fallback_provider_raises(tmp_path):
+    config_file = tmp_path / "bad.yaml"
+    config_file.write_text("""\
+llm:
+  default_role: test
+  providers:
+    mock:
+      type: mock
+  roles:
+    test:
+      provider: mock
+      fallback_providers:
+        - missing_provider
+""")
+    with pytest.raises(ConfigError, match="unknown fallback provider"):
         load_config(config_file)

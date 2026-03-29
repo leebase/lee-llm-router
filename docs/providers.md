@@ -126,6 +126,23 @@ providers:
 The last `user` message is passed as the final positional argument to the command.
 Built command: `<command> [model_flag model] [output_flag] <prompt>`
 
+For pi-style harness wrappers, add fixed args and require a JSON envelope:
+
+```yaml
+providers:
+  pi_harness:
+    type: codex_cli
+    command: python3
+    args:
+      - ./scripts/pi_harness.py
+    response_format: json
+    text_field: output_text
+```
+
+When `response_format: json` is enabled, stdout must be a JSON object containing a
+non-empty `output_text` or `text` field. Optional `model` and `usage` fields are
+passed through into `LLMResponse`.
+
 Error mapping:
 
 | Condition | FailureType |
@@ -134,6 +151,15 @@ Error mapping:
 | `FileNotFoundError` (binary missing) | `PROVIDER_ERROR` |
 | Non-zero exit code | `PROVIDER_ERROR` |
 | Empty stdout | `INVALID_RESPONSE` |
+| Malformed / missing required JSON fields | `CONTRACT_VIOLATION` |
+
+Debugging tips:
+- Run `lee-llm-router doctor --config <path>` to catch missing binaries and invalid
+  `codex_cli` config before execution.
+- For harness wrappers, prefer structured JSON output over free-form text so schema
+  breaks are surfaced deterministically.
+- Include wrapper-specific fixed args under `args:` instead of shell-quoting them into
+  `command:`.
 
 ---
 

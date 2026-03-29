@@ -31,6 +31,8 @@ def check_config(
         (errors, warnings) - errors are blocking; warnings are informational.
     """
     from lee_llm_router.config import ConfigError, load_config
+    from lee_llm_router.providers.base import LLMRouterError
+    from lee_llm_router.providers.registry import get as get_provider
 
     errors: list[str] = []
     warnings: list[str] = []
@@ -43,6 +45,18 @@ def check_config(
         return [f"Unexpected error loading config: {exc}"], []
 
     for pname, pcfg in config.providers.items():
+        try:
+            provider = get_provider(pcfg.type)()
+            provider.validate_config(pcfg.raw)
+        except KeyError:
+            warnings.append(
+                f"Provider {pname!r}: unknown type {pcfg.type!r} - cannot validate"
+            )
+            continue
+        except LLMRouterError as exc:
+            errors.append(f"Provider {pname!r}: {exc}")
+            continue
+
         if pcfg.type in ("openrouter_http", "openai_http"):
             api_key_env = pcfg.raw.get("api_key_env")
             if api_key_env and not os.environ.get(api_key_env):
@@ -83,24 +97,20 @@ def check_config(
         elif pcfg.type == "mock":
             pass
 
-        else:
-            warnings.append(
-                f"Provider {pname!r}: unknown type {pcfg.type!r} - cannot validate"
-            )
-
     target_role = role or config.default_role
-    try:
-        from lee_llm_router.providers.mock import MockProvider
-        from lee_llm_router.response import LLMRequest
-
-        mock = MockProvider()
-        req = LLMRequest(
-            role=target_role,
-            messages=[{"role": "user", "content": "doctor dry-run"}],
+    if target_role not in config.roles:
+        errors.append(
+            f"Role {target_role!r} not found in config. "
+            f"Known roles: {', '.join(sorted(config.roles))}"
         )
-        mock.complete(req, {})
-    except Exception as exc:
-        errors.append(f"Dry-run failed for role {target_role!r}: {exc}")
+        return errors, warnings
+
+    try:
+        role_cfg = config.roles[target_role]
+        provider_cfg = config.providers[role_cfg.provider]
+        get_provider(provider_cfg.type)
+    except KeyError as exc:
+        errors.append(f"Role {target_role!r} references an unknown provider: {exc}")
 
     return errors, warnings
 
@@ -334,4 +344,3 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
-

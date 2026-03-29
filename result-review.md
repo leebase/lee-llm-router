@@ -6,6 +6,43 @@
 
 ---
 
+## 2026-03-29 - Sprint 7 Complete: Pi Coding Harness Reliability and Harness Validation
+
+**What was built:** Added a repo-local simulated pi harness fixture and used it to harden the `codex_cli` provider around real subprocess failure classes. `codex_cli` now supports fixed `args`, optional `response_format: json`, JSON text extraction, usage passthrough, and deterministic `CONTRACT_VIOLATION` failures for malformed harness output. `doctor` now validates the configured provider and role wiring instead of a mock-only path, config loading now rejects unknown `default_role` and fallback providers, and docs/templates were updated to show the pi harness contract.
+
+**Why it matters:** The downstream pi harness problem is now reproducible and diagnosable in this repo. Instead of vague CLI failures, malformed harness output is typed, traceable, and covered by regression tests. Downstream consumers can validate their harness config earlier and rely on a proven local contract for pi-style subprocess execution.
+
+**How to Verify**
+
+```bash
+PYTHONPATH=src /Users/lee/projects/lee-llm-router/.venv/bin/python -m pytest tests/test_config.py tests/test_providers.py tests/test_router.py tests/test_doctor.py -q
+PYTHONPATH=src /Users/lee/projects/lee-llm-router/.venv/bin/python -m pytest -q
+PYTHONPATH=src /Users/lee/projects/lee-llm-router/.venv/bin/python -m lee_llm_router.doctor doctor --config tests/fixtures/llm_test.yaml
+# user-style pi harness validation:
+# - create a temp codex_cli config with command=/Users/lee/projects/lee-llm-router/.venv/bin/python
+# - args=[tests/fixtures/pi_harness.py, success_json]
+# - response_format=json
+# - run LLMRouter.complete("pi_local", [{"role":"user","content":"ship sprint 7"}])
+```
+
+---
+
+## 2026-03-29 - Sprint 7 Planned: Pi Coding Harness Reliability and Harness Validation
+
+**What was built:** Created a new Sprint 7 plan centered on pi coding harness reliability. The sprint now explicitly treats the recent downstream app failure as a first-class repo concern: reproduce the failure locally, harden harness validation and error handling, add regression coverage for success and failure cases, and add a user-style validation path for pi coding harness behavior.
+
+**Why it matters:** A downstream app already failed because the pi coding harness path was not reliable enough. Turning that failure into an official sprint keeps the work grounded in an actual consumer problem and makes “prove the harness works” part of the delivery contract rather than an informal follow-up.
+
+**How to Verify**
+
+```bash
+sed -n '1,260p' sprint-plan.md
+sed -n '1,220p' context.md
+sed -n '1,220p' WHERE_AM_I.md
+```
+
+---
+
 ## 2026-03-08 - Sprint 6 Complete: Vendored Source Snapshot Workflow
 
 **What was built:** Added `lee-llm-router export-source --dest <path> [--force]` to export the full `src/lee_llm_router/` package tree as a vendorable snapshot. The export writes `.lee_llm_router_export.json` with version, source repo, source commit, and export timestamp. Added overwrite protection for non-empty destinations unless `--force` is provided. Updated README/product/sprint docs to shift downstream adoption toward explicit vendored snapshots instead of requiring a live runtime dependency on this package.
@@ -305,4 +342,3 @@ pytest tests/test_smoke.py -v   # â†’ 4 passed
 ---
 
 *Add new entries above this line. Keep the newest work at the top.*
-

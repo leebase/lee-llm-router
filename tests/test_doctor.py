@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from lee_llm_router.doctor import (
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
+PI_HARNESS = FIXTURES / "pi_harness.py"
 
 
 def test_doctor_valid_config_exit_0():
@@ -121,6 +123,58 @@ llm:
     assert any(
         "definitely_not_a_real_binary_xyzzy999" in error for error in errors
     ), f"Expected binary-not-found error, got: {errors}"
+
+
+def test_doctor_accepts_pi_harness_cli_config(tmp_path):
+    config_file = tmp_path / "llm.yaml"
+    config_file.write_text(
+        f"""\
+llm:
+  default_role: local
+  providers:
+    pi_harness:
+      type: codex_cli
+      command: {sys.executable}
+      args:
+        - {PI_HARNESS}
+        - success_json
+      response_format: json
+  roles:
+    local:
+      provider: pi_harness
+      model: o3
+""",
+        encoding="utf-8",
+    )
+
+    errors, warnings = check_config(str(config_file))
+
+    assert errors == []
+    assert warnings == []
+
+
+def test_doctor_rejects_invalid_codex_cli_response_format(tmp_path):
+    config_file = tmp_path / "llm.yaml"
+    config_file.write_text(
+        """\
+llm:
+  default_role: local
+  providers:
+    pi_harness:
+      type: codex_cli
+      command: python3
+      response_format: yaml
+  roles:
+    local:
+      provider: pi_harness
+      model: o3
+""",
+        encoding="utf-8",
+    )
+
+    errors, _ = check_config(str(config_file))
+
+    assert any("response_format" in error for error in errors)
 
 
 def test_template_command_outputs_yaml():

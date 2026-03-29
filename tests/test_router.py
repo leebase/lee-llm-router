@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,6 +19,7 @@ from lee_llm_router.router import LLMRouter
 
 FIXTURES = Path(__file__).parent / "fixtures"
 MESSAGES = [{"role": "user", "content": "hello"}]
+PI_HARNESS = FIXTURES / "pi_harness.py"
 
 
 @pytest.fixture
@@ -91,7 +93,7 @@ def test_complete_falls_back_to_default_role(mock_config, tmp_path):
 
 def test_complete_per_call_override(mock_config, tmp_path):
     router = LLMRouter(mock_config, trace_dir=tmp_path)
-    response = router.complete("test", MESSAGES, model="overridden-model")
+    router.complete("test", MESSAGES, model="overridden-model")
     # The request_id in the trace should reflect the overridden model
     data = json.loads(list(tmp_path.rglob("*.json"))[0].read_text())
     assert data["model"] == "overridden-model"
@@ -162,6 +164,45 @@ def test_router_supports_openai_http_alias(tmp_path):
     assert response.text == "alias-ok"
 
 
+def test_router_surfaces_pi_harness_contract_violation(tmp_path):
+    config = LLMConfig(
+        default_role="local",
+        providers={
+            "pi_harness": ProviderConfig(
+                name="pi_harness",
+                type="codex_cli",
+                raw={
+                    "command": sys.executable,
+                    "args": [str(PI_HARNESS), "malformed_json"],
+                    "response_format": "json",
+                },
+            )
+        },
+        roles={
+            "local": RoleConfig(
+                name="local",
+                provider="pi_harness",
+                model="o3",
+                timeout=1.0,
+            )
+        },
+    )
+
+    router = LLMRouter(config, trace_dir=tmp_path)
+
+    with pytest.raises(LLMRouterError) as exc_info:
+        router.complete("local", MESSAGES)
+
+    assert exc_info.value.failure_type == FailureType.CONTRACT_VIOLATION
+
+    trace_files = list(tmp_path.rglob("*.json"))
+    assert len(trace_files) == 1
+    data = json.loads(trace_files[0].read_text())
+    assert data["provider"] == "pi_harness"
+    assert data["failure_type"] == "CONTRACT_VIOLATION"
+    assert "malformed JSON output" in data["error"]
+
+
 # ---------------------------------------------------------------------------
 # LLMClient (legacy wrapper)
 # ---------------------------------------------------------------------------
@@ -182,7 +223,7 @@ def test_public_api_imports():
         LLMClient,
         LLMRequest,
         LLMResponse,
-        LLMRouterError,
         LLMRouter,
+        LLMRouterError,
         load_config,
     )

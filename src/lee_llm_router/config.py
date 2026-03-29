@@ -105,6 +105,13 @@ def load_config(path: str | Path) -> LLMConfig:
             raise ConfigError(
                 f"Role {rname!r} references unknown provider: {rcfg['provider']!r}"
             )
+        fallback_providers = list(rcfg.get("fallback_providers", []))
+        for fallback_provider in fallback_providers:
+            if fallback_provider not in providers:
+                raise ConfigError(
+                    f"Role {rname!r} references unknown fallback provider: "
+                    f"{fallback_provider!r}"
+                )
         roles[rname] = RoleConfig(
             name=rname,
             provider=rcfg["provider"],
@@ -113,7 +120,12 @@ def load_config(path: str | Path) -> LLMConfig:
             json_mode=bool(rcfg.get("json_mode", False)),
             max_tokens=rcfg.get("max_tokens"),
             timeout=float(rcfg.get("timeout", 60.0)),
-            fallback_providers=list(rcfg.get("fallback_providers", [])),
+            fallback_providers=fallback_providers,
+        )
+
+    if llm["default_role"] not in roles:
+        raise ConfigError(
+            f"Config default_role references unknown role: {llm['default_role']!r}"
         )
 
     return LLMConfig(

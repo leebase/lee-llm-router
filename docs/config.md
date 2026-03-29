@@ -73,9 +73,15 @@ Credential resolution order:
 | Key | Required | Default | Description |
 |-----|----------|---------|-------------|
 | `command` | yes | — | Binary name or path (e.g. `codex`) |
+| `args` | no | `[]` | Fixed positional args inserted before the prompt |
 | `model_flag` | no | `--model` | Flag used to pass the model name |
 | `output_flag` | no | `--output-last-message` | Flag for output format |
+| `response_format` | no | `text` | Parse stdout as plain text or JSON (`text`, `json`) |
+| `text_field` | no | `output_text` / `text` | JSON field containing the returned message text |
 | `timeout` | no | role timeout | Subprocess timeout in seconds |
+
+For pi-style harness wrappers, prefer `response_format: json` so malformed output is
+treated as a `CONTRACT_VIOLATION` instead of a generic runtime mystery.
 
 ### mock keys
 
@@ -148,6 +154,14 @@ llm:
       model_flag: --model
       output_flag: --output-last-message
 
+    pi_harness:
+      type: codex_cli
+      command: python3
+      args:
+        - ./scripts/pi_harness.py
+      response_format: json
+      text_field: output_text
+
     codex_subscription:
       type: openai_codex_subscription_http
       base_url: https://chatgpt.com/backend-api/codex
@@ -171,6 +185,10 @@ llm:
 
     local:
       provider: codex_local
+      model: o3
+
+    pi_local:
+      provider: pi_harness
       model: o3
 
     codex_sub:

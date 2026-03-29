@@ -1,6 +1,6 @@
 ﻿# WHERE_AM_I - Lee LLM Router
 
-> **Quick orientation for AI agents.** Last updated: 2026-03-08
+> **Quick orientation for AI agents.** Last updated: 2026-03-29
 
 ---
 
@@ -10,20 +10,19 @@
 |-----------|-------|
 | **Project** | Lee LLM Router |
 | **Profile** | Python package and vendorable source reference |
-| **Phase** | P3 - Self-Contained Adoption |
-| **Sprint** | Sprint 6 |
+| **Phase** | P4 - Harness Reliability |
+| **Sprint** | Sprint 7 |
 | **Status** | Complete |
 
 ---
 
 ## Last Session Summary
 
-**2026-03-08 - Sprint 6 complete**
+**2026-03-29 - Sprint 7 complete**
 
-- Added `export-source` CLI for vendored package snapshots
-- Export now emits provenance metadata (`.lee_llm_router_export.json`)
-- Downstream architecture direction shifted from required runtime dependency to explicit snapshot adoption
-- Validation passed: `71` tests green plus CLI doctor/export workflow checks
+- Added a repo-local pi harness fixture and regression coverage for success and failure classes
+- Hardened `codex_cli` and `doctor` so pi harness failures are validated earlier and typed more clearly
+- Verified the path with full tests plus a user-style `LLMRouter.complete()` pi harness run
 
 ---
 
@@ -31,9 +30,9 @@
 
 ### For the Human
 
-1. Decide whether LeeClaw should vendor the router under a dedicated vendor path or merge it into its primary package tree
-2. Choose whether future downstream adoption should prefer package releases, vendored snapshots, or both
-3. Decide whether Sprint 7 should focus on downstream sync tooling or on consumer migration work
+1. Resume any downstream vendored-snapshot migration work that was blocked on pi harness reliability
+2. Decide whether to add an optional public doctor smoke mode for CLI harness roles
+3. Decide whether broader harness-aware planning should become the next sprint now that the pi path is stable
 
 ### For the AI Agent
 
@@ -50,15 +49,16 @@
 ```
 What's happening now:
 - lee-llm-router is complete through Sprint 6
-- vendored snapshot export is now a first-class downstream adoption path
+- Sprint 7 has shipped pi coding harness hardening, regression coverage, and validation guidance
 
 Blockers:
-- None in this repo
-- downstream migration work remains in consumer repos
+- no current blocker inside this repo for pi harness reliability
+- remaining decisions are about what follow-on work should build on the stable baseline
 
 Recent decisions:
 - keep this repo as the upstream improvement lane
 - downstream repos can adopt via explicit vendored snapshots instead of a live runtime dependency
+- pi-style subprocess harnesses should prefer a structured JSON contract when reliability matters
 ```
 
 ---
