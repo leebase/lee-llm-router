@@ -118,7 +118,8 @@ lee-llm-router export-source --dest ../consumer/src/lee_llm_router
 
 See [docs/providers.md](docs/providers.md) for configuration details.
 
-For pi-style subprocess harnesses, configure `codex_cli` with fixed `args` and
+For pi-style subprocess harnesses, configure `codex_cli` with fixed `args`,
+disable the default CLI flags when the wrapper does not accept them, and use
 `response_format: json` so malformed harness output is raised as a typed
 `CONTRACT_VIOLATION`.
 

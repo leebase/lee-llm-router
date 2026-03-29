@@ -153,6 +153,36 @@ llm:
     assert warnings == []
 
 
+def test_doctor_accepts_pi_harness_with_disabled_default_flags(tmp_path):
+    config_file = tmp_path / "llm.yaml"
+    config_file.write_text(
+        f"""\
+llm:
+  default_role: local
+  providers:
+    pi_harness:
+      type: codex_cli
+      command: {sys.executable}
+      args:
+        - {PI_HARNESS}
+        - strict_success_json
+      model_flag: null
+      output_flag: null
+      response_format: json
+  roles:
+    local:
+      provider: pi_harness
+      model: o3
+""",
+        encoding="utf-8",
+    )
+
+    errors, warnings = check_config(str(config_file))
+
+    assert errors == []
+    assert warnings == []
+
+
 def test_doctor_rejects_invalid_codex_cli_response_format(tmp_path):
     config_file = tmp_path / "llm.yaml"
     config_file.write_text(

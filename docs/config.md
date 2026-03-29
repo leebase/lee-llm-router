@@ -159,6 +159,8 @@ llm:
       command: python3
       args:
         - ./scripts/pi_harness.py
+      model_flag: null
+      output_flag: null
       response_format: json
       text_field: output_text
 

@@ -42,6 +42,13 @@ class CodexCLIProvider:
                 "codex_cli provider key 'text_field' must be a string",
                 failure_type=FailureType.PROVIDER_ERROR,
             )
+        for key in ("model_flag", "output_flag"):
+            value = config.get(key)
+            if value is not None and not isinstance(value, str):
+                raise LLMRouterError(
+                    f"codex_cli provider key {key!r} must be a string or null",
+                    failure_type=FailureType.PROVIDER_ERROR,
+                )
 
     def complete(self, request: LLMRequest, config: dict[str, Any]) -> LLMResponse:
         self.validate_config(config)
@@ -58,7 +65,7 @@ class CodexCLIProvider:
         prompt = user_messages[-1]["content"] if user_messages else ""
 
         cmd = [command, *extra_args]
-        if request.model:
+        if request.model and model_flag:
             cmd.extend([model_flag, request.model])
         if output_flag:
             cmd.append(output_flag)
@@ -182,18 +189,34 @@ def _usage_from_payload(payload: dict[str, Any]) -> LLMUsage:
     usage = payload.get("usage")
     if not isinstance(usage, dict):
         return LLMUsage()
-    prompt_tokens = int(usage.get("prompt_tokens", usage.get("input_tokens", 0)) or 0)
-    completion_tokens = int(
-        usage.get("completion_tokens", usage.get("output_tokens", 0)) or 0
+    prompt_tokens = _coerce_usage_value(
+        usage.get("prompt_tokens", usage.get("input_tokens", 0)),
+        field_name="prompt_tokens",
     )
-    total_tokens = int(
-        usage.get("total_tokens", prompt_tokens + completion_tokens) or 0
+    completion_tokens = _coerce_usage_value(
+        usage.get("completion_tokens", usage.get("output_tokens", 0)),
+        field_name="completion_tokens",
+    )
+    total_tokens = _coerce_usage_value(
+        usage.get("total_tokens", prompt_tokens + completion_tokens),
+        field_name="total_tokens",
     )
     return LLMUsage(
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         total_tokens=total_tokens,
     )
+
+
+def _coerce_usage_value(value: Any, *, field_name: str) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError) as exc:
+        raise LLMRouterError(
+            f"Codex CLI JSON usage field {field_name!r} must be an integer",
+            failure_type=FailureType.CONTRACT_VIOLATION,
+            cause=exc,
+        ) from exc
 
 
 def _snippet(text: str, limit: int = 200) -> str:

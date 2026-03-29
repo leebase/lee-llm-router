@@ -135,6 +135,8 @@ providers:
     command: python3
     args:
       - ./scripts/pi_harness.py
+    model_flag: null
+    output_flag: null
     response_format: json
     text_field: output_text
 ```
@@ -142,6 +144,9 @@ providers:
 When `response_format: json` is enabled, stdout must be a JSON object containing a
 non-empty `output_text` or `text` field. Optional `model` and `usage` fields are
 passed through into `LLMResponse`.
+
+Set `model_flag: null` and `output_flag: null` for wrappers that do not accept the
+default Codex CLI flags.
 
 Error mapping:
 

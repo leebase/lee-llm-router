@@ -31,8 +31,34 @@ def main() -> int:
         )
         return 0
 
+    if mode == "strict_success_json":
+        unexpected_args = sys.argv[2:-1]
+        if unexpected_args:
+            print(f"unexpected args: {unexpected_args}", file=sys.stderr)
+            return 9
+        print(
+            json.dumps(
+                {
+                    "output_text": f"pi strict harness: {prompt}",
+                    "model": "pi-harness-o3",
+                }
+            )
+        )
+        return 0
+
     if mode == "missing_text":
         print(json.dumps({"model": "pi-harness-o3"}))
+        return 0
+
+    if mode == "bad_usage":
+        print(
+            json.dumps(
+                {
+                    "output_text": f"pi bad usage harness: {prompt}",
+                    "usage": {"prompt_tokens": "abc"},
+                }
+            )
+        )
         return 0
 
     if mode == "malformed_json":

@@ -6,6 +6,22 @@
 
 ---
 
+## 2026-03-29 - Sprint 7 Follow-Up: Review Fixes for Pi Harness Contract
+
+**What was built:** Fixed the two code review findings from the Sprint 7 hardening pass. `codex_cli` now allows wrappers to disable the default `model_flag` by setting it to `null`, and the docs/examples were updated so the pi harness configuration no longer implies unsupported default flags. The JSON parsing path also now validates `usage` fields as part of the harness contract, raising `CONTRACT_VIOLATION` instead of leaking `ValueError` into the router's generic `UNKNOWN` bucket. Added regression tests for both cases.
+
+**Why it matters:** Real pi-style wrappers can now opt out of Codex-specific CLI flags explicitly, which makes the published config examples actually safe to copy. Malformed usage metadata also stays inside the typed contract-failure lane, so traces and fallback behavior remain consistent with the Sprint 7 reliability goal.
+
+**How to Verify**
+
+```bash
+PYTHONPATH=src /Users/lee/projects/lee-llm-router/.venv/bin/python -m pytest tests/test_providers.py tests/test_router.py tests/test_doctor.py -q
+PYTHONPATH=src /Users/lee/projects/lee-llm-router/.venv/bin/python -m pytest -q
+PYTHONPATH=src /Users/lee/projects/lee-llm-router/.venv/bin/python -m ruff check src/lee_llm_router/providers/codex_cli.py tests/fixtures/pi_harness.py tests/test_providers.py tests/test_router.py tests/test_doctor.py
+```
+
+---
+
 ## 2026-03-29 - Sprint 7 Complete: Pi Coding Harness Reliability and Harness Validation
 
 **What was built:** Added a repo-local simulated pi harness fixture and used it to harden the `codex_cli` provider around real subprocess failure classes. `codex_cli` now supports fixed `args`, optional `response_format: json`, JSON text extraction, usage passthrough, and deterministic `CONTRACT_VIOLATION` failures for malformed harness output. `doctor` now validates the configured provider and role wiring instead of a mock-only path, config loading now rejects unknown `default_role` and fallback providers, and docs/templates were updated to show the pi harness contract.

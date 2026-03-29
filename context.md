@@ -10,7 +10,7 @@
 |-----------|-------|
 | **Phase** | P4 complete; pi harness reliability shipped |
 | **Mode** | 2 (Implementation with approval) |
-| **Last Updated** | 2026-03-29 (Sprint 7 pi harness reliability complete) |
+| **Last Updated** | 2026-03-29 (Sprint 7 pi harness review fixes complete) |
 
 ### Sprint Status
 | Sprint | Status | Completion |
@@ -31,6 +31,10 @@
 Sprint 7 is complete. The pi coding harness path now has a repo-local reproduction fixture, stricter CLI harness contract handling, explicit `doctor` validation, regression coverage, and a user-style verification path.
 
 ### Recently Completed
+- Fixed the Sprint 7 review findings around pi harness flag handling and malformed JSON usage typing
+- `codex_cli` now allows `model_flag: null` for wrappers that do not accept the default Codex CLI flags
+- Invalid JSON `usage` fields from pi-style harnesses now raise typed `CONTRACT_VIOLATION` errors instead of falling through as `UNKNOWN`
+- Added regression coverage for strict wrapper invocation without default flags and router-level malformed usage handling
 - Added a repo-local simulated pi harness fixture at `tests/fixtures/pi_harness.py`
 - Hardened `codex_cli` with fixed `args`, optional `response_format: json`, JSON text extraction, usage passthrough, and typed `CONTRACT_VIOLATION` failures for malformed harness output
 - Improved non-zero exit diagnostics for CLI harness failures and preserved command metadata in raw responses
@@ -39,8 +43,9 @@ Sprint 7 is complete. The pi coding harness path now has a repo-local reproducti
 - Added focused pi harness tests for success, malformed JSON, missing text, timeout, non-zero exit, doctor validation, and router traceability
 - Updated README, provider docs, config docs, and the example template with pi harness contract guidance
 - Validation complete:
+  - `PYTHONPATH=src /Users/lee/projects/lee-llm-router/.venv/bin/python -m pytest tests/test_providers.py tests/test_router.py tests/test_doctor.py -q` -> `56 passed`
   - `PYTHONPATH=src /Users/lee/projects/lee-llm-router/.venv/bin/python -m pytest tests/test_config.py tests/test_providers.py tests/test_router.py tests/test_doctor.py -q` -> `60 passed`
-  - `PYTHONPATH=src /Users/lee/projects/lee-llm-router/.venv/bin/python -m pytest -q` -> `81 passed`
+  - `PYTHONPATH=src /Users/lee/projects/lee-llm-router/.venv/bin/python -m pytest -q` -> `85 passed`
   - Test As Lee: `PYTHONPATH=src /Users/lee/projects/lee-llm-router/.venv/bin/python -m lee_llm_router.doctor doctor --config tests/fixtures/llm_test.yaml`
   - Test As Lee: temp pi harness config + `LLMRouter.complete("pi_local", ...)` -> `{"text":"pi json harness: ship sprint 7","provider":"codex_cli","model":"pi-harness-o3"}`
 
