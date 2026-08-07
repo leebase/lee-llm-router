@@ -48,7 +48,28 @@ Controllable error flags (for testing error paths):
 ---
 
 ## OpenRouterHTTPProvider
+## OpenCodeSubscriptionHTTPProvider
 
+**Registry name:** `opencode_subscription_http`
+
+Calls the OpenCode Go subscription API (OpenAI-compatible `/chat/completions`).
+Uses the same adapter as `openrouter_http` with `OPENCODE_API_KEY` as the
+default credential environment variable.
+
+```yaml
+providers:
+  opencode:
+    type: opencode_subscription_http
+    base_url: https://opencode.ai/zen/go/v1
+    api_key_env: OPENCODE_API_KEY
+```
+
+This provider supports all models available through an OpenCode Go subscription,
+including `deepseek-v4-flash` and `deepseek-v4-pro`.
+
+Error mapping is identical to OpenRouterHTTPProvider.
+
+---
 **Registry names:** `openrouter_http`, `openai_http`
 
 Calls any OpenRouter or OpenAI-compatible `/chat/completions` endpoint using
@@ -107,7 +128,36 @@ Error mapping:
 
 ---
 
-## CodexCLIProvider
+
+## OmpCLIProvider
+
+**Registry name:** `omp_cli`
+
+Invokes the omp (oh-my-pi) harness via subprocess with `-p` (print) mode.
+The prompt is sent on stdin; the response is read from stdout.  The harness
+handles authentication internally through its stored credentials, so no API
+key configuration is needed.
+
+```yaml
+providers:
+  omp:
+    type: omp_cli
+    command: omp
+```
+
+The provider passes `--model <model>` from the role config.  A system
+message, if present, is prepended to the user prompt.
+
+```yaml
+roles:
+  coach:
+    provider: omp
+    model: opencode-go/deepseek-v4-flash
+```
+
+Error mapping is identical to CodexCLIProvider.
+
+---
 
 **Registry name:** `codex_cli`
 
@@ -124,7 +174,7 @@ providers:
 ```
 
 The last `user` message is passed as the final positional argument to the command.
-Built command: `<command> [model_flag model] [output_flag] <prompt>`
+Built command: `<command> [args...] [model_flag model] [output_flag] [prompt_flag] <prompt>`
 
 For pi-style harness wrappers, add fixed args and require a JSON envelope:
 
@@ -147,6 +197,51 @@ passed through into `LLMResponse`.
 
 Set `model_flag: null` and `output_flag: null` for wrappers that do not accept the
 default Codex CLI flags.
+
+## GeminiCLIProvider
+
+**Registry names:** `gemini_cli`, `gemini`
+
+Invokes the Gemini CLI via subprocess and returns stdout. Defaults are tuned for the
+installed `gemini` binary.
+
+```yaml
+providers:
+  gemini_local:
+    type: gemini_cli
+    command: gemini
+    model_flag: null
+    output_flag: null
+    prompt_flag: -p
+```
+
+Defaults:
+- `command`: `gemini`
+- `model_flag`: `null` (disabled)
+- `output_flag`: `null` (disabled)
+- `prompt_flag`: `-p`
+
+## ClaudeCodeCLIProvider
+
+**Registry names:** `claude_code_cli`, `claude_code`, `claude`
+
+Invokes the Claude CLI via subprocess and returns stdout.
+
+```yaml
+providers:
+  claude_code_local:
+    type: claude
+    command: claude
+    model_flag: null
+    output_flag: null
+    prompt_flag: -p
+```
+
+Defaults:
+- `command`: `claude`
+- `model_flag`: `null` (disabled)
+- `output_flag`: `null` (disabled)
+- `prompt_flag`: `-p`
 
 Error mapping:
 

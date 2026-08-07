@@ -34,10 +34,10 @@ providers:
 |-------|---------|-------------|
 | `openrouter_http` | `OpenRouterHTTPProvider` | OpenRouter / OpenAI-compatible REST |
 | `openai_http` | `OpenRouterHTTPProvider` | Alias — same adapter |
-| `openai_codex_subscription_http` | `OpenAICodexSubscriptionHTTPProvider` | ChatGPT subscription-backed Codex responses API |
 | `openai_codex_http` | `OpenAICodexSubscriptionHTTPProvider` | Alias — same adapter |
 | `chatgpt_subscription_http` | `OpenAICodexSubscriptionHTTPProvider` | Alias — same adapter |
-| `codex_cli` | `CodexCLIProvider` | Subprocess provider |
+| `opencode_subscription_http` | `OpenRouterHTTPProvider` | OpenCode Go subscription (OpenAI-compatible) |
+| `omp_cli` | `OmpCLIProvider` | omp harness subprocess (auth handled internally) |
 | `mock` | `MockProvider` | Deterministic echo — tests only |
 
 ### openrouter_http / openai_http keys
@@ -72,7 +72,7 @@ Credential resolution order:
 
 | Key | Required | Default | Description |
 |-----|----------|---------|-------------|
-| `command` | yes | — | Binary name or path (e.g. `codex`) |
+| `command` | no | `codex` | Binary name or path (e.g. `codex`) |
 | `args` | no | `[]` | Fixed positional args inserted before the prompt |
 | `model_flag` | no | `--model` | Flag used to pass the model name; set to `null` to disable |
 | `output_flag` | no | `--output-last-message` | Flag for output format; set to `null` to disable |
@@ -85,6 +85,32 @@ treated as a `CONTRACT_VIOLATION` instead of a generic runtime mystery.
 
 Set `model_flag: null` and `output_flag: null` for wrappers that do not accept the
 default Codex CLI flags.
+
+### gemini_cli / gemini keys
+
+| Key | Required | Default | Description |
+|-----|----------|---------|-------------|
+| `command` | no | `gemini` | Binary name or path (e.g. `gemini`) |
+| `args` | no | `[]` | Fixed positional args inserted before prompt flags |
+| `prompt_flag` | no | `-p` | Flag used to pass the prompt (`gemini -p "..."`) |
+| `model_flag` | no | `null` | Model flag (left off by default) |
+| `output_flag` | no | `null` | Output-format flag (left off by default) |
+| `response_format` | no | `text` | Parse stdout as plain text or JSON (`text`, `json`) |
+| `text_field` | no | `output_text` / `text` | JSON field containing the returned message text |
+| `timeout` | no | role timeout | Subprocess timeout in seconds |
+
+### claude_code_cli / claude_code / claude keys
+
+| Key | Required | Default | Description |
+|-----|----------|---------|-------------|
+| `command` | no | `claude` | Binary name or path (e.g. `claude`) |
+| `args` | no | `[]` | Fixed positional args inserted before prompt flags |
+| `prompt_flag` | no | `-p` | Flag used to pass the prompt (`claude -p "..."`) |
+| `model_flag` | no | `null` | Model flag (left off by default) |
+| `output_flag` | no | `null` | Output-format flag (left off by default) |
+| `response_format` | no | `text` | Parse stdout as plain text or JSON (`text`, `json`) |
+| `text_field` | no | `output_text` / `text` | JSON field containing the returned message text |
+| `timeout` | no | role timeout | Subprocess timeout in seconds |
 
 ### mock keys
 
@@ -157,6 +183,14 @@ llm:
       model_flag: --model
       output_flag: --output-last-message
 
+    gemini_local:
+      type: gemini_cli
+      command: gemini
+
+    claude_code_local:
+      type: claude
+      command: claude
+
     pi_harness:
       type: codex_cli
       command: python3
@@ -191,6 +225,14 @@ llm:
     local:
       provider: codex_local
       model: o3
+
+    gemini_research:
+      provider: gemini_local
+      model: gemini-2.5-pro
+
+    claude_research:
+      provider: claude_code_local
+      model: claude-3.7-sonnet
 
     pi_local:
       provider: pi_harness

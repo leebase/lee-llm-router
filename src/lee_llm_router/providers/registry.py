@@ -41,7 +41,12 @@ def available() -> list[str]:
 
 def _register_builtins() -> None:
     """Auto-register built-in provider adapters."""
-    from lee_llm_router.providers.codex_cli import CodexCLIProvider
+    from lee_llm_router.providers.codex_cli import (
+        ClaudeCodeCLIProvider,
+        CodexCLIProvider,
+        GeminiCLIProvider,
+    )
+    from lee_llm_router.providers.omp_cli import OmpCLIProvider
     from lee_llm_router.providers.http import OpenRouterHTTPProvider
     from lee_llm_router.providers.mock import MockProvider
     from lee_llm_router.providers.openai_codex_subscription import (
@@ -55,7 +60,13 @@ def _register_builtins() -> None:
         OpenAICodexSubscriptionHTTPProvider,
         aliases=("openai_codex_http", "chatgpt_subscription_http"),
     )
+    register_alias("opencode_subscription_http", "openrouter_http")
     register("codex_cli", CodexCLIProvider)
-
-
+    register("gemini_cli", GeminiCLIProvider, aliases=("gemini",))
+    register(
+        "claude_code_cli",
+        ClaudeCodeCLIProvider,
+        aliases=("claude_code", "claude"),
+    )
+    register("omp_cli", OmpCLIProvider)
 _register_builtins()
