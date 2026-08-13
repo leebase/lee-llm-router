@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -94,6 +95,11 @@ def test_registry_builtins_registered():
     assert "openrouter_http" in names
     assert "openai_codex_subscription_http" in names
     assert "codex_cli" in names
+    assert "gemini_cli" in names
+    assert "gemini" in names
+    assert "claude_code_cli" in names
+    assert "claude_code" in names
+    assert "claude" in names
 
 
 def test_registry_missing_provider_raises():
@@ -587,6 +593,46 @@ def test_codex_cli_provider_nonzero_exit_raises_provider_error():
 
     assert exc_info.value.failure_type == FailureType.PROVIDER_ERROR
     assert "pi harness exploded" in str(exc_info.value)
+
+
+def test_gemini_cli_provider_defaults_and_prompt_flag():
+    from lee_llm_router.providers.codex_cli import GeminiCLIProvider
+
+    provider = GeminiCLIProvider()
+    request = make_request(model="gemini-2.5-pro", messages=[{"role": "user", "content": "hello"}])
+
+    with patch(
+        "subprocess.run",
+        return_value=subprocess.CompletedProcess(["gemini", "-p", "hello"], 0, "ok", ""),
+    ) as mock_run:
+        response = provider.complete(request, {})
+
+    assert mock_run.call_args.args[0][0] == "gemini"
+    assert mock_run.call_args.args[0][-2:] == ["-p", "hello"]
+
+    assert response.provider == "gemini_cli"
+    assert response.text == "ok"
+
+
+def test_claude_code_cli_provider_defaults_and_prompt_flag():
+    from lee_llm_router.providers.codex_cli import ClaudeCodeCLIProvider
+
+    provider = ClaudeCodeCLIProvider()
+    request = make_request(
+        model="claude-3.7-sonnet",
+        messages=[{"role": "user", "content": "hello"}],
+    )
+
+    with patch(
+        "subprocess.run",
+        return_value=subprocess.CompletedProcess(["claude", "-p", "hello"], 0, "ok", ""),
+    ) as mock_run:
+        response = provider.complete(request, {"command": "claude"})
+
+    assert mock_run.call_args.args[0][0] == "claude"
+    assert mock_run.call_args.args[0][-2:] == ["-p", "hello"]
+    assert response.provider == "claude_code_cli"
+    assert response.text == "ok"
 
 
 # ---------------------------------------------------------------------------

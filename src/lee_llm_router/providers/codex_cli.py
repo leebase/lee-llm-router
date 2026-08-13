@@ -16,49 +16,87 @@ class CodexCLIProvider:
 
     name = "codex_cli"
     supported_types = {"codex_cli"}
+    default_command = "codex"
+    default_model_flag = "--model"
+    default_output_flag = "--output-last-message"
+    default_prompt_flag = None
 
-    def validate_config(self, config: dict[str, Any]) -> None:
-        command = config.get("command")
+    def _resolve_config_command(self, config: dict[str, Any]) -> str:
+        command = config.get("command", self.default_command)
         if not isinstance(command, str) or not command.strip():
             raise LLMRouterError(
-                "codex_cli provider missing required config key: 'command'",
+                f"{self.name} provider missing required config key: 'command'",
                 failure_type=FailureType.PROVIDER_ERROR,
             )
-        args = config.get("args", [])
-        if not isinstance(args, list) or any(not isinstance(arg, str) for arg in args):
+        return command
+
+    def _resolve_config_string_flag(
+        self, config: dict[str, Any], key: str, default: str | None
+    ) -> str | None:
+        value = config.get(key, default)
+        if value is not None and not isinstance(value, str):
             raise LLMRouterError(
-                "codex_cli provider key 'args' must be a list of strings",
+                f"{self.name} provider key {key!r} must be a string or null",
                 failure_type=FailureType.PROVIDER_ERROR,
             )
+        return value
+
+    def _resolve_response_format(self, config: dict[str, Any]) -> str:
         response_format = str(config.get("response_format", "text"))
         if response_format not in {"text", "json"}:
             raise LLMRouterError(
-                "codex_cli provider key 'response_format' must be 'text' or 'json'",
+                f"{self.name} provider key 'response_format' must be 'text' or 'json'",
                 failure_type=FailureType.PROVIDER_ERROR,
             )
+        return response_format
+
+    def validate_config(self, config: dict[str, Any]) -> None:
+        self._resolve_config_command(config)
+        args = config.get("args", [])
+        if not isinstance(args, list) or any(not isinstance(arg, str) for arg in args):
+            raise LLMRouterError(
+                f"{self.name} provider key 'args' must be a list of strings",
+                failure_type=FailureType.PROVIDER_ERROR,
+            )
+
+        self._resolve_response_format(config)
+
         text_field = config.get("text_field")
         if text_field is not None and not isinstance(text_field, str):
             raise LLMRouterError(
-                "codex_cli provider key 'text_field' must be a string",
+                f"{self.name} provider key 'text_field' must be a string",
                 failure_type=FailureType.PROVIDER_ERROR,
             )
-        for key in ("model_flag", "output_flag"):
-            value = config.get(key)
-            if value is not None and not isinstance(value, str):
-                raise LLMRouterError(
-                    f"codex_cli provider key {key!r} must be a string or null",
-                    failure_type=FailureType.PROVIDER_ERROR,
-                )
+
+        for key, default in (
+            ("model_flag", self.default_model_flag),
+            ("output_flag", self.default_output_flag),
+            ("prompt_flag", self.default_prompt_flag),
+        ):
+            self._resolve_config_string_flag(config, key, default)
 
     def complete(self, request: LLMRequest, config: dict[str, Any]) -> LLMResponse:
         self.validate_config(config)
 
-        command = config["command"]
+        command = self._resolve_config_command(config)
         extra_args = list(config.get("args", []))
-        model_flag = config.get("model_flag", "--model")
-        output_flag = config.get("output_flag", "--output-last-message")
+        model_flag = self._resolve_config_string_flag(
+            config,
+            "model_flag",
+            self.default_model_flag,
+        )
+        output_flag = self._resolve_config_string_flag(
+            config,
+            "output_flag",
+            self.default_output_flag,
+        )
+        prompt_flag = self._resolve_config_string_flag(
+            config,
+            "prompt_flag",
+            self.default_prompt_flag,
+        )
         timeout = request.timeout or float(config.get("timeout", 120.0))
-        response_format = str(config.get("response_format", "text"))
+        response_format = self._resolve_response_format(config)
 
         # Build prompt from last user message
         user_messages = [m for m in request.messages if m.get("role") == "user"]
@@ -69,6 +107,8 @@ class CodexCLIProvider:
             cmd.extend([model_flag, request.model])
         if output_flag:
             cmd.append(output_flag)
+        if prompt_flag:
+            cmd.append(prompt_flag)
         cmd.append(prompt)
 
         try:
@@ -104,6 +144,7 @@ class CodexCLIProvider:
             command=cmd,
             response_format=response_format,
             text_field=config.get("text_field"),
+            provider=self.name,
         )
 
 
@@ -113,6 +154,7 @@ def _build_response(
     result: subprocess.CompletedProcess[str],
     command: list[str],
     response_format: str,
+    provider: str,
     text_field: str | None,
 ) -> LLMResponse:
     stdout = result.stdout.strip()
@@ -145,8 +187,30 @@ def _build_response(
         usage=usage,
         request_id=request.request_id,
         model=model,
-        provider="codex_cli",
+        provider=provider,
     )
+
+
+class GeminiCLIProvider(CodexCLIProvider):
+    """Invokes the Gemini CLI via subprocess and returns its stdout."""
+
+    name = "gemini_cli"
+    supported_types = {"gemini_cli", "gemini"}
+    default_command = "gemini"
+    default_model_flag = None
+    default_output_flag = None
+    default_prompt_flag = "-p"
+
+
+class ClaudeCodeCLIProvider(CodexCLIProvider):
+    """Invokes the Claude CLI via subprocess and returns its stdout."""
+
+    name = "claude_code_cli"
+    supported_types = {"claude_code_cli", "claude_code"}
+    default_command = "claude"
+    default_model_flag = None
+    default_output_flag = None
+    default_prompt_flag = "-p"
 
 
 def _parse_json_payload(stdout: str) -> dict[str, Any]:

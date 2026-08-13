@@ -117,12 +117,14 @@ lee-llm-router export-source --dest ../consumer/src/lee_llm_router
 | `openrouter_http` | OpenRouter / OpenAI-compatible REST API |
 | `openai_codex_subscription_http` | ChatGPT subscription-backed Codex Responses API |
 | `codex_cli` | Subprocess wrapper for Codex CLI |
+| `gemini_cli` | Subprocess wrapper for Gemini CLI |
+| `claude_code_cli` | Subprocess wrapper for Claude Code CLI |
 | `mock` | Deterministic echo provider for tests and CI |
 
 See [docs/providers.md](docs/providers.md) for configuration details.
 
-For pi-style subprocess harnesses, configure `codex_cli` with fixed `args`,
-disable the default CLI flags when the wrapper does not accept them, and use
+For pi-style subprocess harnesses, configure `codex_cli`, `gemini_cli`, or
+`claude_code_cli` with fixed `args`, disable default flags when needed, and use
 `response_format: json` so malformed harness output is raised as a typed
 `CONTRACT_VIOLATION`.
 

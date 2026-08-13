@@ -10,3 +10,4 @@ build/
 .lee-llm-router/
 *.json
 !tests/fixtures/*.json
+/.venv-linux/

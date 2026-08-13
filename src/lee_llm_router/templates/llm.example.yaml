@@ -22,6 +22,14 @@ llm:
       model_flag: --model
       output_flag: --output-last-message
 
+    gemini_local:
+      type: gemini_cli
+      command: gemini
+
+    claude_code_local:
+      type: claude_code_cli
+      command: claude
+
     # Optional pi-style harness wrapper with a structured JSON contract
     # pi_harness:
     #   type: codex_cli
@@ -65,6 +73,16 @@ llm:
     local:
       provider: codex_local
       model: o3
+
+    gemini_research:
+      provider: gemini_local
+      model: gemini-2.5-pro
+      timeout: 90.0
+
+    claude_research:
+      provider: claude_code_local
+      model: claude-3.7-sonnet
+      timeout: 90.0
 
     # pi_local:
     #   provider: pi_harness

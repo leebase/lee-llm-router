@@ -77,6 +77,33 @@ llm:
     assert warnings == []
 
 
+def test_doctor_allows_gemini_cli_alias(tmp_path):
+    config_file = tmp_path / "llm.yaml"
+    config_file.write_text(
+        f"""\
+llm:
+  default_role: local
+  providers:
+    gemini:
+      type: gemini
+      command: {sys.executable}
+      args:
+        - {PI_HARNESS}
+        - success_json
+      response_format: json
+  roles:
+    local:
+      provider: gemini
+      model: gemini-2.5-pro
+""",
+        encoding="utf-8",
+    )
+    errors, warnings = check_config(str(config_file))
+
+    assert errors == []
+    assert warnings == []
+
+
 def test_doctor_missing_env_var_reports_error(tmp_path, monkeypatch):
     """HTTP provider whose api_key_env is unset produces an error."""
     monkeypatch.delenv("MISSING_API_KEY_XYZ", raising=False)

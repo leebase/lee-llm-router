@@ -66,8 +66,21 @@ def check_config(
                     f"Provider {pname!r}: 'base_url' not set - will use default"
                 )
 
-        elif pcfg.type == "codex_cli":
-            command = pcfg.raw.get("command", "codex")
+        elif pcfg.type in (
+            "codex_cli",
+            "gemini_cli",
+            "gemini",
+            "claude_code_cli",
+            "claude_code",
+            "claude",
+        ):
+            if pcfg.type.startswith("gemini"):
+                default_command = "gemini"
+            elif pcfg.type.startswith("claude"):
+                default_command = "claude"
+            else:
+                default_command = "codex"
+            command = pcfg.raw.get("command", default_command)
             if not shutil.which(command):
                 errors.append(
                     f"Provider {pname!r}: binary {command!r} not found in PATH"
