@@ -148,6 +148,14 @@ providers:
 The provider passes `--model <model>` from the role config.  A system
 message, if present, is prepended to the user prompt.
 
+Built command: `omp -p [--model <model>]`
+
+`build_command(config, model=None, effort=None)` returns exactly that argv list;
+`complete()` runs the same builder, so the dispatch template and the executed
+command cannot drift. Because the prompt is delivered on stdin, the list carries
+no prompt placeholder. `effort` is accepted for interface parity only — the omp
+harness has no reasoning-effort flag, so `LLMRequest.effort` is ignored here.
+
 ```yaml
 roles:
   coach:
@@ -156,6 +164,86 @@ roles:
 ```
 
 Error mapping is identical to CodexCLIProvider.
+
+---
+
+## OpenCodeCLIProvider
+
+**Registry name:** `opencode_cli` (alias: `opencode`)
+
+Invokes the OpenCode CLI via subprocess. The prompt is passed as the final
+positional argument; the response is read from stdout. The CLI handles
+authentication internally through its stored credentials, so no API key
+configuration is needed.
+
+```yaml
+providers:
+  opencode:
+    type: opencode_cli
+    command: opencode          # optional, defaults to "opencode"
+    model: opencode-go/deepseek-v4-flash   # required, provider/model form
+    agent: build               # optional
+    timeout: 120               # optional, seconds
+```
+
+Built command: `opencode run -m <provider/model> [--agent <agent>] <prompt>`
+
+`build_command(config, model=None, effort=None)` returns that argv list with the
+literal `{prompt}` placeholder as the final positional, and `complete()` runs the
+same builder. `effort` is accepted for interface parity only — OpenCode has no
+effort flag, so `LLMRequest.effort` is ignored here. A `model` override must
+still be in `provider/model` form. A system message, if present, is prepended to
+the user prompt.
+
+Error mapping:
+
+| Condition | FailureType |
+| --- | --- |
+| Missing/invalid `command`, `model`, `agent`, or `timeout` | `PROVIDER_ERROR` |
+| Binary not found | `PROVIDER_ERROR` |
+| Non-zero exit | `PROVIDER_ERROR` |
+| Subprocess timeout | `TIMEOUT` |
+| Empty stdout | `INVALID_RESPONSE` |
+
+---
+
+## AntigravityCLIProvider
+
+**Registry name:** `antigravity_cli` (aliases: `antigravity`, `agy`)
+
+Invokes the Antigravity CLI (`agy`) in print mode. The prompt is sent on stdin;
+the response is read from stdout. Per D155, Google subscription models are
+reachable only through this harness, so `--dangerously-skip-permissions` is
+always included for non-interactive dispatch.
+
+```yaml
+providers:
+  agy:
+    type: antigravity_cli
+    command: agy               # optional, defaults to "agy"
+    model: gemini-3.7-flash    # required
+    effort: high               # optional: low | medium | high
+    timeout: 300               # optional, seconds
+```
+
+Built command:
+`agy -p --model <model> [--effort <low|medium|high>] --dangerously-skip-permissions`
+
+`build_command(config, model=None, effort=None)` returns that argv list, and
+`complete()` runs the same builder. Because the prompt is delivered on stdin,
+the list carries no prompt placeholder. `LLMRequest.effort` (set from a crew
+worker's effort by `CrewRoutingPolicy`) overrides the config's `effort`. A
+system message, if present, is prepended to the user prompt.
+
+Error mapping:
+
+| Condition | FailureType |
+| --- | --- |
+| Missing/invalid `command`, `model`, `effort`, or `timeout` | `PROVIDER_ERROR` |
+| Binary not found | `PROVIDER_ERROR` |
+| Non-zero exit | `PROVIDER_ERROR` |
+| Subprocess timeout | `TIMEOUT` |
+| Empty stdout | `INVALID_RESPONSE` |
 
 ---
 
@@ -197,6 +285,29 @@ passed through into `LLMResponse`.
 
 Set `model_flag: null` and `output_flag: null` for wrappers that do not accept the
 default Codex CLI flags.
+
+### `build_command` and effort
+
+`build_command(config, model=None, effort=None)` returns the argv list with the
+literal `{prompt}` placeholder as the final positional, and `complete()` runs the
+same builder — the dispatch template and the executed command cannot drift.
+
+```python
+CodexCLIProvider().build_command({"command": "codex"}, model="gpt-5.6-sol")
+# ["codex", "--model", "gpt-5.6-sol", "--output-last-message", "{prompt}"]
+```
+
+`effort` falls back to the config's `effort` key when not passed explicitly, and
+`complete()` supplies `LLMRequest.effort`. Each subclass renders it with its own
+flag, via the `_effort_args()` hook:
+
+| Class | Effort argv |
+| --- | --- |
+| `CodexCLIProvider` | `-c model_reasoning_effort=<effort>` |
+| `ClaudeCodeCLIProvider` | `--effort <effort>` |
+| `GeminiCLIProvider` | none — the Gemini CLI has no effort flag |
+
+When effort is `None` (or empty) no flag is emitted at all.
 
 ## GeminiCLIProvider
 

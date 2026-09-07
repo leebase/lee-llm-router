@@ -41,17 +41,19 @@ def available() -> list[str]:
 
 def _register_builtins() -> None:
     """Auto-register built-in provider adapters."""
+    from lee_llm_router.providers.antigravity_cli import AntigravityCLIProvider
     from lee_llm_router.providers.codex_cli import (
         ClaudeCodeCLIProvider,
         CodexCLIProvider,
         GeminiCLIProvider,
     )
-    from lee_llm_router.providers.omp_cli import OmpCLIProvider
     from lee_llm_router.providers.http import OpenRouterHTTPProvider
     from lee_llm_router.providers.mock import MockProvider
+    from lee_llm_router.providers.omp_cli import OmpCLIProvider
     from lee_llm_router.providers.openai_codex_subscription import (
         OpenAICodexSubscriptionHTTPProvider,
     )
+    from lee_llm_router.providers.opencode_cli import OpenCodeCLIProvider
 
     register("mock", MockProvider)
     register("openrouter_http", OpenRouterHTTPProvider, aliases=("openai_http",))
@@ -69,4 +71,12 @@ def _register_builtins() -> None:
         aliases=("claude_code", "claude"),
     )
     register("omp_cli", OmpCLIProvider)
+    register("opencode_cli", OpenCodeCLIProvider, aliases=("opencode",))
+    register(
+        "antigravity_cli",
+        AntigravityCLIProvider,
+        aliases=("antigravity", "agy"),
+    )
+
+
 _register_builtins()

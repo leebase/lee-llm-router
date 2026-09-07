@@ -10,6 +10,8 @@ from typing import Any
 from lee_llm_router.providers.base import FailureType, LLMRouterError
 from lee_llm_router.response import LLMRequest, LLMResponse, LLMUsage
 
+PROMPT_PLACEHOLDER = "{prompt}"
+
 
 class CodexCLIProvider:
     """Invokes the Codex CLI via subprocess and returns its stdout."""
@@ -75,7 +77,41 @@ class CodexCLIProvider:
         ):
             self._resolve_config_string_flag(config, key, default)
 
-    def complete(self, request: LLMRequest, config: dict[str, Any]) -> LLMResponse:
+    def _effort_args(self, effort: str) -> list[str]:
+        """Return the argv fragment that sets reasoning effort for this CLI.
+
+        Args:
+            effort: The reasoning-effort level to request.
+
+        Returns:
+            The argv fragment, or an empty list when the CLI has no effort
+            flag.
+        """
+        return ["-c", f"model_reasoning_effort={effort}"]
+
+    def build_command(
+        self,
+        config: dict[str, Any],
+        model: str | None = None,
+        effort: str | None = None,
+    ) -> list[str]:
+        """Return the dispatch command template as an argv list.
+
+        The final positional element is the literal ``{prompt}`` placeholder,
+        which :meth:`complete` replaces with the resolved prompt text.
+
+        Args:
+            config: Provider configuration mapping.
+            model: Optional model override; falls back to ``config['model']``.
+            effort: Optional reasoning-effort override; falls back to
+                ``config['effort']``.
+
+        Returns:
+            The argv list for the CLI invocation.
+
+        Raises:
+            LLMRouterError: If the config is invalid.
+        """
         self.validate_config(config)
 
         command = self._resolve_config_command(config)
@@ -95,6 +131,25 @@ class CodexCLIProvider:
             "prompt_flag",
             self.default_prompt_flag,
         )
+        resolved_model = model or config.get("model") or ""
+        resolved_effort = effort if effort is not None else config.get("effort")
+
+        cmd = [command, *extra_args]
+        if resolved_model and model_flag:
+            cmd.extend([model_flag, str(resolved_model)])
+        if resolved_effort:
+            cmd.extend(self._effort_args(str(resolved_effort)))
+        if output_flag:
+            cmd.append(output_flag)
+        if prompt_flag:
+            cmd.append(prompt_flag)
+        cmd.append(PROMPT_PLACEHOLDER)
+        return cmd
+
+    def complete(self, request: LLMRequest, config: dict[str, Any]) -> LLMResponse:
+        self.validate_config(config)
+
+        command = self._resolve_config_command(config)
         timeout = request.timeout or float(config.get("timeout", 120.0))
         response_format = self._resolve_response_format(config)
 
@@ -102,14 +157,12 @@ class CodexCLIProvider:
         user_messages = [m for m in request.messages if m.get("role") == "user"]
         prompt = user_messages[-1]["content"] if user_messages else ""
 
-        cmd = [command, *extra_args]
-        if request.model and model_flag:
-            cmd.extend([model_flag, request.model])
-        if output_flag:
-            cmd.append(output_flag)
-        if prompt_flag:
-            cmd.append(prompt_flag)
-        cmd.append(prompt)
+        cmd = [
+            prompt if part == PROMPT_PLACEHOLDER else part
+            for part in self.build_command(
+                config, model=request.model or None, effort=request.effort
+            )
+        ]
 
         try:
             result = subprocess.run(
@@ -201,6 +254,17 @@ class GeminiCLIProvider(CodexCLIProvider):
     default_output_flag = None
     default_prompt_flag = "-p"
 
+    def _effort_args(self, effort: str) -> list[str]:
+        """Return an empty fragment: the Gemini CLI has no effort flag.
+
+        Args:
+            effort: Ignored.
+
+        Returns:
+            An empty list.
+        """
+        return []
+
 
 class ClaudeCodeCLIProvider(CodexCLIProvider):
     """Invokes the Claude CLI via subprocess and returns its stdout."""
@@ -211,6 +275,17 @@ class ClaudeCodeCLIProvider(CodexCLIProvider):
     default_model_flag = None
     default_output_flag = None
     default_prompt_flag = "-p"
+
+    def _effort_args(self, effort: str) -> list[str]:
+        """Return the Claude CLI's effort fragment.
+
+        Args:
+            effort: The reasoning-effort level to request.
+
+        Returns:
+            ``["--effort", effort]``.
+        """
+        return ["--effort", effort]
 
 
 def _parse_json_payload(stdout: str) -> dict[str, Any]:

@@ -1,7 +1,8 @@
 ﻿"""Doctor CLI - config validation, environment diagnostics, and source export.
 
 Commands:
-    lee-llm-router doctor --config <path> [--role <role>]
+    lee-llm-router doctor --config <path> [--role <role>] [--crews]
+    lee-llm-router crews list [--crews-file <path>] [--json]
     lee-llm-router template
     lee-llm-router trace --last N
     lee-llm-router export-source --dest <path> [--force]
@@ -17,6 +18,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 MANIFEST_NAME = ".lee_llm_router_export.json"
 
@@ -199,9 +201,226 @@ def _get_git_commit(repo_root: Path) -> str | None:
     return commit or None
 
 
+GOVERNED_HARNESSES: tuple[str, ...] = (
+    "codex_cli",
+    "claude_code",
+    "claude_code_cli",
+    "omp_cli",
+    "opencode_cli",
+    "antigravity_cli",
+)
+"""Harness identifiers a crew's governed route may name."""
+
+
+def _first_sentence(text: str) -> str:
+    """Return the first sentence of a description, collapsed to one line."""
+    collapsed = " ".join(text.split())
+    if not collapsed:
+        return ""
+    head, sep, _ = collapsed.partition(". ")
+    return head + ("." if sep else "")
+
+
+def check_crews(
+    crews_file: str | None = None,
+) -> tuple[list[str], list[str], int, int, int]:
+    """Resolve every worker declared in the crews file, not only stage refs.
+
+    Every entry of the top-level ``workers`` map is resolved, so a malformed
+    worker is reported even when no crew stage references it. A worker whose
+    resolved model is forbidden (see
+    :func:`lee_llm_router.crews.is_forbidden`) is reported as a warning rather
+    than an error: the crews file is Auto-Orch's, not ours, and it currently
+    declares such a worker.
+
+    Args:
+        crews_file: Explicit crews file path, or None to use the default.
+
+    Returns:
+        ``(errors, warnings, crew_count, resolved_worker_count,
+        total_worker_count)``.
+    """
+    from lee_llm_router.crews import (
+        CrewsConfigError,
+        is_forbidden,
+        load_crews,
+        resolve_worker,
+    )
+
+    try:
+        crews_config = load_crews(crews_file)
+    except CrewsConfigError as exc:
+        return [f"Crews invalid: {exc}"], [], 0, 0, 0
+
+    errors: list[str] = []
+    warnings: list[str] = []
+    resolved: set[str] = set()
+
+    for worker_id, worker in crews_config.workers.items():
+        try:
+            resolved_worker = resolve_worker(worker)
+        except CrewsConfigError as exc:
+            errors.append(f"Worker {worker_id!r}: {exc}")
+            continue
+        resolved.add(worker_id)
+        if is_forbidden(resolved_worker.model):
+            warnings.append(
+                f"Worker {worker_id!r} resolves to forbidden model "
+                f"{resolved_worker.model!r}; the resolver must never choose it"
+            )
+
+    for crew in crews_config.crews.values():
+        for stage in crew.stages.values():
+            for worker_id in stage.workers:
+                worker = crews_config.workers.get(worker_id)
+                if worker is None:
+                    errors.append(
+                        f"Crew {crew.name!r} stage {stage.name!r}: unknown worker "
+                        f"{worker_id!r}"
+                    )
+                    continue
+                if worker_id not in resolved:
+                    errors.append(
+                        f"Crew {crew.name!r} stage {stage.name!r}: worker "
+                        f"{worker_id!r} could not be resolved"
+                    )
+        for route in crew.governed.values():
+            if route.harness not in GOVERNED_HARNESSES:
+                errors.append(
+                    f"Crew {crew.name!r} governed role {route.role!r}: unknown "
+                    f"harness {route.harness!r} (known: "
+                    f"{', '.join(GOVERNED_HARNESSES)})"
+                )
+
+    return (
+        errors,
+        warnings,
+        len(crews_config.crews),
+        len(resolved),
+        len(crews_config.workers),
+    )
+
+
+def crews_summary(crews_file: str | None = None) -> list[dict[str, Any]]:
+    """Build a JSON-serialisable summary of every crew.
+
+    Args:
+        crews_file: Explicit crews file path, or None to use the default.
+
+    Returns:
+        One entry per crew, with resolved stage workers and governed routes.
+    """
+    from lee_llm_router.crews import STAGE_NAMES, load_crews, resolve_worker
+
+    crews_config = load_crews(crews_file)
+    summary: list[dict[str, Any]] = []
+    for crew in crews_config.crews.values():
+        stages: dict[str, Any] = {}
+        for stage_name in STAGE_NAMES:
+            stage = crew.stages.get(stage_name)
+            if stage is None:
+                continue
+            worker = crews_config.workers[stage.primary]
+            resolved = resolve_worker(worker)
+            stages[stage_name] = {
+                "worker_id": resolved.worker_id,
+                "provider": resolved.provider,
+                "model": resolved.model,
+                "effort": resolved.effort,
+                "eligible": list(stage.workers),
+            }
+        summary.append(
+            {
+                "name": crew.name,
+                "description": _first_sentence(crew.description),
+                "stages": stages,
+                "governed": {
+                    role: {
+                        "harness": route.harness,
+                        "model": route.model,
+                        "effort": route.effort,
+                    }
+                    for role, route in crew.governed.items()
+                },
+            }
+        )
+    return summary
+
+
+def _format_crew(entry: dict[str, Any]) -> list[str]:
+    """Render one crew summary entry as plain-text lines."""
+    lines = [f"{entry['name']} — {entry['description']}".rstrip(" —")]
+    for stage_name, stage in entry["stages"].items():
+        model = stage["model"]
+        if stage["effort"]:
+            model = f"{model}/{stage['effort']}"
+        lines.append(
+            f"  {stage_name}: {stage['worker_id']} ({stage['provider']} {model})"
+        )
+    governed = entry["governed"]
+    if governed:
+        parts = []
+        for role, route in governed.items():
+            target = route["harness"]
+            if route["model"]:
+                target = f"{target}/{route['model']}"
+            if route["effort"]:
+                target = f"{target}/{route['effort']}"
+            parts.append(f"{role}={target}")
+        lines.append("  governed: " + ", ".join(parts))
+    return lines
+
+
+def _run_crews_list(args: argparse.Namespace) -> int:
+    from lee_llm_router.crews import CrewsConfigError
+
+    try:
+        summary = crews_summary(getattr(args, "crews_file", None))
+    except CrewsConfigError as exc:
+        print(f"Crews invalid: {exc}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(summary, indent=2))
+        return 0
+
+    for entry in summary:
+        for line in _format_crew(entry):
+            print(line)
+    return 0
+
+
 def _run_doctor(args: argparse.Namespace) -> int:
     config_path = args.config
     role = getattr(args, "role", None)
+
+    if getattr(args, "crews", False):
+        (
+            crew_errors,
+            crew_warnings,
+            crew_count,
+            worker_count,
+            total_workers,
+        ) = check_crews(getattr(args, "crews_file", None))
+        for warning in crew_warnings:
+            print(f"  !  {warning}")
+        for error in crew_errors:
+            print(f"  x  {error}", file=sys.stderr)
+        if crew_errors:
+            print(f"\nStatus: {len(crew_errors)} crews error(s) found", file=sys.stderr)
+            return 1
+        print(
+            f"OK crews: {crew_count} crews, "
+            f"{worker_count}/{total_workers} workers resolved, "
+            f"{len(crew_warnings)} forbidden-model warning(s)"
+        )
+        if config_path is None:
+            return 0
+        print()
+
+    if config_path is None:
+        print("doctor requires --config (or --crews)", file=sys.stderr)
+        return 1
 
     print("Lee LLM Router Doctor")
     print(f"Config: {config_path}")
@@ -299,16 +518,50 @@ def main(argv: list[str] | None = None) -> None:
     )
     doctor_parser.add_argument(
         "--config",
-        required=True,
         metavar="PATH",
-        help="Path to config YAML",
+        default=None,
+        help="Path to config YAML (optional when --crews is given)",
     )
     doctor_parser.add_argument(
         "--role",
         metavar="ROLE",
         help="Role to dry-run (default: config.default_role)",
     )
+    doctor_parser.add_argument(
+        "--crews",
+        action="store_true",
+        help="Also resolve every worker referenced by every crew",
+    )
+    doctor_parser.add_argument(
+        "--crews-file",
+        metavar="PATH",
+        default=None,
+        help="Path to the crews YAML (default: the Auto-Orch crews file)",
+    )
     doctor_parser.set_defaults(func=_run_doctor)
+
+    crews_parser = subparsers.add_parser(
+        "crews",
+        help="Inspect the Auto-Orch crews file",
+    )
+    crews_sub = crews_parser.add_subparsers(dest="crews_command", metavar="SUBCOMMAND")
+    crews_sub.required = True
+    crews_list_parser = crews_sub.add_parser(
+        "list",
+        help="List crews, their stage workers, and their governed routes",
+    )
+    crews_list_parser.add_argument(
+        "--crews-file",
+        metavar="PATH",
+        default=None,
+        help="Path to the crews YAML (default: the Auto-Orch crews file)",
+    )
+    crews_list_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a JSON array instead of plain text",
+    )
+    crews_list_parser.set_defaults(func=_run_crews_list)
 
     template_parser = subparsers.add_parser(
         "template",

@@ -17,9 +17,9 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import asdict, dataclass, field
+from dataclasses import field as _field
 from datetime import datetime, timezone
 from pathlib import Path
-from dataclasses import field as _field
 from typing import Any, Protocol, runtime_checkable
 
 from lee_llm_router.providers.base import LLMRouterError

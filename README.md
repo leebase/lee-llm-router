@@ -104,6 +104,21 @@ lee-llm-router template > config/llm.yaml
 lee-llm-router trace --last 5
 ```
 
+### Crews
+
+```bash
+lee-llm-router crews list
+lee-llm-router crews list --crews-file /path/to/crews.yaml --json
+lee-llm-router doctor --crews
+```
+
+`crews list` prints each crew's stage workers with the router provider, model,
+and effort each resolves to, plus its governed routes. `doctor --crews` resolves
+every worker referenced by every crew (and checks governed harness names),
+printing `OK crews: N crews, M workers resolved` or exiting 1 with the failures.
+`--config` is optional when `--crews` is given. See
+[docs/config.md](docs/config.md#crews).
+
 ### Export Source
 
 ```bash

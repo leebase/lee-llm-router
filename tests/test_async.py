@@ -355,3 +355,60 @@ def test_trace_cli_empty_directory(tmp_path: Path, capsys):
         main(["trace", "--last", "5", "--dir", str(trace_dir)])
     assert exc_info.value.code == 0
     assert "No traces found" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# allow_fallback=False — strict routing never substitutes a provider (H1)
+# ---------------------------------------------------------------------------
+
+
+class _StrictPolicy:
+    """Test policy that names 'mock' and forbids the role's fallback chain."""
+
+    def choose(self, role, config):
+        from lee_llm_router.policy import ProviderChoice
+
+        return ProviderChoice(provider_name="mock", allow_fallback=False)
+
+
+def test_strict_choice_does_not_use_role_fallback_sync(tmp_path: Path):
+    """allow_fallback=False: the primary failure raises, no fallback call."""
+    config = make_config(fallback_providers=["mock2"])
+    router = LLMRouter(config, trace_dir=tmp_path, policy=_StrictPolicy())
+
+    calls: list[str] = []
+
+    def _complete(self, request, cfg):
+        calls.append("call")
+        raise LLMRouterError("rate limited", failure_type=FailureType.RATE_LIMIT)
+
+    with patch("lee_llm_router.providers.mock.MockProvider.complete", _complete):
+        with pytest.raises(LLMRouterError) as exc_info:
+            router.complete("test", [{"role": "user", "content": "hi"}])
+
+    assert exc_info.value.failure_type == FailureType.RATE_LIMIT
+    assert len(calls) == 1  # only the crew's named worker was attempted
+
+
+def test_strict_choice_does_not_use_role_fallback_async(tmp_path: Path):
+    """Async path honours allow_fallback=False identically."""
+    config = make_config(fallback_providers=["mock2"])
+    router = LLMRouter(config, trace_dir=tmp_path, policy=_StrictPolicy())
+
+    calls: list[str] = []
+
+    async def _complete_async(self, request, cfg):
+        calls.append("call")
+        raise LLMRouterError("timed out", failure_type=FailureType.TIMEOUT)
+
+    with patch(
+        "lee_llm_router.providers.mock.MockProvider.complete_async",
+        _complete_async,
+    ):
+        with pytest.raises(LLMRouterError) as exc_info:
+            asyncio.run(
+                router.complete_async("test", [{"role": "user", "content": "hi"}])
+            )
+
+    assert exc_info.value.failure_type == FailureType.TIMEOUT
+    assert len(calls) == 1

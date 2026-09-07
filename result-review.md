@@ -6,6 +6,25 @@
 
 ---
 
+## 2026-09-07 - Crew Resolver Sprint 1: Crews as a Routing Policy
+
+**What was built:** `crews.py` loads Auto-Orch's `crews.yaml` (env `LEE_LLM_ROUTER_CREWS_FILE`, default `~/projects/auto-orch/config/crews.yaml`) into typed `Crew`/`Stage`/`Worker` objects, accepting single-worker and ordered-list stages, and resolves each worker id to a router provider/model/effort by parsing the worker command (CODEX/CLAUDE/OMP/OPENCODE/ANTIGRAVITY prefixes). `CrewRoutingPolicy` implements strict mode (named worker, `allow_fallback=False`, effort threaded via new `LLMRequest.effort`). New `opencode_cli` and `antigravity_cli` providers; `build_command` dispatch templates on omp/codex/claude/gemini/opencode/antigravity. CLI: `crews list [--json]` and `doctor --crews`.
+
+**Why it matters:** First slice of the crew-aware worker resolver (Chief of Staff D187). Crews are now a routing policy inside the router without forking Auto-Orch's authority file, and the never-automatic / forbidden-model constants are in place for Sprint 3 enforcement.
+
+**Review:** Sol Low (Codex, read-only). Round 1 FAIL (4 High, 1 Medium: fallback inheritance, dropped effort, missing OMP prefix, missing dispatch template on omp/codex, partial doctor coverage). All repaired. Round 2 PASS, no findings. Ledger: `docs/crew-resolver/execution-log.md`.
+
+**How to Verify**
+
+```bash
+PYTHONPATH=src .venv/bin/python -m pytest -q            # 193 passed
+.venv/bin/black --check src && .venv/bin/ruff check src
+PYTHONPATH=src .venv/bin/python -m lee_llm_router.doctor crews list
+PYTHONPATH=src .venv/bin/python -m lee_llm_router.doctor doctor --crews   # 14 crews, 23/23 workers, 1 warning
+```
+
+---
+
 ## 2026-03-29 - Sprint 7 Follow-Up: Documentation Sweep
 
 **What was built:** Swept the public docs after the Sprint 7 implementation and review-fix passes to ensure the published behavior matches the shipped pi harness contract. Updated the config schema docs to state that `default_role` must reference an existing role and that `model_flag` / `output_flag` can be set to `null` to disable default CLI flags. Expanded the LLM coder guide with a pi-style subprocess harness example and clarified what `doctor` validates for `codex_cli` roles.

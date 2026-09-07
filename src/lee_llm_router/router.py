@@ -1,7 +1,8 @@
 """LLMRouter facade.
 
 Flow: resolve role → policy.choose → build LLMRequest → compress →
-      invoke provider → (fallback chain) → record telemetry → trace_store.write → return/raise.
+      invoke provider → (fallback chain) → record telemetry →
+      trace_store.write → return/raise.
 """
 
 from __future__ import annotations
@@ -81,6 +82,7 @@ class LLMRouter:
             json_mode=bool(overrides.get("json_mode", role_cfg.json_mode)),
             max_tokens=overrides.get("max_tokens", role_cfg.max_tokens),
             timeout=float(overrides.get("timeout", role_cfg.timeout)),
+            effort=overrides.get("effort"),
             workspace=self.workspace,
         )
 
@@ -163,7 +165,9 @@ class LLMRouter:
 
         self._log_policy_choice(request, role, choice.provider_name)
 
-        providers_to_try = [choice.provider_name] + list(role_cfg.fallback_providers)
+        providers_to_try = [choice.provider_name]
+        if getattr(choice, "allow_fallback", True):
+            providers_to_try += list(role_cfg.fallback_providers)
         last_error: LLMRouterError | None = None
 
         for attempt, pname in enumerate(providers_to_try):
@@ -250,7 +254,9 @@ class LLMRouter:
 
         self._log_policy_choice(request, role, choice.provider_name)
 
-        providers_to_try = [choice.provider_name] + list(role_cfg.fallback_providers)
+        providers_to_try = [choice.provider_name]
+        if getattr(choice, "allow_fallback", True):
+            providers_to_try += list(role_cfg.fallback_providers)
         last_error: LLMRouterError | None = None
 
         for attempt, pname in enumerate(providers_to_try):

@@ -29,6 +29,38 @@ class OmpCLIProvider:
                 failure_type=FailureType.PROVIDER_ERROR,
             )
 
+    def build_command(
+        self,
+        config: dict[str, Any],
+        model: str | None = None,
+        effort: str | None = None,
+    ) -> list[str]:
+        """Return the dispatch command template as an argv list.
+
+        The prompt is delivered on stdin, so the argv list carries no prompt
+        placeholder. The omp harness exposes no reasoning-effort flag, so
+        ``effort`` is accepted for interface parity and ignored.
+
+        Args:
+            config: Provider configuration mapping.
+            model: Optional model override; falls back to ``config['model']``.
+            effort: Accepted for interface parity; omp has no effort flag.
+
+        Returns:
+            The argv list for the omp CLI invocation.
+
+        Raises:
+            LLMRouterError: If the config is invalid.
+        """
+        self.validate_config(config)
+        command = config.get("command", self.default_command)
+        resolved_model = model or config.get("model", "")
+
+        cmd = [command, "-p"]
+        if resolved_model:
+            cmd.extend(["--model", resolved_model])
+        return cmd
+
     def complete(self, request: LLMRequest, config: dict[str, Any]) -> LLMResponse:
         self.validate_config(config)
 
@@ -46,9 +78,9 @@ class OmpCLIProvider:
             prompt = f"{system_prompt}\n\n{prompt}"
 
         model = request.model or config.get("model", "")
-        cmd = [command, "-p"]
-        if model:
-            cmd.extend(["--model", model])
+        cmd = self.build_command(
+            config, model=request.model or None, effort=request.effort
+        )
 
         try:
             result = subprocess.run(
@@ -87,7 +119,12 @@ class OmpCLIProvider:
 
         return LLMResponse(
             text=text,
-            raw={"stdout": result.stdout, "stderr": result.stderr, "returncode": result.returncode, "command": cmd},
+            raw={
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "returncode": result.returncode,
+                "command": cmd,
+            },
             usage=LLMUsage(),
             request_id=request.request_id,
             model=request.model or model,

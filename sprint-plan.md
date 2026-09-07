@@ -135,3 +135,9 @@ PYTHONPATH=src /Users/lee/projects/lee-llm-router/.venv/bin/python -m lee_llm_ro
 1. Resume downstream migration work now that the pi harness path is proven reliable
 2. Decide whether to add optional doctor smoke execution for CLI harness roles
 3. Reassess broader harness-aware planning from the stable pi harness baseline
+
+## 2026-09-07 — Crew-aware worker resolver (Sprint 8 lane)
+
+New lane authorized by Chief of Staff decision D187. Plan lives at
+`docs/crew-resolver/sprint-plan.md` (six sprints, its own numbering). Start there after a
+context reset.

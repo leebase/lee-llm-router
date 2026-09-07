@@ -265,3 +265,69 @@ def test_public_api_imports():
         LLMRouterError,
         load_config,
     )
+
+
+# ---------------------------------------------------------------------------
+# Effort threading (H2)
+# ---------------------------------------------------------------------------
+
+
+class _EffortPolicy:
+    """Test policy that injects an ``effort`` request override."""
+
+    def choose(self, role, config):
+        return ProviderChoice(
+            provider_name="mock",
+            request_overrides={"model": "mock-model", "effort": "high"},
+        )
+
+
+def test_policy_effort_reaches_the_provider_request(mock_config, tmp_path):
+    """A policy's effort override lands on LLMRequest.effort, not dropped."""
+    seen: list[str | None] = []
+
+    def _complete(self, request, cfg):
+        seen.append(request.effort)
+        return LLMResponse(
+            text="ok", provider="mock", model="mock-model", usage=LLMUsage()
+        )
+
+    router = LLMRouter(mock_config, trace_dir=tmp_path, policy=_EffortPolicy())
+    with patch("lee_llm_router.providers.mock.MockProvider.complete", _complete):
+        router.complete("test", MESSAGES)
+
+    assert seen == ["high"]
+
+
+def test_call_override_beats_policy_effort(mock_config, tmp_path):
+    """A per-call effort override wins over the policy's effort."""
+    seen: list[str | None] = []
+
+    def _complete(self, request, cfg):
+        seen.append(request.effort)
+        return LLMResponse(
+            text="ok", provider="mock", model="mock-model", usage=LLMUsage()
+        )
+
+    router = LLMRouter(mock_config, trace_dir=tmp_path, policy=_EffortPolicy())
+    with patch("lee_llm_router.providers.mock.MockProvider.complete", _complete):
+        router.complete("test", MESSAGES, effort="low")
+
+    assert seen == ["low"]
+
+
+def test_request_effort_defaults_to_none(mock_config, tmp_path):
+    """Without an override, LLMRequest.effort stays None."""
+    seen: list[str | None] = []
+
+    def _complete(self, request, cfg):
+        seen.append(request.effort)
+        return LLMResponse(
+            text="ok", provider="mock", model="mock-model", usage=LLMUsage()
+        )
+
+    router = LLMRouter(mock_config, trace_dir=tmp_path)
+    with patch("lee_llm_router.providers.mock.MockProvider.complete", _complete):
+        router.complete("test", MESSAGES)
+
+    assert seen == [None]

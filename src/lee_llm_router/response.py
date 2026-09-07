@@ -18,6 +18,7 @@ class LLMRequest:
     json_mode: bool = False
     max_tokens: int | None = None
     timeout: float = 60.0
+    effort: str | None = None
     schema: dict[str, Any] | None = None
     request_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     workspace: str | None = None

@@ -599,11 +599,15 @@ def test_gemini_cli_provider_defaults_and_prompt_flag():
     from lee_llm_router.providers.codex_cli import GeminiCLIProvider
 
     provider = GeminiCLIProvider()
-    request = make_request(model="gemini-2.5-pro", messages=[{"role": "user", "content": "hello"}])
+    request = make_request(
+        model="gemini-2.5-pro", messages=[{"role": "user", "content": "hello"}]
+    )
 
     with patch(
         "subprocess.run",
-        return_value=subprocess.CompletedProcess(["gemini", "-p", "hello"], 0, "ok", ""),
+        return_value=subprocess.CompletedProcess(
+            ["gemini", "-p", "hello"], 0, "ok", ""
+        ),
     ) as mock_run:
         response = provider.complete(request, {})
 
@@ -625,7 +629,9 @@ def test_claude_code_cli_provider_defaults_and_prompt_flag():
 
     with patch(
         "subprocess.run",
-        return_value=subprocess.CompletedProcess(["claude", "-p", "hello"], 0, "ok", ""),
+        return_value=subprocess.CompletedProcess(
+            ["claude", "-p", "hello"], 0, "ok", ""
+        ),
     ) as mock_run:
         response = provider.complete(request, {"command": "claude"})
 
@@ -657,3 +663,532 @@ def test_llm_router_error_carries_failure_type():
     err = LLMRouterError("something failed", failure_type=FailureType.PROVIDER_ERROR)
     assert err.failure_type == FailureType.PROVIDER_ERROR
     assert "something failed" in str(err)
+
+
+# ---------------------------------------------------------------------------
+# OpenCodeCLIProvider
+# ---------------------------------------------------------------------------
+
+OPENCODE_CONFIG = {"model": "opencode-go/deepseek-v4-flash"}
+
+
+def _opencode_provider():
+    from lee_llm_router.providers.opencode_cli import OpenCodeCLIProvider
+
+    return OpenCodeCLIProvider()
+
+
+def test_opencode_validate_config_accepts_minimal_and_full_config():
+    provider = _opencode_provider()
+
+    provider.validate_config(dict(OPENCODE_CONFIG))
+    provider.validate_config(
+        {
+            "command": "/usr/local/bin/opencode",
+            "model": "opencode-go/deepseek-v4-flash",
+            "agent": "build",
+            "timeout": 45,
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {},
+        {"model": ""},
+        {"model": "deepseek-v4-flash"},
+        {"model": "a/b/c"},
+        {"model": "opencode-go/deepseek-v4-flash", "command": ""},
+        {"model": "opencode-go/deepseek-v4-flash", "agent": ""},
+        {"model": "opencode-go/deepseek-v4-flash", "timeout": "soon"},
+    ],
+)
+def test_opencode_validate_config_rejects_invalid(config):
+    provider = _opencode_provider()
+
+    with pytest.raises(LLMRouterError) as exc:
+        provider.validate_config(config)
+    assert exc.value.failure_type == FailureType.PROVIDER_ERROR
+
+
+def test_opencode_build_command_exact_argv():
+    provider = _opencode_provider()
+
+    assert provider.build_command(dict(OPENCODE_CONFIG)) == [
+        "opencode",
+        "run",
+        "-m",
+        "opencode-go/deepseek-v4-flash",
+        "{prompt}",
+    ]
+
+
+def test_opencode_build_command_with_agent_and_model_override():
+    provider = _opencode_provider()
+
+    cmd = provider.build_command(
+        {"command": "oc", "model": "opencode-go/deepseek-v4-flash", "agent": "build"},
+        model="openrouter/glm-5.3-flash",
+    )
+    assert cmd == [
+        "oc",
+        "run",
+        "-m",
+        "openrouter/glm-5.3-flash",
+        "--agent",
+        "build",
+        "{prompt}",
+    ]
+
+
+def test_opencode_build_command_rejects_bad_model_override():
+    provider = _opencode_provider()
+
+    with pytest.raises(LLMRouterError) as exc:
+        provider.build_command(dict(OPENCODE_CONFIG), model="nope")
+    assert exc.value.failure_type == FailureType.PROVIDER_ERROR
+
+
+def test_opencode_complete_success_substitutes_prompt():
+    provider = _opencode_provider()
+    request = make_request(
+        model="opencode-go/deepseek-v4-flash",
+        messages=[{"role": "user", "content": "hello"}],
+    )
+
+    with patch(
+        "subprocess.run",
+        return_value=subprocess.CompletedProcess([], 0, "  answer  ", ""),
+    ) as mock_run:
+        response = provider.complete(request, dict(OPENCODE_CONFIG))
+
+    assert mock_run.call_args.args[0] == [
+        "opencode",
+        "run",
+        "-m",
+        "opencode-go/deepseek-v4-flash",
+        "hello",
+    ]
+    assert "input" not in mock_run.call_args.kwargs
+    assert response.text == "answer"
+    assert response.provider == "opencode_cli"
+    assert response.model == "opencode-go/deepseek-v4-flash"
+
+
+def test_opencode_complete_timeout_is_typed_timeout():
+    provider = _opencode_provider()
+    request = make_request(model="", messages=[{"role": "user", "content": "hello"}])
+
+    with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("opencode", 1)):
+        with pytest.raises(LLMRouterError) as exc:
+            provider.complete(request, dict(OPENCODE_CONFIG))
+
+    assert exc.value.failure_type == FailureType.TIMEOUT
+
+
+def test_opencode_complete_nonzero_exit_is_provider_error():
+    provider = _opencode_provider()
+    request = make_request(model="", messages=[{"role": "user", "content": "hello"}])
+
+    with patch(
+        "subprocess.run",
+        return_value=subprocess.CompletedProcess([], 2, "", "boom"),
+    ):
+        with pytest.raises(LLMRouterError) as exc:
+            provider.complete(request, dict(OPENCODE_CONFIG))
+
+    assert exc.value.failure_type == FailureType.PROVIDER_ERROR
+    assert "boom" in str(exc.value)
+
+
+def test_opencode_complete_missing_binary_is_provider_error():
+    provider = _opencode_provider()
+    request = make_request(model="", messages=[{"role": "user", "content": "hello"}])
+
+    with patch("subprocess.run", side_effect=FileNotFoundError("opencode")):
+        with pytest.raises(LLMRouterError) as exc:
+            provider.complete(request, dict(OPENCODE_CONFIG))
+
+    assert exc.value.failure_type == FailureType.PROVIDER_ERROR
+
+
+def test_opencode_complete_with_fake_script(tmp_path):
+    provider = _opencode_provider()
+    script = tmp_path / "fake_opencode.py"
+    script.write_text("import sys\nprint('from-fake:' + sys.argv[-1])\n")
+    request = make_request(model="", messages=[{"role": "user", "content": "ping"}])
+
+    config = {"command": sys.executable, "model": "opencode-go/deepseek-v4-flash"}
+    with patch.object(
+        provider,
+        "build_command",
+        return_value=[sys.executable, str(script), "{prompt}"],
+    ):
+        response = provider.complete(request, config)
+
+    assert response.text == "from-fake:ping"
+
+
+def test_opencode_complete_request_model_overrides_config():
+    provider = _opencode_provider()
+    request = make_request(
+        model="openrouter/glm-5.3-flash",
+        messages=[{"role": "user", "content": "hello"}],
+    )
+
+    with patch(
+        "subprocess.run",
+        return_value=subprocess.CompletedProcess([], 0, "ok", ""),
+    ) as mock_run:
+        response = provider.complete(request, dict(OPENCODE_CONFIG))
+
+    assert mock_run.call_args.args[0][3] == "openrouter/glm-5.3-flash"
+    assert response.model == "openrouter/glm-5.3-flash"
+
+
+def test_opencode_registry_lookup_by_name_and_alias():
+    from lee_llm_router.providers.opencode_cli import OpenCodeCLIProvider
+
+    assert get("opencode_cli") is OpenCodeCLIProvider
+    assert get("opencode") is OpenCodeCLIProvider
+
+
+# ---------------------------------------------------------------------------
+# AntigravityCLIProvider
+# ---------------------------------------------------------------------------
+
+AGY_CONFIG = {"model": "gemini-3.7-flash"}
+
+
+def _antigravity_provider():
+    from lee_llm_router.providers.antigravity_cli import AntigravityCLIProvider
+
+    return AntigravityCLIProvider()
+
+
+def test_antigravity_validate_config_accepts_minimal_and_full_config():
+    provider = _antigravity_provider()
+
+    provider.validate_config(dict(AGY_CONFIG))
+    provider.validate_config(
+        {
+            "command": "/usr/local/bin/agy",
+            "model": "gemini-3.7-flash",
+            "effort": "high",
+            "timeout": 300,
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {},
+        {"model": ""},
+        {"model": 123},
+        {"model": "gemini-3.7-flash", "command": ""},
+        {"model": "gemini-3.7-flash", "effort": "extreme"},
+        {"model": "gemini-3.7-flash", "effort": 3},
+        {"model": "gemini-3.7-flash", "timeout": "soon"},
+    ],
+)
+def test_antigravity_validate_config_rejects_invalid(config):
+    provider = _antigravity_provider()
+
+    with pytest.raises(LLMRouterError) as exc:
+        provider.validate_config(config)
+    assert exc.value.failure_type == FailureType.PROVIDER_ERROR
+
+
+def test_antigravity_build_command_exact_argv():
+    provider = _antigravity_provider()
+
+    assert provider.build_command(dict(AGY_CONFIG)) == [
+        "agy",
+        "-p",
+        "--model",
+        "gemini-3.7-flash",
+        "--dangerously-skip-permissions",
+    ]
+
+
+def test_antigravity_build_command_with_effort_and_overrides():
+    provider = _antigravity_provider()
+
+    cmd = provider.build_command(
+        {"command": "agy", "model": "gemini-3.7-flash", "effort": "low"},
+        model="gemini-3.1-pro",
+        effort="high",
+    )
+    assert cmd == [
+        "agy",
+        "-p",
+        "--model",
+        "gemini-3.1-pro",
+        "--effort",
+        "high",
+        "--dangerously-skip-permissions",
+    ]
+
+
+def test_antigravity_build_command_rejects_bad_effort_override():
+    provider = _antigravity_provider()
+
+    with pytest.raises(LLMRouterError) as exc:
+        provider.build_command(dict(AGY_CONFIG), effort="ludicrous")
+    assert exc.value.failure_type == FailureType.PROVIDER_ERROR
+
+
+def test_antigravity_complete_success_sends_prompt_on_stdin():
+    provider = _antigravity_provider()
+    request = make_request(
+        model="gemini-3.7-flash",
+        messages=[
+            {"role": "system", "content": "be terse"},
+            {"role": "user", "content": "hello"},
+        ],
+    )
+
+    with patch(
+        "subprocess.run",
+        return_value=subprocess.CompletedProcess([], 0, "answer\n", ""),
+    ) as mock_run:
+        response = provider.complete(
+            request, {"model": "gemini-3.7-flash", "effort": "medium"}
+        )
+
+    assert mock_run.call_args.args[0] == [
+        "agy",
+        "-p",
+        "--model",
+        "gemini-3.7-flash",
+        "--effort",
+        "medium",
+        "--dangerously-skip-permissions",
+    ]
+    assert mock_run.call_args.kwargs["input"] == "be terse\n\nhello"
+    assert response.text == "answer"
+    assert response.provider == "antigravity_cli"
+
+
+def test_antigravity_complete_timeout_is_typed_timeout():
+    provider = _antigravity_provider()
+    request = make_request(messages=[{"role": "user", "content": "hello"}])
+
+    with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("agy", 1)):
+        with pytest.raises(LLMRouterError) as exc:
+            provider.complete(request, dict(AGY_CONFIG))
+
+    assert exc.value.failure_type == FailureType.TIMEOUT
+
+
+def test_antigravity_complete_nonzero_exit_is_provider_error():
+    provider = _antigravity_provider()
+    request = make_request(messages=[{"role": "user", "content": "hello"}])
+
+    with patch(
+        "subprocess.run",
+        return_value=subprocess.CompletedProcess([], 1, "", "kaboom"),
+    ):
+        with pytest.raises(LLMRouterError) as exc:
+            provider.complete(request, dict(AGY_CONFIG))
+
+    assert exc.value.failure_type == FailureType.PROVIDER_ERROR
+    assert "kaboom" in str(exc.value)
+
+
+def test_antigravity_complete_missing_binary_is_provider_error():
+    provider = _antigravity_provider()
+    request = make_request(messages=[{"role": "user", "content": "hello"}])
+
+    with patch("subprocess.run", side_effect=FileNotFoundError("agy")):
+        with pytest.raises(LLMRouterError) as exc:
+            provider.complete(request, dict(AGY_CONFIG))
+
+    assert exc.value.failure_type == FailureType.PROVIDER_ERROR
+
+
+def test_antigravity_complete_with_fake_script(tmp_path):
+    provider = _antigravity_provider()
+    script = tmp_path / "fake_agy.py"
+    script.write_text("import sys\nprint('stdin:' + sys.stdin.read().strip())\n")
+    request = make_request(messages=[{"role": "user", "content": "ping"}])
+
+    with patch.object(
+        provider,
+        "build_command",
+        return_value=[sys.executable, str(script)],
+    ):
+        response = provider.complete(request, dict(AGY_CONFIG))
+
+    assert response.text == "stdin:ping"
+
+
+def test_antigravity_registry_lookup_by_name_and_aliases():
+    from lee_llm_router.providers.antigravity_cli import AntigravityCLIProvider
+
+    assert get("antigravity_cli") is AntigravityCLIProvider
+    assert get("antigravity") is AntigravityCLIProvider
+    assert get("agy") is AntigravityCLIProvider
+
+
+# ---------------------------------------------------------------------------
+# Dispatch-command templates and effort flags (H2/H4)
+# ---------------------------------------------------------------------------
+
+
+def _omp_provider():
+    from lee_llm_router.providers.omp_cli import OmpCLIProvider
+
+    return OmpCLIProvider()
+
+
+def test_omp_build_command_exact_argv():
+    provider = _omp_provider()
+
+    assert provider.build_command({"model": "gemini-3.8-flash-high"}) == [
+        "omp",
+        "-p",
+        "--model",
+        "gemini-3.8-flash-high",
+    ]
+
+
+def test_omp_build_command_model_override_and_ignored_effort():
+    provider = _omp_provider()
+
+    cmd = provider.build_command(
+        {"command": "/usr/local/bin/omp", "model": "a"}, model="b", effort="high"
+    )
+
+    assert cmd == ["/usr/local/bin/omp", "-p", "--model", "b"]
+
+
+def test_omp_build_command_without_model_omits_flag():
+    provider = _omp_provider()
+
+    assert provider.build_command({}) == ["omp", "-p"]
+
+
+def test_omp_complete_uses_build_command():
+    provider = _omp_provider()
+    request = make_request(model="gemini-3.8-flash-high")
+
+    with patch(
+        "subprocess.run",
+        return_value=subprocess.CompletedProcess([], 0, "answer\n", ""),
+    ) as mock_run:
+        response = provider.complete(request, {"model": "ignored"})
+
+    assert mock_run.call_args.args[0] == provider.build_command(
+        {"model": "gemini-3.8-flash-high"}
+    )
+    assert response.text == "answer"
+
+
+def test_codex_build_command_exact_argv():
+    from lee_llm_router.providers.codex_cli import CodexCLIProvider
+
+    provider = CodexCLIProvider()
+
+    assert provider.build_command({"command": "codex"}, model="gpt-5.6-sol") == [
+        "codex",
+        "--model",
+        "gpt-5.6-sol",
+        "--output-last-message",
+        "{prompt}",
+    ]
+
+
+def test_codex_build_command_with_effort_uses_config_override_flag():
+    from lee_llm_router.providers.codex_cli import CodexCLIProvider
+
+    provider = CodexCLIProvider()
+
+    cmd = provider.build_command({}, model="gpt-5.6-sol", effort="high")
+
+    assert cmd == [
+        "codex",
+        "--model",
+        "gpt-5.6-sol",
+        "-c",
+        "model_reasoning_effort=high",
+        "--output-last-message",
+        "{prompt}",
+    ]
+
+
+def test_codex_build_command_without_effort_omits_flag():
+    from lee_llm_router.providers.codex_cli import CodexCLIProvider
+
+    provider = CodexCLIProvider()
+
+    cmd = provider.build_command({}, model="gpt-5.6-sol")
+
+    assert "-c" not in cmd
+    assert not any(part.startswith("model_reasoning_effort") for part in cmd)
+
+
+def test_codex_complete_passes_request_effort_to_argv():
+    from lee_llm_router.providers.codex_cli import CodexCLIProvider
+
+    provider = CodexCLIProvider()
+    request = make_request(model="gpt-5.6-sol", effort="high")
+
+    with patch(
+        "subprocess.run",
+        return_value=subprocess.CompletedProcess([], 0, "ok", ""),
+    ) as mock_run:
+        provider.complete(request, {"command": "codex"})
+
+    argv = mock_run.call_args.args[0]
+    assert argv[argv.index("-c") + 1] == "model_reasoning_effort=high"
+    assert argv[-1] == "hello"
+
+
+def test_claude_code_cli_effort_flag_is_its_own():
+    from lee_llm_router.providers.codex_cli import ClaudeCodeCLIProvider
+
+    provider = ClaudeCodeCLIProvider()
+
+    cmd = provider.build_command({"command": "claude"}, effort="high")
+
+    assert cmd == ["claude", "--effort", "high", "-p", "{prompt}"]
+
+
+def test_gemini_cli_has_no_effort_flag():
+    from lee_llm_router.providers.codex_cli import GeminiCLIProvider
+
+    provider = GeminiCLIProvider()
+
+    assert provider.build_command({}, effort="high") == ["gemini", "-p", "{prompt}"]
+
+
+def test_antigravity_complete_passes_request_effort():
+    provider = _antigravity_provider()
+    request = make_request(model="gemini-3.7-flash", effort="low")
+
+    with patch(
+        "subprocess.run",
+        return_value=subprocess.CompletedProcess([], 0, "ok", ""),
+    ) as mock_run:
+        provider.complete(request, {"model": "gemini-3.7-flash", "effort": "high"})
+
+    argv = mock_run.call_args.args[0]
+    assert argv[argv.index("--effort") + 1] == "low"
+
+
+def test_opencode_ignores_request_effort():
+    provider = _opencode_provider()
+    request = make_request(model="opencode-go/deepseek-v4-flash", effort="high")
+
+    with patch(
+        "subprocess.run",
+        return_value=subprocess.CompletedProcess([], 0, "ok", ""),
+    ) as mock_run:
+        provider.complete(request, dict(OPENCODE_CONFIG))
+
+    argv = mock_run.call_args.args[0]
+    assert "--effort" not in argv
+    assert "high" not in argv

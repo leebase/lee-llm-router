@@ -10,7 +10,7 @@
 |-----------|-------|
 | **Phase** | P4 complete; pi harness reliability shipped |
 | **Mode** | 2 (Implementation with approval) |
-| **Last Updated** | 2026-03-29 (Sprint 7 documentation sweep complete) |
+| **Last Updated** | 2026-09-07 (Crew Resolver Sprint 1 closed, review PASS) |
 
 ### Sprint Status
 | Sprint | Status | Completion |
@@ -22,12 +22,17 @@
 | Sprint 5 - Async, Fallbacks, Extended Telemetry | Done | 100% |
 | Sprint 6 - Vendored Source Snapshot Workflow | Done | 100% |
 | Sprint 7 - Pi Coding Harness Reliability and Harness Validation | Done | 100% |
+| Crew Resolver S1 - Crews as a routing policy (`docs/crew-resolver/sprint-plan.md`) | Done | 100% |
+| Crew Resolver S2 - Availability snapshot and hourly cron | Next | 0% |
 
 ---
 
 ## What's Happening Now
 
 ### Current Work Stream
+Crew-aware worker resolver lane (D187). Sprint 1 closed 2026-09-07 with an independent PASS; the diff is uncommitted pending Lee. Next is Sprint 2 (availability snapshot + refresh script). See `docs/crew-resolver/execution-log.md` and `needs-lee.md`.
+
+Prior stream:
 Sprint 7 is complete. The pi coding harness path now has a repo-local reproduction fixture, stricter CLI harness contract handling, explicit `doctor` validation, regression coverage, and a user-style verification path. No downstream migration work is executed from this repo now; downstream projects are handled separately.
 
 ### Recently Completed
@@ -84,8 +89,9 @@ Sprint 7 is complete. The pi coding harness path now has a repo-local reproducti
 
 | Rank | Action | Owner | Done When |
 |------|--------|-------|----------|
-| 1 | Decide whether to productize an optional doctor smoke-execution mode for CLI harness roles | Human + AI | We know whether runtime smoke tests should become part of the public CLI |
-| 2 | Reassess broader harness-aware planning as a separate sprint | Human + AI | Follow-on planning is grounded in a stable pi harness baseline |
+| 1 | Commit Crew Resolver Sprint 1, then run Sprint 2 (availability.py, refresh script, channel map) per `docs/crew-resolver/sprint-plan.md` | Lee (commit) + supervisor | Fixture snapshot drives every health state; real refresh run produces an accepted snapshot |
+| 2 | Decide whether to productize an optional doctor smoke-execution mode for CLI harness roles | Human + AI | We know whether runtime smoke tests should become part of the public CLI |
+| 3 | Reassess broader harness-aware planning as a separate sprint | Human + AI | Follow-on planning is grounded in a stable pi harness baseline |
 
 ---
 
