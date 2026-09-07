@@ -127,3 +127,4 @@ Packets: P5 `availability.py` reader/normalizer + tests. P6 channel map in `crew
 ## Sprint 2 review round 8 — Sol Low via `codex exec -s read-only` (detached)
 - **VERDICT: PASS** (one Low: `context.md` round count; fixed by supervisor at close). Sprint 2 closed 2026-09-07. Final: `pytest -q` 356 passed; black/ruff clean on src; real snapshot accepted; cron not installed.
 - Supervisor retrospective: three of the eight rounds traced to supervisor packet wording (prefer `written_at`; doctor with plain json; "same way" validation promise). Lesson for Sprint 3 packets: state fail-closed invariants as contracts, not implementation hints.
+- 2026-09-07 post-close: Lee installed the hourly cron on A8Max (PATH-prefixed; `$HOME` form replaced in docs since cron does not reliably set it). Supervisor ran the exact line under `env -i` with cron's PATH: exit 0, `doctor --availability` age 0 min.

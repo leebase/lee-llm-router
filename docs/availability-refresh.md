@@ -139,7 +139,7 @@ LEE_LLM_ROUTER_AVAILABILITY_FILE=/tmp/snap.json \
 ## Cron line (documented, not installed)
 
 ```cron
-7 * * * * /home/lee/projects/lee-llm-router/scripts/refresh_availability.sh >> $HOME/.local/state/lee-llm-router/availability/refresh.log 2>&1
+7 * * * * PATH=/home/lee/.local/bin:/usr/local/bin:/usr/bin:/bin /home/lee/projects/lee-llm-router/scripts/refresh_availability.sh >> /home/lee/.local/state/lee-llm-router/availability/refresh.log 2>&1
 ```
 
 Hourly at seven past, which keeps it clear of the top-of-hour crowd and well

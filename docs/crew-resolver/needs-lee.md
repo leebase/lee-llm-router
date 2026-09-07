@@ -10,7 +10,7 @@ Genuine human decisions only. Everything else was repaired and continued (D86/D8
 
 ## Open after Sprint 2 (2026-09-07)
 
-1. **Install the hourly refresh cron on A8Max** (Linux owns schedules, D121/D167). Line is in `docs/availability-refresh.md`. Until it runs, the snapshot ages past 90 minutes and every channel reads `unknown`, which Sprint 3's flex mode will treat as "no headroom evidence."
+1. ~~Install the hourly refresh cron on A8Max~~ **Done by Lee 2026-09-07** (`7 * * * *`, with explicit PATH so ai-subs can find codex/claude/agy). Supervisor verified by running the line under a cron-equivalent environment: exit 0, snapshot age 0 min.
 2. **Informational:** `WORKER_CHANNEL_OVERRIDES` is empty. If any crew ever runs a brokered Claude/GPT model through `agy`, pin that worker to `gemini-sub-thirdparty` so headroom is read off the right bucket. No such worker exists today.
 3. **Informational:** pace badges (HOT / TOO FAST) degrade a channel even at high remaining percent. Kept for Sprint 2 as "headroom is a veto"; Sprint 3 may separate pace from headroom if daily use shows over-vetoing.
 
