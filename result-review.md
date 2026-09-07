@@ -6,6 +6,25 @@
 
 ---
 
+## 2026-09-07 - Crew Resolver Sprint 2: Availability Snapshot and Refresh
+
+**What was built:** `availability.py` reads the `ai-subs` snapshot (`~/.local/state/lee-llm-router/availability/<host>.json`, env `LEE_LLM_ROUTER_AVAILABILITY_FILE`) and normalizes it to per-channel headroom (`healthy | degraded | likely_exhausted | exhausted | unknown`) across six funding channels (openai-sub, anthropic-sub, gemini-sub, gemini-sub-thirdparty, openrouter, opencode-go). Fail-closed: snapshots older than 90 minutes, future-skewed beyond 5 minutes, non-finite or out-of-range values, and malformed files all read as `unknown`, never `healthy`; the older of `observed_at`/`written_at` governs age. `crews.py` gains the worker → channel map (`PROVIDER_CHANNELS`, overrides). `scripts/refresh_availability.sh` runs ai-subs, validates, and writes the snapshot atomically; the hourly cron line is documented in `docs/availability-refresh.md`, not installed. `doctor --availability` renders the reader's verdict.
+
+**Why it matters:** "Start cheap, move up only if needed" requires knowing what is available now. This is the "who is actually available?" layer under Sprint 1's "who is allowed?"; Sprint 3's resolver reads it and never calls a provider CLI at decision time.
+
+**Review:** Sol Low (Codex, read-only). Rounds 1-7 FAIL, each finding repaired the same session (non-finite values, future skew, naive UTC, oldest-timestamp staleness, malformed-record fail-closed with the ai-subs badge vocabulary, unroutable Gemini buckets, script validation parity, a test time bomb, a misnamed test). Round 8 PASS (one Low, docs). 356 tests. Ledger: `docs/crew-resolver/execution-log.md`.
+
+**How to Verify**
+
+```bash
+PYTHONPATH=src .venv/bin/python -m pytest -q
+.venv/bin/black --check src && .venv/bin/ruff check src
+scripts/refresh_availability.sh --dry-run
+PYTHONPATH=src .venv/bin/python -m lee_llm_router.doctor doctor --availability --crews
+```
+
+---
+
 ## 2026-09-07 - Crew Resolver Sprint 1: Crews as a Routing Policy
 
 **What was built:** `crews.py` loads Auto-Orch's `crews.yaml` (env `LEE_LLM_ROUTER_CREWS_FILE`, default `~/projects/auto-orch/config/crews.yaml`) into typed `Crew`/`Stage`/`Worker` objects, accepting single-worker and ordered-list stages, and resolves each worker id to a router provider/model/effort by parsing the worker command (CODEX/CLAUDE/OMP/OPENCODE/ANTIGRAVITY prefixes). `CrewRoutingPolicy` implements strict mode (named worker, `allow_fallback=False`, effort threaded via new `LLMRequest.effort`). New `opencode_cli` and `antigravity_cli` providers; `build_command` dispatch templates on omp/codex/claude/gemini/opencode/antigravity. CLI: `crews list [--json]` and `doctor --crews`.

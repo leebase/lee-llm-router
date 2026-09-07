@@ -8,6 +8,12 @@ Genuine human decisions only. Everything else was repaired and continued (D86/D8
 - gemini-pro-crew: **not a resolver defect**; Auto-Orch policy decision, warning behavior stands. Not blocking.
 - Memory guard: **parked** as ops; setsid workaround sufficient.
 
+## Open after Sprint 2 (2026-09-07)
+
+1. **Install the hourly refresh cron on A8Max** (Linux owns schedules, D121/D167). Line is in `docs/availability-refresh.md`. Until it runs, the snapshot ages past 90 minutes and every channel reads `unknown`, which Sprint 3's flex mode will treat as "no headroom evidence."
+2. **Informational:** `WORKER_CHANNEL_OVERRIDES` is empty. If any crew ever runs a brokered Claude/GPT model through `agy`, pin that worker to `gemini-sub-thirdparty` so headroom is read off the right bucket. No such worker exists today.
+3. **Informational:** pace badges (HOT / TOO FAST) degrade a channel even at high remaining percent. Kept for Sprint 2 as "headroom is a veto"; Sprint 3 may separate pace from headroom if daily use shows over-vetoing.
+
 ## Open after Sprint 1 (2026-09-07) — historical
 
 1. **Commit Sprint 1.** The working tree holds the reviewed, passing Sprint 1 diff (193 tests, Black/Ruff clean, Sol Low review PASS on round 2). Suggested message: `feat(crew-resolver S1): crews policy, opencode/antigravity providers, crews list, doctor --crews`. No commit was made from the supervisor session.

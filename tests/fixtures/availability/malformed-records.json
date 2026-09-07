@@ -1,0 +1,16 @@
+{
+  "observed_at": "2026-09-07T12:00:00+00:00",
+  "source": "synthetic fixture",
+  "subscriptions": [
+    {
+      "provider": "OpenAI/Codex",
+      "status": "BANANA",
+      "remaining_pct": 90.0
+    },
+    {
+      "provider": "Anthropic/Claude",
+      "bucket": "Current session",
+      "remaining_pct": 95.0
+    }
+  ]
+}

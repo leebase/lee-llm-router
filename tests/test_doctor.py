@@ -504,3 +504,292 @@ def test_doctor_crews_forbidden_model_is_a_warning_not_an_error(tmp_path, capsys
     assert "gemini-3.1-pro" in captured.out
     assert "1/1 workers resolved, 1 forbidden-model warning(s)" in captured.out
     assert captured.err == ""
+
+
+AVAILABILITY_SUBSCRIPTIONS = [
+    {
+        "provider": "OpenAI/Codex",
+        "bucket": "Weekly limit",
+        "status": "HOT",
+        "remaining_pct": 48.0,
+    },
+    {
+        "provider": "Anthropic/Claude",
+        "bucket": "Current session",
+        "status": "COLD",
+        "remaining_pct": 73.0,
+    },
+]
+
+
+_SAME_AGE = object()
+"""Sentinel: ``observed_at`` ages exactly like ``written_at`` unless told otherwise."""
+
+
+def _write_snapshot(
+    tmp_path,
+    age_minutes: float | None = 5.0,
+    observed_age_minutes=_SAME_AGE,
+    now=None,
+    **overrides,
+):
+    """Write an availability snapshot whose timestamps are ``age_minutes`` old.
+
+    Both ``observed_at`` and ``written_at`` are stamped relative to ``now``
+    (default: the current UTC time), never to a hardcoded absolute date:
+    staleness is governed by the *older* of the two, so a frozen ``observed_at``
+    would quietly drift past the 90-minute ceiling as wall-clock time passes and
+    turn every "fresh snapshot" case into a stale one.
+
+    Args:
+        tmp_path: Directory to write ``A8Max.json`` into.
+        age_minutes: How many minutes old ``written_at`` is; a negative value
+            stamps it in the future, and ``None`` omits the key entirely.
+        observed_age_minutes: Same for ``observed_at``; defaults to
+            ``age_minutes`` so a "fresh" snapshot is fresh on both timestamps.
+        now: Reference time the ages are measured back from. Pin it and pass the
+            same value to the reader when a test asserts an exact age.
+        **overrides: Raw body keys written last, for malformed-input cases.
+
+    Returns:
+        The path of the snapshot written.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    moment = now or datetime.now(timezone.utc)
+    if observed_age_minutes is _SAME_AGE:
+        observed_age_minutes = age_minutes
+
+    def stamp(minutes: float) -> str:
+        return (moment - timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    body = {
+        "source": "live CLI integration",
+        "subscriptions": AVAILABILITY_SUBSCRIPTIONS,
+        "host": "A8Max",
+    }
+    if observed_age_minutes is not None:
+        body["observed_at"] = stamp(observed_age_minutes)
+    if age_minutes is not None:
+        body["written_at"] = stamp(age_minutes)
+    body.update(overrides)
+    path = tmp_path / "A8Max.json"
+    path.write_text(json.dumps(body), encoding="utf-8")
+    return path
+
+
+def _pinned_now():
+    """A single reference instant shared by a snapshot and the reader under test."""
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc)
+
+
+def test_check_availability_fresh_snapshot_is_clean(tmp_path):
+    from lee_llm_router.doctor import check_availability
+
+    now = _pinned_now()
+    path = _write_snapshot(tmp_path, now=now)
+
+    errors, warnings, details = check_availability(path, now=now)
+
+    assert errors == []
+    assert warnings == []
+    assert details["bucket_count"] == 2
+    assert details["age_minutes"] is not None
+    assert 0 < details["age_minutes"] < 90
+
+
+def test_check_availability_falls_back_to_observed_at(tmp_path):
+    from lee_llm_router.doctor import check_availability
+
+    now = _pinned_now()
+    path = _write_snapshot(
+        tmp_path, age_minutes=None, observed_age_minutes=3.0, now=now
+    )
+
+    errors, warnings, details = check_availability(path, now=now)
+
+    assert errors == []
+    assert warnings == []
+    assert details["written_at"] is None
+    assert details["age_minutes"] < 90
+
+
+def test_check_availability_ages_from_the_older_timestamp(tmp_path):
+    """A fresh ``written_at`` never rescues an observation past the ceiling."""
+    from lee_llm_router.doctor import check_availability
+
+    now = _pinned_now()
+    path = _write_snapshot(
+        tmp_path, age_minutes=1.0, observed_age_minutes=200.0, now=now
+    )
+
+    errors, warnings, details = check_availability(path, now=now)
+
+    assert errors == []
+    assert len(warnings) == 1
+    assert "observed_at is older than 90 minutes" in warnings[0]
+    assert details["age_minutes"] > 90
+
+
+def test_check_availability_future_timestamp_is_stale_not_ok(tmp_path):
+    from lee_llm_router.doctor import check_availability
+
+    now = _pinned_now()
+    path = _write_snapshot(tmp_path, age_minutes=-10.0, now=now)
+
+    errors, warnings, details = check_availability(path, now=now)
+
+    assert errors == []
+    assert len(warnings) == 1
+    assert "future" in warnings[0]
+    assert details["age_minutes"] < 0
+
+
+def test_check_availability_small_future_skew_is_fresh(tmp_path):
+    from lee_llm_router.doctor import check_availability
+
+    now = _pinned_now()
+    path = _write_snapshot(tmp_path, age_minutes=-1.0, now=now)
+
+    errors, warnings, _details = check_availability(path, now=now)
+
+    assert errors == []
+    assert warnings == []
+
+
+def test_check_availability_accepts_a_naive_now(tmp_path):
+    from datetime import datetime, timezone
+
+    from lee_llm_router.doctor import check_availability
+
+    path = _write_snapshot(tmp_path)
+    naive_now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    errors, warnings, details = check_availability(path, now=naive_now)
+
+    assert errors == []
+    assert warnings == []
+    assert details["age_minutes"] is not None
+
+
+def test_check_availability_reports_every_channel(tmp_path):
+    from lee_llm_router.availability import CHANNELS
+    from lee_llm_router.doctor import check_availability
+
+    _errors, _warnings, details = check_availability(_write_snapshot(tmp_path))
+
+    assert list(details["channels"]) == list(CHANNELS)
+
+
+def test_doctor_availability_fresh_exits_0(tmp_path, capsys):
+    from lee_llm_router.doctor import main
+
+    path = _write_snapshot(tmp_path)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["doctor", "--availability", "--availability-file", str(path)])
+    assert exc_info.value.code == 0
+
+    out = capsys.readouterr().out
+    assert "OK availability:" in out
+    assert str(path) in out
+    assert "2 buckets" in out
+    assert "  anthropic-sub: healthy" in out
+    assert sum(1 for line in out.splitlines() if line.startswith("  ")) == 6
+
+
+def test_doctor_availability_stale_warns_exit_0(tmp_path, capsys):
+    from lee_llm_router.doctor import main
+
+    path = _write_snapshot(tmp_path, age_minutes=200.0)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["doctor", "--availability", "--availability-file", str(path)])
+    assert exc_info.value.code == 0
+
+    out = capsys.readouterr().out
+    assert "stale" in out
+    assert "OK availability:" not in out
+
+
+def test_doctor_availability_future_timestamp_warns_exit_0(tmp_path, capsys):
+    from lee_llm_router.doctor import main
+
+    path = _write_snapshot(tmp_path, age_minutes=-10.0)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["doctor", "--availability", "--availability-file", str(path)])
+    assert exc_info.value.code == 0
+
+    out = capsys.readouterr().out
+    assert "future" in out
+    assert "OK availability:" not in out
+
+
+def test_doctor_availability_missing_warns_exit_0(tmp_path, capsys):
+    from lee_llm_router.doctor import main
+
+    missing = tmp_path / "nope.json"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["doctor", "--availability", "--availability-file", str(missing)])
+    assert exc_info.value.code == 0
+
+    out = capsys.readouterr().out
+    assert "missing" in out
+
+
+def test_doctor_availability_malformed_exits_1(tmp_path, capsys):
+    from lee_llm_router.doctor import main
+
+    bad = tmp_path / "A8Max.json"
+    bad.write_text("{not json", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["doctor", "--availability", "--availability-file", str(bad)])
+    assert exc_info.value.code == 1
+
+    err = capsys.readouterr().err
+    assert "unusable" in err
+    assert "invalid JSON" in err
+
+
+def test_doctor_availability_without_subscriptions_list_exits_1(tmp_path, capsys):
+    from lee_llm_router.doctor import main
+
+    bad = tmp_path / "A8Max.json"
+    bad.write_text(json.dumps({"observed_at": "x"}), encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["doctor", "--availability", "--availability-file", str(bad)])
+    assert exc_info.value.code == 1
+
+    err = capsys.readouterr().err
+    assert "unusable" in err
+    assert "'subscriptions'" in err
+
+
+def test_doctor_crews_and_availability_together_exit_0(tmp_path, capsys):
+    from lee_llm_router.doctor import main
+
+    path = _write_snapshot(tmp_path)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "doctor",
+                "--crews",
+                "--crews-file",
+                str(CREWS_FIXTURE),
+                "--availability",
+                "--availability-file",
+                str(path),
+            ]
+        )
+    assert exc_info.value.code == 0
+
+    out = capsys.readouterr().out
+    assert "OK crews:" in out
+    assert "OK availability:" in out

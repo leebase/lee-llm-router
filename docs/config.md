@@ -250,7 +250,8 @@ llm:
 
 `lee_llm_router.crews` reads Auto-Orch's crew roster (workers plus per-stage and
 governed routes). The file is read-only to this package; the loader never writes
-to it.
+to it. Channel headroom for the workers a crew names is read separately — see
+[Availability snapshots](availability.md).
 
 Path resolution order:
 
@@ -334,6 +335,42 @@ must never enter an *automatic* fallback chain, and `FORBIDDEN_MODELS`
 (`gemini-3.1-pro`) must never be chosen at all. Helpers `is_never_automatic()`
 and `is_forbidden()` expose them. Strict routing does not enforce either: it
 returns exactly the worker the crew names.
+
+### Funding channels
+
+A *channel* is the subscription or metered account that pays for a worker's
+tokens. It is coarser than a provider: several providers can draw on one
+channel, and one harness draws on two. Every `ResolvedWorker` carries a
+`channel`, which is what the availability reader looks up headroom against.
+
+`CHANNELS` declares the six known channels; `PROVIDER_CHANNELS` maps each
+registered provider to its default:
+
+| Router provider | Funding channel |
+|---|---|
+| `codex_cli` | `openai-sub` |
+| `claude_code_cli` | `anthropic-sub` |
+| `antigravity_cli` | `gemini-sub` |
+| `opencode_cli` | `opencode-go` |
+| `omp_cli` | `openrouter` |
+
+The sixth channel, `gemini-sub-thirdparty`, has no provider default: it covers
+the Claude and GPT models Antigravity brokers, which bill to a separate bucket
+from Google's own models on the same subscription. A worker like that is pinned
+with `WORKER_CHANNEL_OVERRIDES` (`worker_id -> channel`, empty by default),
+which wins over the provider default. This mapping lives in `crews.py`, not in
+`crews.yaml`: funding is the router's concern, not Auto-Orch's.
+
+A provider with no channel — no override and no `PROVIDER_CHANNELS` entry —
+raises `CrewsConfigError` from `resolve_worker()`, so a new harness cannot be
+added without deciding who pays for it.
+
+```python
+from lee_llm_router.crews import channel_for, load_crews, resolve_worker
+
+resolve_worker(load_crews().workers["codex_sol_high"]).channel  # "openai-sub"
+channel_for("codex_sol_high", "codex_cli")                      # "openai-sub"
+```
 
 ### `CrewRoutingPolicy` (strict)
 
@@ -431,3 +468,49 @@ file belongs to Auto-Orch, not to this router: the live file declares
 there would only make `doctor --crews` unusable against real state. Warnings are
 counted in the summary line. `NEVER_AUTOMATIC_MODELS` members are informational
 only and produce no output.
+
+### `doctor --availability`
+
+Report on the availability snapshot the hourly refresh writes:
+
+```bash
+lee-llm-router doctor --availability
+lee-llm-router doctor --availability --availability-file /path/to/snapshot.json
+lee-llm-router doctor --crews --availability
+```
+
+The snapshot path is the `--availability-file` argument, else
+`LEE_LLM_ROUTER_AVAILABILITY_FILE`, else
+`~/.local/state/lee-llm-router/availability/<host>.json`. A healthy check prints:
+
+```
+OK availability: /home/lee/.local/state/lee-llm-router/availability/A8Max.json, age 12 min, 9 buckets
+  openai-sub: degraded
+  anthropic-sub: degraded
+  gemini-sub: healthy
+  gemini-sub-thirdparty: healthy
+  openrouter: unknown
+  opencode-go: unknown
+```
+
+The summary line is followed by one line per funding channel, in the order of
+`availability.CHANNELS`, carrying the health the resolver would see. A channel
+with no bucket in the snapshot reads `unknown`.
+
+The check is a thin renderer over `availability.load_availability()`, so the
+staleness and clock-skew rules are the reader's, not the doctor's — see
+[docs/availability.md](availability.md). Age is the **older** of the snapshot's
+two timestamps: `observed_at` (when the provider data was observed) and
+`written_at` (when the snapshot was written). Either one being more than 90
+minutes old, or more than 5 minutes in the future, makes the snapshot stale and
+every channel `unknown` — a fresh `written_at` cannot rescue a stale
+`observed_at`. A snapshot that is missing or stale is a **warning**
+(`  !  `, exit 0) — absence is a valid state before the refresh cron has ever
+run, and the reader degrades such a snapshot to `unknown` rather than to
+"healthy." A future-stamped snapshot is never reported as fresh. Only a file
+that exists but cannot be used at all — not valid JSON, no `subscriptions`
+list, an unparseable or wholly absent timestamp — is an **error** (exit 1).
+
+`--config` is optional when `--availability` is given, and the flag composes
+with `--crews`. See [docs/availability-refresh.md](availability-refresh.md) for
+the refresh script and its cron line.

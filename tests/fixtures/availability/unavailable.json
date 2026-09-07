@@ -1,0 +1,11 @@
+{
+  "observed_at": "2026-09-07T12:00:00+00:00",
+  "source": "synthetic fixture",
+  "subscriptions": [
+    {
+      "provider": "OpenAI/Codex",
+      "status": "UNAVAILABLE",
+      "error": "codex CLI not found"
+    }
+  ]
+}

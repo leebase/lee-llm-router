@@ -1,0 +1,4 @@
+# The repo-root .gitignore ignores *.json and only un-ignores tests/fixtures/*.json
+# (one level deep). These availability snapshots are test fixtures and must be
+# tracked, so re-include them here.
+!*.json

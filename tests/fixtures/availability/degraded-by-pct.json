@@ -1,0 +1,17 @@
+{
+  "observed_at": "2026-09-07T12:00:00+00:00",
+  "source": "synthetic fixture",
+  "subscriptions": [
+    {
+      "provider": "OpenAI/Codex",
+      "bucket": "Weekly limit",
+      "status": "COLD",
+      "used_pct": 80.0,
+      "remaining_pct": 20.0,
+      "pace_ratio": 1.0,
+      "pace_ratio_infinite": false,
+      "resets_at": "2026-09-11T10:37:09+00:00",
+      "resets_in_hours": 93.49
+    }
+  ]
+}

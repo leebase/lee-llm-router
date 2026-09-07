@@ -2,6 +2,7 @@
 
 Commands:
     lee-llm-router doctor --config <path> [--role <role>] [--crews]
+                          [--availability]
     lee-llm-router crews list [--crews-file <path>] [--json]
     lee-llm-router template
     lee-llm-router trace --last N
@@ -199,6 +200,120 @@ def _get_git_commit(repo_root: Path) -> str | None:
         return None
     commit = result.stdout.strip()
     return commit or None
+
+
+def check_availability(
+    snapshot_file: str | Path | None = None,
+    now: datetime | None = None,
+) -> tuple[list[str], list[str], dict[str, Any]]:
+    """Inspect the availability snapshot the refresh script writes.
+
+    The staleness, clock-skew, and malformed-input rules all belong to
+    :func:`lee_llm_router.availability.load_availability`; this check only
+    renders that reader's verdict. Absence is a valid state: before the hourly
+    refresh has ever run there is no snapshot, and the resolver degrades to
+    ``unknown`` rather than failing, so a missing file is a warning. A snapshot
+    that is merely stale — too old, or stamped beyond the tolerated future skew
+    — is also a warning. Only a file that exists but cannot be used at all is an
+    error.
+
+    Args:
+        snapshot_file: Explicit snapshot path, or None to resolve the default.
+        now: Reference time for the age calculation. A naive value is read as
+            UTC by the reader, never as host-local time.
+
+    Returns:
+        ``(errors, warnings, details)`` where ``details`` carries the resolved
+        ``path``, the snapshot's ``written_at``/``observed_at`` as ISO strings,
+        its ``age_minutes`` (or None), the ``bucket_count``, and a
+        ``channels`` map of channel name to health.
+    """
+    from lee_llm_router.availability import (
+        FUTURE_TIMESTAMP_REASON,
+        load_availability,
+        resolve_availability_path,
+    )
+
+    path = resolve_availability_path(snapshot_file)
+    details: dict[str, Any] = {
+        "path": str(path),
+        "written_at": None,
+        "observed_at": None,
+        "age_minutes": None,
+        "bucket_count": 0,
+        "channels": {},
+    }
+
+    if not path.is_file():
+        return (
+            [],
+            [f"availability snapshot missing: {path} (run refresh_availability.sh)"],
+            details,
+        )
+
+    snapshot = load_availability(path, now=now)
+    details["written_at"] = (
+        snapshot.written_at.isoformat() if snapshot.written_at else None
+    )
+    details["observed_at"] = (
+        snapshot.observed_at.isoformat() if snapshot.observed_at else None
+    )
+    details["age_minutes"] = snapshot.age_minutes
+    details["bucket_count"] = _count_buckets(snapshot)
+    details["channels"] = {
+        name: headroom.health.value for name, headroom in snapshot.channels.items()
+    }
+
+    if snapshot.stale and snapshot.stale_reason == FUTURE_TIMESTAMP_REASON:
+        return [], [_stale_warning(path, snapshot)], details
+    if snapshot.problem is not None:
+        return (
+            [f"availability snapshot unusable: {path}: {snapshot.problem}"],
+            [],
+            details,
+        )
+    if snapshot.stale:
+        return [], [_stale_warning(path, snapshot)], details
+    return [], [], details
+
+
+def _count_buckets(snapshot: Any) -> int:
+    """Count the distinct source entries behind a snapshot's channels.
+
+    One raw ``ai-subs`` entry can feed more than one channel, so the per-channel
+    buckets are de-duplicated by their provider and bucket name.
+
+    Args:
+        snapshot: The :class:`~lee_llm_router.availability.AvailabilitySnapshot`.
+
+    Returns:
+        The number of distinct ``(provider, name)`` pairs.
+    """
+    seen = {
+        (bucket.provider, bucket.name)
+        for headroom in snapshot.channels.values()
+        for bucket in headroom.buckets
+    }
+    return len(seen)
+
+
+def _stale_warning(path: Path, snapshot: Any) -> str:
+    """Render the one-line staleness warning for a snapshot.
+
+    Args:
+        path: The snapshot path, for the message.
+        snapshot: The :class:`~lee_llm_router.availability.AvailabilitySnapshot`.
+
+    Returns:
+        A warning naming the reader's ``stale_reason`` and the age it measured.
+    """
+    reason = snapshot.stale_reason or "snapshot is stale"
+    if snapshot.age_minutes is None:
+        return f"availability snapshot stale ({reason}): {path}, age unknown"
+    return (
+        f"availability snapshot stale ({reason}): {path}, "
+        f"age {snapshot.age_minutes:.0f} min"
+    )
 
 
 GOVERNED_HARNESSES: tuple[str, ...] = (
@@ -414,12 +529,38 @@ def _run_doctor(args: argparse.Namespace) -> int:
             f"{worker_count}/{total_workers} workers resolved, "
             f"{len(crew_warnings)} forbidden-model warning(s)"
         )
+        if config_path is None and not getattr(args, "availability", False):
+            return 0
+        print()
+
+    if getattr(args, "availability", False):
+        avail_errors, avail_warnings, details = check_availability(
+            getattr(args, "availability_file", None)
+        )
+        for warning in avail_warnings:
+            print(f"  !  {warning}")
+        for error in avail_errors:
+            print(f"  x  {error}", file=sys.stderr)
+        if avail_errors:
+            print(
+                f"\nStatus: {len(avail_errors)} availability error(s) found",
+                file=sys.stderr,
+            )
+            return 1
+        if not avail_warnings:
+            age = details["age_minutes"] or 0.0
+            print(
+                f"OK availability: {details['path']}, age {age:.0f} min, "
+                f"{details['bucket_count']} buckets"
+            )
+            for channel, health in details["channels"].items():
+                print(f"  {channel}: {health}")
         if config_path is None:
             return 0
         print()
 
     if config_path is None:
-        print("doctor requires --config (or --crews)", file=sys.stderr)
+        print("doctor requires --config (or --crews / --availability)", file=sys.stderr)
         return 1
 
     print("Lee LLM Router Doctor")
@@ -520,7 +661,7 @@ def main(argv: list[str] | None = None) -> None:
         "--config",
         metavar="PATH",
         default=None,
-        help="Path to config YAML (optional when --crews is given)",
+        help="Path to config YAML (optional with --crews/--availability)",
     )
     doctor_parser.add_argument(
         "--role",
@@ -537,6 +678,20 @@ def main(argv: list[str] | None = None) -> None:
         metavar="PATH",
         default=None,
         help="Path to the crews YAML (default: the Auto-Orch crews file)",
+    )
+    doctor_parser.add_argument(
+        "--availability",
+        action="store_true",
+        help="Also report the age and size of the availability snapshot",
+    )
+    doctor_parser.add_argument(
+        "--availability-file",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Path to the availability snapshot (default: "
+            "~/.local/state/lee-llm-router/availability/<host>.json)"
+        ),
     )
     doctor_parser.set_defaults(func=_run_doctor)
 

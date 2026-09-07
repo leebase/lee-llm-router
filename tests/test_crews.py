@@ -397,3 +397,110 @@ def test_omp_prefix_is_registered() -> None:
     from lee_llm_router.crews import WORKER_ENV_PREFIX_PROVIDERS
 
     assert WORKER_ENV_PREFIX_PROVIDERS["OMP"] == "omp_cli"
+
+
+CHANNEL_COMMANDS: dict[str, tuple[str, str]] = {
+    "codex_cli": ("codex_sol_high", CODEX_COMMAND),
+    "claude_code_cli": ("claude_opus5_high", CLAUDE_COMMAND),
+    "antigravity_cli": ("agy_flash_high", ANTIGRAVITY_COMMAND),
+    "opencode_cli": ("opencode_deepseek", OPENCODE_COMMAND),
+    "omp_cli": ("omp_flash_high", OMP_COMMAND),
+}
+
+
+def test_channels_are_the_declared_funding_channels() -> None:
+    from lee_llm_router.crews import CHANNELS
+
+    assert CHANNELS == (
+        "openai-sub",
+        "anthropic-sub",
+        "gemini-sub",
+        "gemini-sub-thirdparty",
+        "openrouter",
+        "opencode-go",
+    )
+
+
+def test_every_provider_channel_is_a_known_channel() -> None:
+    from lee_llm_router.crews import CHANNELS, PROVIDER_CHANNELS
+
+    assert set(PROVIDER_CHANNELS.values()) <= set(CHANNELS)
+
+
+@pytest.mark.parametrize(
+    ("provider", "expected_channel"),
+    [
+        ("codex_cli", "openai-sub"),
+        ("claude_code_cli", "anthropic-sub"),
+        ("antigravity_cli", "gemini-sub"),
+        ("opencode_cli", "opencode-go"),
+        ("omp_cli", "openrouter"),
+    ],
+)
+def test_resolve_worker_sets_provider_default_channel(
+    provider: str, expected_channel: str
+) -> None:
+    worker_id, command = CHANNEL_COMMANDS[provider]
+
+    resolved = resolve_worker(_worker(worker_id, command))
+
+    assert resolved.provider == provider
+    assert resolved.channel == expected_channel
+
+
+def test_worker_channel_override_wins_over_provider_default(monkeypatch) -> None:
+    from lee_llm_router.crews import WORKER_CHANNEL_OVERRIDES
+
+    monkeypatch.setitem(
+        WORKER_CHANNEL_OVERRIDES, "agy_flash_high", "gemini-sub-thirdparty"
+    )
+
+    resolved = resolve_worker(_worker("agy_flash_high", ANTIGRAVITY_COMMAND))
+
+    assert resolved.provider == "antigravity_cli"
+    assert resolved.channel == "gemini-sub-thirdparty"
+
+
+def test_unknown_channel_override_raises(monkeypatch) -> None:
+    from lee_llm_router.crews import WORKER_CHANNEL_OVERRIDES
+
+    monkeypatch.setitem(WORKER_CHANNEL_OVERRIDES, "codex_sol_high", "not-a-channel")
+
+    with pytest.raises(CrewsConfigError, match="unknown channel"):
+        resolve_worker(_worker("codex_sol_high", CODEX_COMMAND))
+
+
+def test_unmapped_provider_has_no_channel(monkeypatch) -> None:
+    from lee_llm_router.crews import PROVIDER_CHANNELS, channel_for
+
+    monkeypatch.delitem(PROVIDER_CHANNELS, "codex_cli")
+
+    with pytest.raises(CrewsConfigError, match="no funding channel"):
+        channel_for("codex_sol_high", "codex_cli")
+
+
+def test_channel_for_uses_override_without_a_provider_default(monkeypatch) -> None:
+    from lee_llm_router.crews import (
+        PROVIDER_CHANNELS,
+        WORKER_CHANNEL_OVERRIDES,
+        channel_for,
+    )
+
+    monkeypatch.setitem(
+        WORKER_CHANNEL_OVERRIDES, "codex_sol_high", "gemini-sub-thirdparty"
+    )
+    monkeypatch.delitem(PROVIDER_CHANNELS, "codex_cli")
+
+    assert channel_for("codex_sol_high", "codex_cli") == "gemini-sub-thirdparty"
+
+
+@pytest.mark.skipif(
+    not LIVE_CREWS_FILE.is_file(), reason="live Auto-Orch crews file not present"
+)
+def test_live_crews_file_workers_all_have_a_known_channel() -> None:
+    from lee_llm_router.crews import CHANNELS
+
+    config = load_crews(LIVE_CREWS_FILE)
+
+    for worker in config.workers.values():
+        assert resolve_worker(worker).channel in CHANNELS

@@ -413,6 +413,82 @@ mode returns exactly the crew's named worker, so nothing here is enforced by
 FORBIDDEN_MODELS = frozenset({"gemini-3.1-pro"})
 """Models the resolver must never choose at all (decisions.md D152/D153)."""
 
+CHANNELS: tuple[str, ...] = (
+    "openai-sub",
+    "anthropic-sub",
+    "gemini-sub",
+    "gemini-sub-thirdparty",
+    "openrouter",
+    "opencode-go",
+)
+"""The funding channels a worker's usage can be drawn from.
+
+A *channel* is the subscription or metered account that pays for a worker's
+tokens. It is deliberately coarser than a provider: several providers can draw
+on one channel, and one harness (Antigravity) draws on two -- Google's own
+models bill to ``gemini-sub`` while the third-party Claude/GPT models it
+brokers bill to ``gemini-sub-thirdparty``.
+
+This mapping lives here rather than in ``crews.yaml`` because funding is the
+router's concern, not Auto-Orch's.
+"""
+
+PROVIDER_CHANNELS: dict[str, str] = {
+    "codex_cli": "openai-sub",
+    "claude_code_cli": "anthropic-sub",
+    "antigravity_cli": "gemini-sub",
+    "opencode_cli": "opencode-go",
+    "omp_cli": "openrouter",
+}
+"""Default funding channel for each registered router provider."""
+
+WORKER_CHANNEL_OVERRIDES: dict[str, str] = {}
+"""Explicit ``worker_id -> channel`` pins that beat :data:`PROVIDER_CHANNELS`.
+
+Use this for a worker whose funding differs from its provider's default -- for
+example an Antigravity worker running a brokered Claude or GPT model, which
+bills to ``gemini-sub-thirdparty`` rather than ``gemini-sub``. Empty by
+default.
+"""
+
+
+def channel_for(worker_id: str, provider: str) -> str:
+    """Return the funding channel a worker's usage bills to.
+
+    Args:
+        worker_id: The worker id from the crews file.
+        provider: The registered router provider the worker resolves to.
+
+    Returns:
+        One of :data:`CHANNELS`.
+
+    Raises:
+        CrewsConfigError: If neither an override nor a provider default maps
+            the worker to a known channel.
+    """
+    override = WORKER_CHANNEL_OVERRIDES.get(worker_id)
+    if override is not None:
+        if override not in CHANNELS:
+            raise CrewsConfigError(
+                f"worker {worker_id!r} is pinned to unknown channel "
+                f"{override!r} (known channels: {', '.join(CHANNELS)})"
+            )
+        return override
+    try:
+        channel = PROVIDER_CHANNELS[provider]
+    except KeyError as exc:
+        known = ", ".join(sorted(PROVIDER_CHANNELS))
+        raise CrewsConfigError(
+            f"worker {worker_id!r} resolves to provider {provider!r}, which has "
+            f"no funding channel (mapped providers: {known})"
+        ) from exc
+    if channel not in CHANNELS:  # pragma: no cover - guards a bad edit here
+        raise CrewsConfigError(
+            f"provider {provider!r} maps to unknown channel {channel!r}"
+        )
+    return channel
+
+
 _WORKER_ENV_RE = re.compile(
     r"(?P<prefix>[A-Z]+)_STAGE_WORKER_"
     r"(?P<key>REASONING_EFFORT|EFFORT|BINARY|MODEL)="
@@ -455,6 +531,7 @@ class ResolvedWorker:
         effort: Reasoning-effort hint, when the worker declares one.
         harness_binary: Path to the harness binary, when declared.
         dispatch_command: The worker's raw command template, unchanged.
+        channel: The funding channel this worker's usage bills to.
     """
 
     worker_id: str
@@ -463,6 +540,7 @@ class ResolvedWorker:
     effort: str | None
     harness_binary: str | None
     dispatch_command: str
+    channel: str
 
 
 def _parse_worker_command(worker: Worker) -> tuple[str, str, str | None, str | None]:
@@ -515,7 +593,8 @@ def resolve_worker(worker: Worker) -> ResolvedWorker:
 
     Raises:
         CrewsConfigError: If the command uses an unknown prefix, declares no
-            model, or resolves to a provider that is not registered.
+            model, resolves to a provider that is not registered, or resolves
+            to a provider with no funding channel.
     """
     override = WORKER_PROVIDER_OVERRIDES.get(worker.id)
     if override is not None:
@@ -542,4 +621,5 @@ def resolve_worker(worker: Worker) -> ResolvedWorker:
         effort=effort,
         harness_binary=binary,
         dispatch_command=worker.command,
+        channel=channel_for(worker.id, provider),
     )
