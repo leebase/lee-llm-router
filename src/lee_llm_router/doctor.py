@@ -16,6 +16,9 @@ Commands:
                             [--watch-dir <path> ...] [--crews-file <path>]
                             [--availability-file <path>] [--events-file <path>]
                             [--no-event] [--dry-run]
+    lee-llm-router shims install (--dry-run | --apply) [--force] [--harness <tag>]
+                                 [--project <path>]
+    lee-llm-router shims diff [--harness <tag>] [--project <path>]
     lee-llm-router template
     lee-llm-router trace --last N
     lee-llm-router export-source --dest <path> [--force]
@@ -367,11 +370,10 @@ def check_crews(
     """Resolve every worker declared in the crews file, not only stage refs.
 
     Every entry of the top-level ``workers`` map is resolved, so a malformed
-    worker is reported even when no crew stage references it. A worker whose
-    resolved model is forbidden (see
-    :func:`lee_llm_router.crews.is_forbidden`) is reported as a warning rather
-    than an error: the crews file is Auto-Orch's, not ours, and it currently
-    declares such a worker.
+    worker is reported even when no crew stage references it. A crew stage whose
+    role class is coding and names a worker that resolves to a role-scoped model
+    (or an unmapped stage name) is reported as a warning rather than an error: the
+    crews file is Auto-Orch's, not ours.
 
     Args:
         crews_file: Explicit crews file path, or None to use the default.
@@ -381,10 +383,12 @@ def check_crews(
         total_worker_count)``.
     """
     from lee_llm_router.crews import (
+        ROLE_SCOPED_CITATION,
         CrewsConfigError,
-        is_forbidden,
+        is_role_scoped,
         load_crews,
         resolve_worker,
+        role_class,
     )
 
     try:
@@ -395,6 +399,7 @@ def check_crews(
     errors: list[str] = []
     warnings: list[str] = []
     resolved: set[str] = set()
+    resolved_workers: dict[str, Any] = {}
 
     for worker_id, worker in crews_config.workers.items():
         try:
@@ -403,14 +408,18 @@ def check_crews(
             errors.append(f"Worker {worker_id!r}: {exc}")
             continue
         resolved.add(worker_id)
-        if is_forbidden(resolved_worker.model):
-            warnings.append(
-                f"Worker {worker_id!r} resolves to forbidden model "
-                f"{resolved_worker.model!r}; the resolver must never choose it"
-            )
+        resolved_workers[worker_id] = resolved_worker
 
     for crew in crews_config.crews.values():
         for stage in crew.stages.values():
+            try:
+                stage_class = role_class(stage.name)
+            except CrewsConfigError:
+                warnings.append(
+                    f"stage {stage.name!r} has no role class ({ROLE_SCOPED_CITATION})"
+                )
+                stage_class = None
+
             for worker_id in stage.workers:
                 worker = crews_config.workers.get(worker_id)
                 if worker is None:
@@ -424,6 +433,18 @@ def check_crews(
                         f"Crew {crew.name!r} stage {stage.name!r}: worker "
                         f"{worker_id!r} could not be resolved"
                     )
+                    continue
+
+                if stage_class == "coding":
+                    resolved_worker = resolved_workers[worker_id]
+                    if is_role_scoped(resolved_worker.model):
+                        warnings.append(
+                            f"Crew {crew.name!r} stage {stage.name!r} uses role-scoped "
+                            f"model {resolved_worker.model!r} in a coding role; the "
+                            f"resolver will never choose it there "
+                            f"({ROLE_SCOPED_CITATION})"
+                        )
+
         for route in crew.governed.values():
             if route.harness not in GOVERNED_HARNESSES:
                 errors.append(
@@ -691,6 +712,12 @@ def _record_resolution_event(
         return None, str(exc)
 
 
+RESOLVE_USAGE_MESSAGE: str = (
+    "specify either 'resolve CREW ROLE [options]' or "
+    "'resolve --crew CREW --role ROLE [options]'"
+)
+
+
 def _run_resolve(args: argparse.Namespace) -> int:
     """Resolve which worker runs a crew's stage and print/record the result.
 
@@ -701,6 +728,43 @@ def _run_resolve(args: argparse.Namespace) -> int:
     still prints the resolution but turns the exit code into ``3``: an
     unrecorded resolution is not a completed one.
     """
+    positionals = getattr(args, "positionals", None) or []
+    has_positionals = bool(positionals)
+    has_crew = getattr(args, "crew", None) is not None
+    has_role = getattr(args, "role", None) is not None
+
+    if has_positionals and (has_crew or has_role):
+        from lee_llm_router.resolver import ResolutionError
+
+        error = ResolutionError(
+            RESOLVE_USAGE_MESSAGE,
+            exit_code=3,
+            kind="usage",
+        )
+        return _print_resolve_refusal(error, as_json=getattr(args, "json", False))
+
+    if has_positionals:
+        if len(positionals) != 2:
+            from lee_llm_router.resolver import ResolutionError
+
+            error = ResolutionError(
+                RESOLVE_USAGE_MESSAGE,
+                exit_code=3,
+                kind="usage",
+            )
+            return _print_resolve_refusal(error, as_json=getattr(args, "json", False))
+        args.crew = positionals[0]
+        args.role = positionals[1]
+    elif not (has_crew and has_role):
+        from lee_llm_router.resolver import ResolutionError
+
+        error = ResolutionError(
+            RESOLVE_USAGE_MESSAGE,
+            exit_code=3,
+            kind="usage",
+        )
+        return _print_resolve_refusal(error, as_json=getattr(args, "json", False))
+
     resolution, exit_code = _perform_resolve(args, as_json=args.json)
     if resolution is None:
         return exit_code
@@ -816,7 +880,7 @@ def _run_doctor(args: argparse.Namespace) -> int:
         print(
             f"OK crews: {crew_count} crews, "
             f"{worker_count}/{total_workers} workers resolved, "
-            f"{len(crew_warnings)} forbidden-model warning(s)"
+            f"{len(crew_warnings)} role-scoped warning(s)"
         )
         if config_path is None and not getattr(args, "availability", False):
             return 0
@@ -937,11 +1001,55 @@ def _run_export_source(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_shims_install(args: argparse.Namespace) -> int:
+    dry_run = getattr(args, "dry_run", False)
+    apply = getattr(args, "apply", False)
+    if (dry_run and apply) or (not dry_run and not apply):
+        print(
+            "shims install: exactly one of --dry-run or --apply is required",
+            file=sys.stderr,
+        )
+        return 3
+
+    from lee_llm_router import shims
+
+    try:
+        return shims.install_shims(
+            dry_run=dry_run,
+            apply=apply,
+            force=getattr(args, "force", False),
+            harnesses=getattr(args, "harness", None),
+            project=getattr(args, "project", None),
+        )
+    except shims.ShimUsageError as exc:
+        print(f"shims install: {exc}", file=sys.stderr)
+        return 3
+
+
+def _run_shims_diff(args: argparse.Namespace) -> int:
+    from lee_llm_router import shims
+
+    try:
+        return shims.diff_shims(
+            harnesses=getattr(args, "harness", None),
+            project=getattr(args, "project", None),
+        )
+    except shims.ShimUsageError as exc:
+        print(f"shims diff: {exc}", file=sys.stderr)
+        return 3
+
+
+def _run_shims_no_subcommand(_args: argparse.Namespace) -> int:
+    print("shims: subcommand required (install, diff)", file=sys.stderr)
+    return 3
+
+
 class _FastResolveArgs:
     """Fast-path argument namespace for resolve."""
 
     __slots__ = (
         "command",
+        "positionals",
         "crew",
         "role",
         "mode",
@@ -958,8 +1066,8 @@ class _FastResolveArgs:
 
     def __init__(
         self,
-        crew: str,
-        role: str,
+        crew: str | None = None,
+        role: str | None = None,
         mode: str = "strict",
         worker: str | None = None,
         authorized_by: str | None = None,
@@ -970,6 +1078,7 @@ class _FastResolveArgs:
         availability_file: str | None = None,
         events_file: str | None = None,
         no_event: bool = False,
+        positionals: list[str] | None = None,
     ) -> None:
         self.command = "resolve"
         self.crew = crew
@@ -984,6 +1093,7 @@ class _FastResolveArgs:
         self.availability_file = availability_file
         self.events_file = events_file
         self.no_event = no_event
+        self.positionals = list(positionals) if positionals is not None else []
 
 
 def _try_fast_resolve(argv: list[str]) -> _FastResolveArgs | None:
@@ -991,6 +1101,7 @@ def _try_fast_resolve(argv: list[str]) -> _FastResolveArgs | None:
 
     Falls back to argparse on unexpected flags or --help.
     """
+    positionals: list[str] = []
     crew: str | None = None
     role: str | None = None
     mode = "strict"
@@ -1016,6 +1127,11 @@ def _try_fast_resolve(argv: list[str]) -> _FastResolveArgs | None:
             continue
         if arg == "--no-event":
             no_event = True
+            i += 1
+            continue
+
+        if not arg.startswith("-"):
+            positionals.append(arg)
             i += 1
             continue
 
@@ -1061,7 +1177,12 @@ def _try_fast_resolve(argv: list[str]) -> _FastResolveArgs | None:
 
         i += step
 
-    if crew is None or role is None:
+    if len(positionals) == 2 and crew is None and role is None:
+        crew = positionals[0]
+        role = positionals[1]
+    elif len(positionals) == 0 and crew is not None and role is not None:
+        pass
+    else:
         return None
 
     return _FastResolveArgs(
@@ -1166,14 +1287,20 @@ def main(argv: list[str] | None = None) -> None:
         help="Resolve which worker runs a crew's stage, and record the event",
     )
     resolve_parser.add_argument(
+        "positionals",
+        nargs="*",
+        metavar="CREW ROLE",
+        help="Crew name and role stage as positionals (e.g. resolve CREW ROLE)",
+    )
+    resolve_parser.add_argument(
         "--crew",
-        required=True,
+        default=None,
         metavar="NAME",
         help="Crew name",
     )
     resolve_parser.add_argument(
         "--role",
-        required=True,
+        default=None,
         metavar="STAGE",
         help="Cognitive stage name (envision, ideate, reconsider, score, author)",
     )
@@ -1352,6 +1479,67 @@ def main(argv: list[str] | None = None) -> None:
         help="Print resolution and command without running",
     )
     dispatch_parser.set_defaults(func=_run_dispatch)
+
+    shims_parser = subparsers.add_parser(
+        "shims",
+        help="Manage harness command shims (install, diff)",
+    )
+    shims_sub = shims_parser.add_subparsers(dest="shims_command", metavar="SUBCOMMAND")
+    shims_sub.required = False
+    shims_parser.set_defaults(func=_run_shims_no_subcommand)
+
+    shims_install_parser = shims_sub.add_parser(
+        "install",
+        help="Install harness shims (--dry-run or --apply)",
+    )
+    shims_install_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print actions and rendered shim contents without writing",
+    )
+    shims_install_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write shims to their target paths",
+    )
+    shims_install_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite files whose marker/hash does not match",
+    )
+    shims_install_parser.add_argument(
+        "--harness",
+        action="append",
+        default=None,
+        metavar="TAG",
+        help="Limit to named harness (claude-code, codex, omp, opencode; repeatable)",
+    )
+    shims_install_parser.add_argument(
+        "--project",
+        default=None,
+        metavar="PATH",
+        help="Project directory for omp shim (default: cwd)",
+    )
+    shims_install_parser.set_defaults(func=_run_shims_install)
+
+    shims_diff_parser = shims_sub.add_parser(
+        "diff",
+        help="Show diff between installed shims and rendered templates",
+    )
+    shims_diff_parser.add_argument(
+        "--harness",
+        action="append",
+        default=None,
+        metavar="TAG",
+        help="Limit to named harness (claude-code, codex, omp, opencode; repeatable)",
+    )
+    shims_diff_parser.add_argument(
+        "--project",
+        default=None,
+        metavar="PATH",
+        help="Project directory for omp shim (default: cwd)",
+    )
+    shims_diff_parser.set_defaults(func=_run_shims_diff)
 
     template_parser = subparsers.add_parser(
         "template",

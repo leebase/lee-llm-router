@@ -1,0 +1,19 @@
+---
+description: Resolve which worker runs a crew stage and get the recommended dispatch command
+{frontmatter_extra}---
+<!-- lee-llm-router shim v1 sha256={marker_hash} -->
+
+Execute the following command to resolve which worker should run this crew stage:
+
+lee-llm-router resolve $ARGUMENTS --mode flex --harness {harness} --json
+
+Parse the JSON output and display the following fields to the user:
+- worker
+- model
+- effort
+- headroom
+- reason
+
+Do not dispatch automatically, invoke any provider binary, or edit any files. Offer the following dispatch command for the user to run:
+
+lee-llm-router dispatch --crew <crew> --role <role> --mode flex --harness {harness} --prompt-file <path>

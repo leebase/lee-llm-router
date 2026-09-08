@@ -16,7 +16,13 @@ from typing import Any
 import pytest
 
 from lee_llm_router.availability import parse_availability
-from lee_llm_router.crews import load_crews
+from lee_llm_router.crews import (
+    ROLE_SCOPED_CITATION,
+    Crew,
+    CrewsConfig,
+    Stage,
+    load_crews,
+)
 from lee_llm_router.events import (
     EVENT_FIELDS,
     MAX_EVENT_BYTES,
@@ -125,6 +131,18 @@ crews:
         - antigravity_gemini31_pro_c
         - antigravity_gemini31_pro_d
         - codex_sol_high
+      author:
+        - antigravity_gemini31_pro
+        - antigravity_gemini31_pro_b
+        - codex_sol_high
+  resolver-coding-forbidden:
+    description: Coding stage where all candidates are role-scoped.
+    stages:
+      author: [antigravity_gemini31_pro, antigravity_gemini31_pro_b]
+  resolver-sole-forbidden:
+    description: Coding stage with a single role-scoped candidate.
+    stages:
+      author: [antigravity_gemini31_pro]
   resolver-edges:
     description: Refusal remedies, prompt-delivery shapes, and provider errors.
     stages:
@@ -292,15 +310,37 @@ def test_strict_vetoes_on_likely_exhausted(crews):
     assert excinfo.value.remedy == REMEDY_WAIT
 
 
-def test_strict_refuses_a_forbidden_model(crews):
-    """A forbidden named worker is exit 3, citing the governing decision."""
+def test_strict_refuses_a_role_scoped_model_in_coding_role(crews):
+    """A role-scoped named worker in a coding role refuses at exit 3 citing D188."""
     with pytest.raises(ResolutionError) as excinfo:
-        resolve(crews, snap(gemini(*HEALTHY)), crew="resolver-crew", role="score")
+        resolve(
+            crews,
+            snap(gemini(*HEALTHY)),
+            crew="resolver-crew",
+            role="author",
+            mode="strict",
+        )
     error = excinfo.value
     assert error.exit_code == 3
     assert error.kind == "forbidden"
+    assert "antigravity_gemini31_pro" in error.message
     assert "gemini-3.1-pro" in error.message
-    assert "decisions.md D152/D153" in error.message
+    assert "author" in error.message
+    assert "coding" in error.message
+    assert ROLE_SCOPED_CITATION in error.message
+
+
+def test_strict_allows_role_scoped_model_in_planning_review_role(crews):
+    """A role-scoped named worker in a planning/review role resolves normally."""
+    result = resolve(
+        crews,
+        snap(gemini(*HEALTHY)),
+        crew="resolver-crew",
+        role="score",
+        mode="strict",
+    )
+    assert result.worker_id == "antigravity_gemini31_pro"
+    assert result.model == "gemini-3.1-pro"
 
 
 def test_strict_ignores_headroom_of_channels_it_does_not_use(crews):
@@ -445,7 +485,7 @@ def test_flex_remedy_falls_back_to_a_plain_wait_without_a_reset_time(crews):
 
 
 def test_flex_skips_a_forbidden_candidate_but_says_so(crews):
-    """A forbidden candidate is skipped, not fatal — and never silently."""
+    """A role-scoped candidate is skipped in coding role, naming candidate and citing D188."""
     result = resolve(
         crews,
         snap(openai(*HEALTHY), gemini(*HEALTHY)),
@@ -454,24 +494,25 @@ def test_flex_skips_a_forbidden_candidate_but_says_so(crews):
         mode="flex",
     )
     assert result.worker_id == "codex_sol_high"
-    assert "skipped antigravity_gemini31_pro" in result.reason
-    assert "gemini-3.1-pro" in result.reason
-    assert "D152/D153" in result.reason
+    assert (
+        "skipped antigravity_gemini31_pro (role-scoped model gemini-3.1-pro is never automatic for coding role 'author', decisions.md D188)"
+        in result.reason
+    )
 
 
 def test_flex_names_every_skipped_forbidden_candidate(crews):
-    """Two forbidden candidates before the choice means two named skips."""
+    """Two role-scoped candidates in coding role before the choice means two named skips."""
     result = resolve(
         crews,
         snap(openai(*HEALTHY), gemini(*HEALTHY)),
         crew="resolver-forbidden",
-        role="reconsider",
+        role="author",
         mode="flex",
     )
     assert result.worker_id == "codex_sol_high"
     assert "skipped antigravity_gemini31_pro (" in result.reason
     assert "skipped antigravity_gemini31_pro_b (" in result.reason
-    assert result.reason.count("D152/D153") == 2
+    assert result.reason.count(ROLE_SCOPED_CITATION) == 2
 
 
 def test_flex_skip_visibility_reason_is_one_line(crews):
@@ -480,7 +521,7 @@ def test_flex_skip_visibility_reason_is_one_line(crews):
         crews,
         snap(openai(*HEALTHY), gemini(*HEALTHY)),
         crew="resolver-forbidden",
-        role="score",
+        role="author",
         mode="flex",
     )
     assert result.worker_id == "codex_sol_high"
@@ -489,12 +530,12 @@ def test_flex_skip_visibility_reason_is_one_line(crews):
 
 
 def test_flex_skip_visibility_event_stays_within_the_line_budget(crews):
-    """A realistic five-worker stage still encodes inside MAX_EVENT_BYTES."""
+    """A realistic stage still encodes inside MAX_EVENT_BYTES."""
     result = resolve(
         crews,
         snap(openai(*HEALTHY), gemini(*HEALTHY)),
         crew="resolver-forbidden",
-        role="score",
+        role="author",
         mode="flex",
     )
     fields = result.to_dict()
@@ -505,32 +546,46 @@ def test_flex_skip_visibility_event_stays_within_the_line_budget(crews):
 
 
 def test_flex_refuses_when_every_candidate_is_forbidden(crews):
-    """More than one candidate, all forbidden, is still a forbidden refusal."""
+    """More than one candidate in coding role, all role-scoped, is a forbidden refusal."""
     with pytest.raises(ResolutionError) as excinfo:
         resolve(
             crews,
             snap(gemini(*HEALTHY)),
-            crew="resolver-forbidden",
-            role="ideate",
+            crew="resolver-coding-forbidden",
+            role="author",
             mode="flex",
         )
     assert excinfo.value.exit_code == 3
     assert excinfo.value.kind == "forbidden"
+    assert ROLE_SCOPED_CITATION in excinfo.value.message
 
 
 def test_flex_refuses_when_the_only_candidate_is_forbidden(crews):
-    """A sole forbidden candidate is exit 3, not exit 2."""
+    """A sole role-scoped candidate in coding role is exit 3, not exit 2."""
     with pytest.raises(ResolutionError) as excinfo:
         resolve(
             crews,
             snap(gemini(*HEALTHY)),
-            crew="resolver-crew",
-            role="score",
+            crew="resolver-sole-forbidden",
+            role="author",
             mode="flex",
         )
     assert excinfo.value.exit_code == 3
     assert excinfo.value.kind == "forbidden"
-    assert "decisions.md D152/D153" in excinfo.value.message
+    assert ROLE_SCOPED_CITATION in excinfo.value.message
+
+
+def test_flex_allows_role_scoped_candidate_in_planning_review_role(crews):
+    """In planning/review, a role-scoped candidate is eligible and not skipped."""
+    result = resolve(
+        crews,
+        snap(openai(*HEALTHY), gemini(*HEALTHY)),
+        crew="resolver-forbidden",
+        role="envision",
+        mode="flex",
+    )
+    assert result.worker_id == "antigravity_gemini31_pro"
+    assert "skipped" not in result.reason
 
 
 # --------------------------------------------------------------------------
@@ -616,14 +671,14 @@ def test_bind_allows_a_never_automatic_worker(crews):
     assert result.model == "claude-opus-5"
 
 
-def test_bind_still_refuses_a_forbidden_model(crews):
-    """No authority can bind a forbidden model."""
+def test_bind_refuses_a_role_scoped_model_in_coding_role(crews):
+    """No authority can bind a role-scoped model in a coding role."""
     with pytest.raises(ResolutionError) as excinfo:
         resolve(
             crews,
             snap(gemini(*HEALTHY)),
             crew="resolver-crew",
-            role="envision",
+            role="author",
             mode="bind",
             worker="antigravity_gemini31_pro",
             authorized_by="lee",
@@ -631,7 +686,89 @@ def test_bind_still_refuses_a_forbidden_model(crews):
         )
     assert excinfo.value.exit_code == 3
     assert excinfo.value.kind == "forbidden"
-    assert "decisions.md D152/D153" in excinfo.value.message
+    assert ROLE_SCOPED_CITATION in excinfo.value.message
+
+
+def test_bind_allows_role_scoped_model_in_planning_review_role(crews):
+    """A role-scoped model in a planning/review role binds successfully."""
+    result = resolve(
+        crews,
+        snap(gemini(*HEALTHY)),
+        crew="resolver-crew",
+        role="envision",
+        mode="bind",
+        worker="antigravity_gemini31_pro",
+        authorized_by="lee",
+        reason="curiosity",
+    )
+    assert result.worker_id == "antigravity_gemini31_pro"
+    assert result.mode == "bind"
+    assert result.authorized_by == "lee"
+
+
+def test_unmapped_role_fails_closed_in_all_three_modes(crews):
+    """A role outside the mapping fails closed in strict, flex, and bind modes."""
+    custom_crew = Crew(
+        name="unmapped-crew",
+        description="Crew with unmapped role",
+        stages={
+            "custom_stage": Stage(name="custom_stage", workers=("codex_sol_high",))
+        },
+        governed={},
+    )
+    all_crews = dict(crews.crews)
+    all_crews["unmapped-crew"] = custom_crew
+    crews_with_unmapped = CrewsConfig(
+        crews=all_crews, workers=crews.workers, path=crews.path
+    )
+
+    # 1. strict mode
+    with pytest.raises(ResolutionError) as excinfo_strict:
+        resolve(
+            crews_with_unmapped,
+            snap(openai(*HEALTHY)),
+            crew="unmapped-crew",
+            role="custom_stage",
+            mode="strict",
+        )
+    assert excinfo_strict.value.exit_code == 3
+    assert excinfo_strict.value.kind == "config"
+    assert "custom_stage" in excinfo_strict.value.message
+    assert "author" in excinfo_strict.value.message
+    assert ROLE_SCOPED_CITATION in excinfo_strict.value.message
+
+    # 2. flex mode
+    with pytest.raises(ResolutionError) as excinfo_flex:
+        resolve(
+            crews_with_unmapped,
+            snap(openai(*HEALTHY)),
+            crew="unmapped-crew",
+            role="custom_stage",
+            mode="flex",
+        )
+    assert excinfo_flex.value.exit_code == 3
+    assert excinfo_flex.value.kind == "config"
+    assert "custom_stage" in excinfo_flex.value.message
+    assert "author" in excinfo_flex.value.message
+    assert ROLE_SCOPED_CITATION in excinfo_flex.value.message
+
+    # 3. bind mode
+    with pytest.raises(ResolutionError) as excinfo_bind:
+        resolve(
+            crews_with_unmapped,
+            snap(openai(*HEALTHY)),
+            crew="unmapped-crew",
+            role="custom_stage",
+            mode="bind",
+            worker="codex_sol_high",
+            authorized_by="lee",
+            reason="test",
+        )
+    assert excinfo_bind.value.exit_code == 3
+    assert excinfo_bind.value.kind == "config"
+    assert "custom_stage" in excinfo_bind.value.message
+    assert "author" in excinfo_bind.value.message
+    assert ROLE_SCOPED_CITATION in excinfo_bind.value.message
 
 
 def test_bind_refuses_an_unknown_worker(crews):

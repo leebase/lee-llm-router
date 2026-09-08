@@ -714,14 +714,14 @@ def test_empty_prompt_exits_3(test_env, capsys):
 
 
 # ---------------------------------------------------------------------------
-# 7. Refusal (forbidden worker)
+# 7. Refusal (role-scoped worker)
 # ---------------------------------------------------------------------------
 
 
-def test_refusal_forbidden_worker_exits_3_and_never_constructs_popen(
+def test_refusal_role_scoped_worker_exits_3_and_never_constructs_popen(
     test_env, capsys, monkeypatch
 ):
-    """refusal (forbidden worker) -> exit 3 and fake popen was never constructed."""
+    """refusal (role-scoped worker) -> exit 3 and fake popen was never constructed."""
     crews_file, snapshot_file, events_file = test_env
 
     constructed = []
@@ -739,7 +739,7 @@ def test_refusal_forbidden_worker_exits_3_and_never_constructs_popen(
                 "--crew",
                 "dispatch-crew",
                 "--role",
-                "score",  # resolves to antigravity_gemini31_pro (forbidden)
+                "author",  # resolves to antigravity_gemini31_pro (role-scoped)
                 "--prompt",
                 "hello",
                 "--crews-file",
@@ -754,7 +754,50 @@ def test_refusal_forbidden_worker_exits_3_and_never_constructs_popen(
     assert len(constructed) == 0
     captured = capsys.readouterr()
     assert "gemini-3.1-pro" in captured.err
-    assert "decisions.md D152/D153" in captured.err
+    assert "decisions.md D188" in captured.err
+
+
+def test_role_scoped_worker_in_planning_role_passes_refusal_and_constructs_popen(
+    test_env, monkeypatch
+):
+    """planning role with role-scoped worker passes refusal gate; popen constructed once."""
+    crews_file, snapshot_file, events_file = test_env
+
+    constructed: list[FakeProcess] = []
+
+    def fake_popen(argv, **kwargs):
+        proc = FakeProcess(argv, exit_code=0, exit_after_ticks=0)
+        constructed.append(proc)
+        return proc
+
+    monkeypatch.setattr(
+        "lee_llm_router.dispatch.run_dispatch",
+        lambda *args, **kwargs: run_dispatch(
+            *args, **dict(kwargs, popen=fake_popen, sleep=lambda _s: None)
+        ),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        doctor.main(
+            [
+                "dispatch",
+                "--crew",
+                "dispatch-crew",
+                "--role",
+                "score",  # resolves to antigravity_gemini31_pro (eligible in planning_review)
+                "--prompt",
+                "hello",
+                "--crews-file",
+                str(crews_file),
+                "--availability-file",
+                str(snapshot_file),
+                "--events-file",
+                str(events_file),
+            ]
+        )
+    assert exc_info.value.code == 0
+    assert len(constructed) == 1
+    assert exc_info.value.code == constructed[0]._exit_code
 
 
 # ---------------------------------------------------------------------------
@@ -784,7 +827,7 @@ def test_event_ledger_written_once_on_success_none_on_refusal(test_env, monkeypa
                 "--crew",
                 "dispatch-crew",
                 "--role",
-                "score",
+                "author",
                 "--prompt",
                 "hello",
                 "--crews-file",

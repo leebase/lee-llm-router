@@ -22,9 +22,9 @@ Three modes, three different relationships with headroom:
     The stage's declared candidate list, in order, best-known headroom first:
     every ``healthy`` candidate, then ``degraded``, then ``unknown`` as a last
     resort. Expensive never-automatic workers are skipped unless the crew
-    author left no alternative. A forbidden model is never chosen, but the
-    skip is visible: the reason names every forbidden candidate passed over
-    and cites the decision that forbids it.
+    author left no alternative. A role-scoped model is never chosen for coding
+    roles, but the skip is visible: the reason names every role-scoped candidate
+    passed over and cites the decision that restricts it.
 
 ``bind``
     An explicit, authorized escalation to a named worker — in or out of the
@@ -45,13 +45,15 @@ from lee_llm_router.availability import (
     Health,
 )
 from lee_llm_router.crews import (
+    ROLE_SCOPED_CITATION,
     CrewsConfig,
     CrewsConfigError,
     ResolvedWorker,
     Worker,
-    is_forbidden,
     is_never_automatic,
+    is_role_scoped,
     resolve_worker,
+    role_class,
 )
 
 MODES: tuple[str, ...] = ("strict", "flex", "bind")
@@ -61,10 +63,7 @@ EXIT_NOT_ELIGIBLE = 2
 """Exit code when nothing in the candidate set may be dispatched."""
 
 EXIT_CONFIG_ERROR = 3
-"""Exit code for a config error, a usage error, or a forbidden model."""
-
-FORBIDDEN_CITATION = "decisions.md D152/D153"
-"""The authority a forbidden-model refusal must cite."""
+"""Exit code for a config error, a usage error, or a forbidden-model refusal."""
 
 VETO_HEALTH: tuple[Health, ...] = (Health.EXHAUSTED, Health.LIKELY_EXHAUSTED)
 """Channel health states that mean "no headroom": never dispatched automatically."""
@@ -230,8 +229,8 @@ def resolve(
     Raises:
         ResolutionError: Exit ``2`` when nothing is eligible; exit ``3`` for an
             unknown crew, stage, mode, or worker, for a misused argument, for a
-            worker whose model is forbidden, or when the provider refuses to
-            build a dispatch command.
+            worker whose model is role-scoped for that role class, or when the
+            provider refuses to build a dispatch command.
     """
     if mode not in MODES:
         raise ResolutionError(
@@ -249,6 +248,7 @@ def resolve(
 
     crew_obj = _config_guard(lambda: crews.crew(crew))
     candidates = _config_guard(lambda: crew_obj.eligible(role))
+    r_class = _config_guard(lambda: role_class(role))
 
     if mode == "bind":
         return _resolve_bind(
@@ -256,15 +256,28 @@ def resolve(
             snapshot,
             crew=crew,
             role=role,
+            r_class=r_class,
             worker=worker,
             authorized_by=authorized_by,
             reason=reason,
         )
     if mode == "strict":
         return _resolve_strict(
-            crews, snapshot, crew=crew, role=role, candidates=candidates
+            crews,
+            snapshot,
+            crew=crew,
+            role=role,
+            r_class=r_class,
+            candidates=candidates,
         )
-    return _resolve_flex(crews, snapshot, crew=crew, role=role, candidates=candidates)
+    return _resolve_flex(
+        crews,
+        snapshot,
+        crew=crew,
+        role=role,
+        r_class=r_class,
+        candidates=candidates,
+    )
 
 
 def _resolve_strict(
@@ -273,11 +286,13 @@ def _resolve_strict(
     *,
     crew: str,
     role: str,
+    r_class: str,
     candidates: Sequence[str],
 ) -> Resolution:
     """Resolve the crew's named worker, vetoing only on a spent channel."""
     resolved = _resolve_named(crews, candidates[0])
-    _refuse_forbidden(resolved)
+    if r_class == "coding" and is_role_scoped(resolved.model):
+        _refuse_role_scoped(resolved, role=role, r_class=r_class)
     headroom = snapshot.headroom(resolved.channel)
 
     if headroom.health in VETO_HEALTH:
@@ -313,18 +328,19 @@ def _resolve_flex(
     *,
     crew: str,
     role: str,
+    r_class: str,
     candidates: Sequence[str],
 ) -> Resolution:
     """Resolve the best-funded candidate in the stage's declared order."""
     sole = len(candidates) == 1
     considered: list[ChannelHeadroom] = []
     usable: list[tuple[ResolvedWorker, ChannelHeadroom, bool]] = []
-    skipped_forbidden: list[ResolvedWorker] = []
+    skipped_role_scoped: list[ResolvedWorker] = []
 
     for worker_id in candidates:
         resolved = _resolve_named(crews, worker_id)
-        if is_forbidden(resolved.model):
-            skipped_forbidden.append(resolved)
+        if r_class == "coding" and is_role_scoped(resolved.model):
+            skipped_role_scoped.append(resolved)
             continue
         headroom = snapshot.headroom(resolved.channel)
         considered.append(headroom)
@@ -334,8 +350,8 @@ def _resolve_flex(
         if headroom.health in FLEX_TIERS:
             usable.append((resolved, headroom, never_automatic))
 
-    if skipped_forbidden and len(skipped_forbidden) == len(candidates):
-        _refuse_forbidden(skipped_forbidden[0])
+    if skipped_role_scoped and len(skipped_role_scoped) == len(candidates):
+        _refuse_role_scoped(skipped_role_scoped[0], role=role, r_class=r_class)
 
     if not usable:
         raise ResolutionError(
@@ -362,7 +378,8 @@ def _resolve_flex(
                     headroom,
                     tier,
                     never_automatic,
-                    skipped_forbidden,
+                    role=role,
+                    skipped_role_scoped=skipped_role_scoped,
                 ),
                 authorized_by=None,
             )
@@ -375,6 +392,7 @@ def _resolve_bind(
     *,
     crew: str,
     role: str,
+    r_class: str,
     worker: str | None,
     authorized_by: str | None,
     reason: str | None,
@@ -407,7 +425,8 @@ def _resolve_bind(
         )
 
     resolved = _resolve_named(crews, worker)
-    _refuse_forbidden(resolved)
+    if r_class == "coding" and is_role_scoped(resolved.model):
+        _refuse_role_scoped(resolved, role=role, r_class=r_class)
     headroom = snapshot.headroom(resolved.channel)
     return _build(
         snapshot,
@@ -426,7 +445,9 @@ def _flex_reason(
     headroom: ChannelHeadroom,
     tier: Health,
     never_automatic: bool,
-    skipped_forbidden: Sequence[ResolvedWorker] = (),
+    *,
+    role: str,
+    skipped_role_scoped: Sequence[ResolvedWorker] = (),
 ) -> str:
     """Compose the one-line reason for a flex choice.
 
@@ -435,13 +456,14 @@ def _flex_reason(
         headroom: That worker's channel headroom.
         tier: The eligibility tier the choice came from.
         never_automatic: Whether the chosen model is never-automatic.
-        skipped_forbidden: Forbidden candidates passed over on the way to the
-            choice. Each is named in the reason, with its model and the
+        role: Cognitive stage/role name.
+        skipped_role_scoped: Role-scoped candidates passed over on the way to
+            the choice. Each is named in the reason, with its model and the
             governing decision, so a skip is never silent.
 
     Returns:
         A single line — no newline — naming the choice, its headroom, and every
-        forbidden candidate that was skipped.
+        candidate that was skipped.
     """
     if tier is Health.HEALTHY:
         reason = (
@@ -463,10 +485,10 @@ def _flex_reason(
             f"; {resolved.model} is never-automatic but the crew author left "
             "no alternative for this stage"
         )
-    for skipped in skipped_forbidden:
+    for skipped in skipped_role_scoped:
         reason += (
-            f"; skipped {skipped.worker_id} (forbidden model {skipped.model}, "
-            f"{FORBIDDEN_CITATION})"
+            f"; skipped {skipped.worker_id} (role-scoped model {skipped.model} is "
+            f"never automatic for coding role '{role}', {ROLE_SCOPED_CITATION})"
         )
     return reason
 
@@ -645,24 +667,30 @@ def _worker(crews: CrewsConfig, worker_id: str) -> Worker:
         ) from exc
 
 
-def _refuse_forbidden(resolved: ResolvedWorker) -> None:
-    """Refuse a worker whose model must never be chosen.
+def _refuse_role_scoped(
+    resolved: ResolvedWorker,
+    *,
+    role: str,
+    r_class: str,
+) -> None:
+    """Refuse a worker whose model is role-scoped for this role class.
 
     Args:
         resolved: The worker under consideration.
+        role: Cognitive stage/role name.
+        r_class: The role class ('coding' or 'planning_review').
 
     Raises:
         ResolutionError: Exit ``3``, kind ``forbidden``, citing the decision
-            that forbids the model.
+            that restricts the model.
     """
-    if not is_forbidden(resolved.model):
-        return
     raise ResolutionError(
-        f"worker {resolved.worker_id!r} runs {resolved.model}, which the "
-        f"resolver must never choose ({FORBIDDEN_CITATION})",
+        f"worker {resolved.worker_id!r} runs {resolved.model}, which is "
+        f"role-scoped and forbidden for {r_class} role {role!r} "
+        f"({ROLE_SCOPED_CITATION})",
         exit_code=EXIT_CONFIG_ERROR,
         kind="forbidden",
-        remedy=f"pick a different worker for this stage ({FORBIDDEN_CITATION})",
+        remedy=f"pick a different worker for this stage ({ROLE_SCOPED_CITATION})",
     )
 
 

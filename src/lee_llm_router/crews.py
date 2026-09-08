@@ -47,6 +47,20 @@ STAGE_NAMES: tuple[str, ...] = (
 GOVERNED_ROLES: tuple[str, ...] = ("primary", "reviewer", "judge")
 """The governed route roles a crew may declare."""
 
+# decisions.md D188: stage assignment is the supervisor's judgment recorded
+# for Lee's confirmation.
+ROLE_CLASS_BY_ROLE: dict[str, str] = {
+    "author": "coding",
+    "envision": "planning_review",
+    "ideate": "planning_review",
+    "reconsider": "planning_review",
+    "score": "planning_review",
+    "primary": "coding",
+    "reviewer": "planning_review",
+    "judge": "planning_review",
+}
+"""Mapping of role names to their role class (decisions.md D188)."""
+
 
 class CrewsConfigError(ValueError):
     """Raised when the crews file is missing, malformed, or inconsistent."""
@@ -558,8 +572,11 @@ mode returns exactly the crew's named worker, so nothing here is enforced by
 :class:`~lee_llm_router.policy.CrewRoutingPolicy` yet.
 """
 
-FORBIDDEN_MODELS = frozenset({"gemini-3.1-pro"})
-"""Models the resolver must never choose at all (decisions.md D152/D153)."""
+ROLE_SCOPED_MODELS = frozenset({"gemini-3.1-pro"})
+"""Models restricted to specific role classes (decisions.md D188)."""
+
+ROLE_SCOPED_CITATION = "decisions.md D188"
+"""The authority a role-scoped refusal or skip must cite."""
 
 CHANNELS: tuple[str, ...] = (
     "openai-sub",
@@ -666,16 +683,38 @@ def is_never_automatic(model: str | None) -> bool:
     return model is not None and model in NEVER_AUTOMATIC_MODELS
 
 
-def is_forbidden(model: str | None) -> bool:
-    """Return whether a model must never be chosen by the resolver.
+def is_role_scoped(model: str | None) -> bool:
+    """Return whether a model is restricted to specific role classes.
 
     Args:
         model: Model identifier, or ``None``.
 
     Returns:
-        ``True`` if the model is in :data:`FORBIDDEN_MODELS`.
+        ``True`` if the model is in :data:`ROLE_SCOPED_MODELS`.
     """
-    return model is not None and model in FORBIDDEN_MODELS
+    return model is not None and model in ROLE_SCOPED_MODELS
+
+
+def role_class(role: str) -> str:
+    """Return the role class ('coding' or 'planning_review') for a role name.
+
+    Args:
+        role: Role name to look up.
+
+    Returns:
+        The role class string ('coding' or 'planning_review').
+
+    Raises:
+        CrewsConfigError: If the role is not in :data:`ROLE_CLASS_BY_ROLE`,
+            naming the role and the known roles.
+    """
+    try:
+        return ROLE_CLASS_BY_ROLE[role]
+    except KeyError as exc:
+        known = ", ".join(sorted(ROLE_CLASS_BY_ROLE))
+        raise CrewsConfigError(
+            f"unknown role {role!r} (known roles: {known}; {ROLE_SCOPED_CITATION})"
+        ) from exc
 
 
 @dataclass(frozen=True)

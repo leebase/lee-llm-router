@@ -346,10 +346,12 @@ resolved.effort    # "high"
 
 Two declarative constants record the cost guardrails from the crew-aware
 resolver plan. `NEVER_AUTOMATIC_MODELS` (Fable 5.1, Fable 5, Luna Max, Opus 5)
-must never enter an *automatic* fallback chain, and `FORBIDDEN_MODELS`
-(`gemini-3.1-pro`) must never be chosen at all. Helpers `is_never_automatic()`
-and `is_forbidden()` expose them. Strict routing does not enforce either: it
-returns exactly the worker the crew names.
+must never enter an *automatic* fallback chain, and `ROLE_SCOPED_MODELS`
+(`gemini-3.1-pro`, decisions.md D188) is restricted by role class: forbidden
+in coding roles, eligible in planning and review roles. Helpers
+`is_never_automatic()`, `is_role_scoped()`, and `role_class()` expose them.
+Strict routing returns exactly the worker the crew names, refusing only on
+spent channel headroom or a role-scoped model in a coding role.
 
 ### Funding channels
 
@@ -468,21 +470,20 @@ lee-llm-router doctor --config config/llm.yaml --crews --crews-file /path/to/cre
 ```
 
 ```text
-  !  Worker 'antigravity_gemini31_pro' resolves to forbidden model \
-'gemini-3.1-pro'; the resolver must never choose it
-OK crews: 14 crews, 23/23 workers resolved, 1 forbidden-model warning(s)
+OK crews: 14 crews, 23/23 workers resolved, 0 role-scoped warning(s)
 ```
 
 `--config` is optional when `--crews` is given. Any unresolvable worker or
 unknown governed harness is printed as an error (`  x  `, on stderr) and exits 1.
 
-A worker whose resolved model is in `FORBIDDEN_MODELS` is reported as a
-**warning** (`  !  `, on stdout) and does not change the exit code. The crews
-file belongs to Auto-Orch, not to this router: the live file declares
-`antigravity_gemini31_pro` and a `gemini-pro-crew` that uses it, so a hard error
-there would only make `doctor --crews` unusable against real state. Warnings are
-counted in the summary line. `NEVER_AUTOMATIC_MODELS` members are informational
-only and produce no output.
+A crew stage whose role class is `coding` and names a worker that resolves to a
+role-scoped model in `ROLE_SCOPED_MODELS` (or an unmapped stage name) is reported
+as a **warning** (`  !  `, on stdout) citing `decisions.md D188` and does not
+change the exit code. The crews file belongs to Auto-Orch, not to this router:
+`gemini-pro-crew` names `antigravity_gemini31_pro` only in planning and review
+stages (`envision` and `reconsider`), so on the live file `doctor --crews` reports
+0 warnings. Warnings are counted in the summary line (`N role-scoped warning(s)`).
+`NEVER_AUTOMATIC_MODELS` members are informational only and produce no output.
 
 ### `doctor --availability`
 
@@ -538,10 +539,11 @@ now, and why" — it loads the crews file and the availability snapshot, calls
 the event ledger. It never invokes a provider binary.
 
 ```bash
+lee-llm-router resolve openai-economy author
+lee-llm-router resolve openai-economy author --mode flex
+lee-llm-router resolve openai-economy author --mode flex --json
 lee-llm-router resolve --crew openai-economy --role author
-lee-llm-router resolve --crew openai-economy --role author --mode flex
-lee-llm-router resolve --crew openai-economy --role author --mode flex --json
-lee-llm-router resolve --crew openai-economy --role author \
+lee-llm-router resolve openai-economy author \
   --mode bind --worker codex_terra_high \
   --authorized-by lee --reason "quota exhausted, escalate for the demo"
 ```
@@ -588,11 +590,12 @@ recorded.
 Exit codes are exactly `ResolutionError.exit_code`: `0` on success, `2` when
 nothing in the candidate set is eligible (e.g. every candidate's channel is
 exhausted), `3` for a config, usage, or forbidden-model refusal — including an
-unknown crew or role, a bind missing `--worker`/`--authorized-by`/`--reason`,
-or a worker resolving to a `FORBIDDEN_MODELS` entry (cites `decisions.md
-D152/D153`). On refusal, stdout stays empty and stderr gets `resolve:
-<message>`, plus a second line `remedy: <remedy>` when the resolver suggests
-one; with `--json`, stderr is unchanged and stdout gets
+unknown crew or stage, an unmapped role, a bind missing
+`--worker`/`--authorized-by`/`--reason`, or a worker resolving to a role-scoped
+model in `ROLE_SCOPED_MODELS` for a coding role (cites `decisions.md D188`).
+On refusal, stdout stays empty and stderr gets `resolve: <message>`, plus a second
+line `remedy: <remedy>` when the resolver suggests one; with `--json`, stderr is
+unchanged and stdout gets
 `{"error": ..., "exit_code": ..., "kind": ..., "remedy": ...}` instead of the
 resolution. A refusal never writes an event.
 
@@ -602,6 +605,17 @@ Every **successful** resolution appends exactly one event via
 write itself fails (an unwritable path, an oversized encoded line), the
 resolution is still printed, but the exit code becomes `3` and stderr explains
 why: a resolution that never reached the ledger is not a completed one.
+
+### Resolver rules
+
+| Rule / Condition | Strict mode | Flex mode | Bind mode |
+|---|---|---|---|
+| Channel health `exhausted` or `likely_exhausted` | Refused (exit 2) | Skipped; falls back to next tier or exit 2 if all exhausted | Allowed (headroom reported, not a veto) |
+| Channel health `healthy`, `degraded`, or `unknown` | Dispatched | Dispatched in tier order (`healthy` > `degraded` > `unknown`) | Dispatched |
+| Never-automatic model (`NEVER_AUTOMATIC_MODELS`) | Dispatched if named | Skipped if any automatic candidate available; eligible if only candidate | Dispatched (authorized escalation) |
+| Role-scoped model in coding role (`ROLE_SCOPED_MODELS`, D188) | Refused (exit 3, kind `forbidden`, cites D188) | Skipped; reason names skipped worker and cites D188; exit 3 if all skipped | Refused (exit 3, kind `forbidden`, cites D188) |
+| Role-scoped model in planning/review role (`ROLE_SCOPED_MODELS`, D188) | Dispatched (ordinary worker) | Dispatched (ordinary worker) | Dispatched (ordinary worker) |
+| Unmapped role (`ROLE_CLASS_BY_ROLE`, D188) | Refused (exit 3, kind `config`, cites D188) | Refused (exit 3, kind `config`, cites D188) | Refused (exit 3, kind `config`, cites D188) |
 
 ### Dispatching
 
@@ -644,4 +658,66 @@ lee-llm-router dispatch --crew openai-economy --role author --mode flex \
     dispatch exits with code `124`.
   - **Normal completion**: Otherwise, dispatch exits with the child's exit code.
 - **Exit-code precedence**: Resolution refusal (2/3) > usage error (3) > killed (124) > child exit code.
+
+## Harness shims
+
+Command shims connect external harnesses (Claude Code, Codex, OMP, OpenCode) to
+`lee-llm-router`. Shims are generated from a single template source
+(`src/lee_llm_router/templates/shims/crew.md.tmpl`) and never hand-written.
+
+### Targets
+
+| Harness tag | Target path | Form / Frontmatter |
+|---|---|---|
+| `claude-code` | `~/.claude/commands/crew.md` | Claude Code slash command; frontmatter `description`, `argument-hint: <crew> <role>`, `allowed-tools: Bash(lee-llm-router:*)` |
+| `codex` | `~/.codex/prompts/crew.md` | Codex custom prompt; frontmatter `description`, `argument-hint: <crew> <role>` |
+| `omp` | `<project>/.omp/prompts/crew.md` | OMP prompt template; frontmatter `description`, `argument-hint: <crew> <role>` (default project: cwd; `--project PATH` overrides) |
+| `opencode` | `~/.config/opencode/command/crew.md` | OpenCode command file; frontmatter `description`, default agent preserved |
+
+Target home is `Path.home()` by default, or overridden via `LEE_LLM_ROUTER_SHIM_HOME`
+(used by tests and sandboxed runs). Directories are created only by `--apply`.
+
+### How shims work
+
+Every shim's rendered body runs the positional resolve command:
+
+```bash
+lee-llm-router resolve $ARGUMENTS --mode flex --harness <tag> --json
+```
+
+It parses the JSON output, prints `worker`, `model`, `effort`, `headroom`, and
+`reason`, and offers the exact `lee-llm-router dispatch ...` command for the user
+to run:
+
+```bash
+lee-llm-router dispatch --crew <crew> --role <role> --mode flex --harness <tag> --prompt-file <path>
+```
+
+A shim never dispatches on its own, never invokes a provider binary, and never
+edits files.
+
+### Marker and drift detection
+
+Each generated shim contains an integrity marker line:
+
+```html
+<!-- lee-llm-router shim v1 sha256=<hex> -->
+```
+
+The SHA256 hex digest covers the markdown body below the marker line.
+
+- **`install --dry-run`**: prints the absolute path, the proposed action
+  (`create`, `update`, `unchanged`, or `refuse: not generated by lee-llm-router`),
+  and the full content for each target without touching the filesystem (exit 0).
+- **`install --apply`**: writes each target and creates parent directories as
+  needed. Refuses to overwrite any file whose marker or hash does not match what
+  `lee-llm-router` generated unless `--force` is given (exit 0 on success, exit 1
+  if any target was refused, exit 3 on usage error).
+- **`diff`**: prints a unified diff for each installed target that differs from the
+  current render, reports `missing: <path>` for uninstalled targets, and prints
+  nothing for identical files. Exits 0 if no drift and none missing; exits 1 if
+  any drift or missing.
+- **`--harness <tag>`**: repeatable flag limiting `install` or `diff` to the
+  specified targets.
+
 

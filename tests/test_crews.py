@@ -8,17 +8,20 @@ import pytest
 
 from lee_llm_router.crews import (
     CREWS_FILE_ENV_VAR,
-    FORBIDDEN_MODELS,
     NEVER_AUTOMATIC_MODELS,
+    ROLE_CLASS_BY_ROLE,
+    ROLE_SCOPED_CITATION,
+    ROLE_SCOPED_MODELS,
     STAGE_NAMES,
     WORKER_PROVIDER_OVERRIDES,
     CrewsConfigError,
     Worker,
-    is_forbidden,
     is_never_automatic,
+    is_role_scoped,
     load_crews,
     resolve_crews_path,
     resolve_worker,
+    role_class,
 )
 
 FIXTURE = Path(__file__).parent / "fixtures" / "crews.yaml"
@@ -345,15 +348,43 @@ def test_resolve_worker_no_env_vars_raises() -> None:
         resolve_worker(_worker("legacy", "run-sol {stage}"))
 
 
-def test_never_automatic_and_forbidden_helpers() -> None:
+def test_never_automatic_and_role_scoped_helpers() -> None:
     assert "claude-fable-5-1" in NEVER_AUTOMATIC_MODELS
-    assert "gemini-3.1-pro" in FORBIDDEN_MODELS
+    assert ROLE_SCOPED_MODELS == frozenset({"gemini-3.1-pro"})
     assert is_never_automatic("claude-opus-5") is True
     assert is_never_automatic("gpt-5.6-sol") is False
     assert is_never_automatic(None) is False
-    assert is_forbidden("gemini-3.1-pro") is True
-    assert is_forbidden("gemini-3.8-flash-high") is False
-    assert is_forbidden(None) is False
+    assert is_role_scoped("gemini-3.1-pro") is True
+    assert is_role_scoped("gemini-3.8-flash-high") is False
+    assert is_role_scoped(None) is False
+
+
+def test_role_class_by_role_contains_exactly_eight_roles() -> None:
+    expected = {
+        "author": "coding",
+        "envision": "planning_review",
+        "ideate": "planning_review",
+        "reconsider": "planning_review",
+        "score": "planning_review",
+        "primary": "coding",
+        "reviewer": "planning_review",
+        "judge": "planning_review",
+    }
+    assert ROLE_CLASS_BY_ROLE == expected
+    assert len(ROLE_CLASS_BY_ROLE) == 8
+
+
+def test_role_class_helper() -> None:
+    for role, expected_class in ROLE_CLASS_BY_ROLE.items():
+        assert role_class(role) == expected_class
+
+    with pytest.raises(CrewsConfigError) as exc_info:
+        role_class("unmapped_role")
+    err_msg = str(exc_info.value)
+    assert "unmapped_role" in err_msg
+    assert "author" in err_msg
+    assert "envision" in err_msg
+    assert ROLE_SCOPED_CITATION in err_msg
 
 
 def test_every_fixture_worker_resolves() -> None:

@@ -10,7 +10,7 @@
 |-----------|-------|
 | **Phase** | P4 complete; pi harness reliability shipped |
 | **Mode** | 2 (Implementation with approval) |
-| **Last Updated** | 2026-09-07 (Crew Resolver Sprint 3 closed, review PASS round 2) |
+| **Last Updated** | 2026-09-07 (Crew Resolver Sprint 4 closed, review PASS round 1) |
 
 ### Sprint Status
 | Sprint | Status | Completion |
@@ -25,14 +25,15 @@
 | Crew Resolver S1 - Crews as a routing policy (`docs/crew-resolver/sprint-plan.md`) | Done | 100% |
 | Crew Resolver S2 - Availability snapshot and refresh script | Done | 100% |
 | Crew Resolver S3 - resolve CLI, flex, bind, event ledger, dispatch watchdog | Done | 100% |
-| Crew Resolver S4 - Four harness shims | Next | 0% |
+| Crew Resolver S4 - D188 role-scoped rule, resolve positionals, four harness shims | Done | 100% |
+| Crew Resolver S5 - Crew page and proposals | Next | 0% |
 
 ---
 
 ## What's Happening Now
 
 ### Current Work Stream
-Crew-aware worker resolver lane (D187). Sprint 1 committed `bea61bd`; Sprint 2 committed `6dd9402` (review PASS round 8; hourly refresh cron installed by Lee). Sprint 3 built 2026-09-07 in thirteen packets (P15–P27): `resolver.py` (strict/flex/bind, refusals), `events.py` (append-only JSONL ledger), `watchdog.py` (stall/ceiling with injected clock), `dispatch.py` + `lee-llm-router resolve|dispatch`, provider argv corrections against the real `codex`/`claude`/`agy` CLIs, and a cold-start pass (lazy package init, deferred httpx, C YAML loader, crews parse cache) that brought `resolve` to a 44 ms median. Staffing shifted mid-sprint to Gemini 3.8 Flash via `agy` when the Anthropic session bucket hit 15%, then back as it reset. Independent review (Sol Low): round 1 one Medium, round 2 PASS; committed. Open Lee decisions in `docs/crew-resolver/needs-lee.md` (Gemini 3.1 Pro's standing). Next: Sprint 4 shims.
+Crew-aware worker resolver lane (D187). Sprint 1 committed `bea61bd`; Sprint 2 committed `6dd9402` (review PASS round 8; hourly refresh cron installed by Lee). Sprint 3 built 2026-09-07 in thirteen packets (P15–P27): `resolver.py` (strict/flex/bind, refusals), `events.py` (append-only JSONL ledger), `watchdog.py` (stall/ceiling with injected clock), `dispatch.py` + `lee-llm-router resolve|dispatch`, provider argv corrections against the real `codex`/`claude`/`agy` CLIs, and a cold-start pass (lazy package init, deferred httpx, C YAML loader, crews parse cache) that brought `resolve` to a 44 ms median. Staffing shifted mid-sprint to Gemini 3.8 Flash via `agy` when the Anthropic session bucket hit 15%, then back as it reset. Independent review (Sol Low): round 1 one Medium, round 2 PASS; committed. Sprint 4 built 2026-09-07 in five packets (P29–P32, all Gemini 3.8 Flash via `agy`): D188 role-scoped Gemini 3.1 Pro (`ROLE_CLASS_BY_ROLE`), `resolve CREW ROLE` positionals, `shims.py` + one template rendering Claude Code/Codex/OMP/OpenCode targets with marker hashes, `shims install --dry-run|--apply|diff`, and a parity test that runs each rendered shim line as a subprocess (four harness tags, one route_id). Sol Low review PASS round 1; 557 tests; committed. Lee-gated: D188 mapping confirmation and `shims install --apply` (`docs/crew-resolver/needs-lee.md`). Next: Sprint 5 crew page.
 
 Prior stream:
 Sprint 7 is complete. The pi coding harness path now has a repo-local reproduction fixture, stricter CLI harness contract handling, explicit `doctor` validation, regression coverage, and a user-style verification path. No downstream migration work is executed from this repo now; downstream projects are handled separately.
@@ -91,7 +92,8 @@ Sprint 7 is complete. The pi coding harness path now has a repo-local reproducti
 
 | Rank | Action | Owner | Done When |
 |------|--------|-------|----------|
-| 1 | Crew Resolver Sprint 4: four harness shims (Claude Code `/crew`, Codex prompt, OMP command, OpenCode) generated from one template by `shims install --dry-run|--apply`; apply is Lee's call | Supervisor + Lee | Each shim yields the same resolution as the CLI; ledger shows four harness tags |
+| 1 | Lee: confirm D188 stage mapping; run `shims install --apply`; invoke `/crew` in each harness (needs-lee items 1–3) | Lee | Live ledger shows four harness tags for one crew/role |
+| 1b | Crew Resolver Sprint 5: `crews page --out` static HTML projection with headroom pips, benchmark sidecar, proposals block | Supervisor | Page renders light/dark, desktop/390 px, with and without sidecar |
 | 2 | Decide whether to productize an optional doctor smoke-execution mode for CLI harness roles | Human + AI | We know whether runtime smoke tests should become part of the public CLI |
 | 3 | Reassess broader harness-aware planning as a separate sprint | Human + AI | Follow-on planning is grounded in a stable pi harness baseline |
 

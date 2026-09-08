@@ -6,6 +6,27 @@
 
 ---
 
+## 2026-09-07 - Crew Resolver Sprint 4: D188 role-scoped Gemini 3.1 Pro, four harness shims
+
+**What was built:** (1) The blanket Gemini 3.1 Pro refusal became a role-scoped rule (chief-of-staff D188): `ROLE_CLASS_BY_ROLE` in `crews.py` maps stage names to `coding` or `planning_review`; for coding roles a role-scoped model is refused in strict and bind (exit 3, citing D188) and skipped-and-named in flex; for planning/review roles it is an ordinary worker. `doctor --crews` warns only where a crew names it in a coding stage. (2) `resolve CREW ROLE` positionals (equivalent to `--crew/--role`, exit 3 on mixed forms) so one shim line works in every harness via `$ARGUMENTS`. (3) `shims.py` renders one template (`templates/shims/crew.md.tmpl`) into four targets — Claude Code `~/.claude/commands/crew.md`, Codex `~/.codex/prompts/crew.md`, OMP `<project>/.omp/prompts/crew.md`, OpenCode `~/.config/opencode/command/crew.md` — each carrying a `sha256` marker; `lee-llm-router shims install --dry-run|--apply [--force] [--harness TAG] [--project PATH]` and `shims diff` (exit 1 on drift or missing). Shims recommend and never dispatch.
+
+**Why it matters:** Lee can type `/crew <crew> <role>` in any of the four harnesses and get the same worker the CLI would choose, with the harness tag on the ledger line. 3.1 Pro is usable where Lee actually uses it (planning/review) and still never writes code automatically.
+
+**Evidence (supervisor-observed):** 557 tests (from 521); Black/Ruff clean on `src/`. Live: `doctor --crews` → 14 crews, 23/23, 0 role-scoped warnings; `gemini-pro-crew envision` strict/bind → exit 0 on 3.1 Pro; scratch-file `author` strict/bind → exit 3, flex → skipped and named. Shims: apply/refuse/force/diff cycle run in a temp home; real home directories untouched. Parity test runs each rendered shim's exact `resolve` line as a subprocess: four events, four harness tags, one `route_id`. Cold `resolve` ×5 at close: 45/49/47/49/45 ms (median 47).
+
+**Review:** Sol Low (Codex, read-only). Round 1 **PASS**, no findings. Ledger: `docs/crew-resolver/execution-log.md`; open items: `docs/crew-resolver/needs-lee.md` (D188 mapping confirmation, `--apply`, in-harness acceptance).
+
+**How to Verify**
+
+```bash
+PYTHONPATH=src .venv/bin/python -m pytest -q                                   # 557 passed
+PYTHONPATH=src .venv/bin/python -m lee_llm_router.doctor doctor --crews        # 0 role-scoped warning(s)
+PYTHONPATH=src .venv/bin/python -m lee_llm_router.doctor resolve gemini-pro-crew envision --mode flex --no-event
+PYTHONPATH=src .venv/bin/python -m lee_llm_router.doctor shims install --dry-run --project ~/projects/chief-of-staff
+```
+
+---
+
 ## 2026-09-07 - Crew Resolver Sprint 3: resolve CLI, flex/bind, event ledger, dispatch watchdog
 
 **What was built:** `resolver.py` — a pure `resolve()` over the loaded crews and the availability snapshot with three modes. `strict` returns the crew's named worker and vetoes (exit 2) only on `exhausted`/`likely_exhausted`; `degraded`/`unknown` pass with the state named in the reason, so a dead availability cron cannot halt governed runs. `flex` walks the stage list in declared order by tier (healthy, then degraded, then unknown as a stated last resort), skips never-automatic workers (Fable 5.1, Luna Max, Opus 5) unless the stage names only one, and exits 2 with a remedy (`refresh availability` or `wait for reset at <time>`) when nothing is eligible. `bind` requires `--worker --authorized-by --reason`, may name any worker, reports headroom and never vetoes. Gemini 3.1 Pro is refused in every mode (exit 3, D152/D153). `events.py` appends one compact JSON line per successful resolution to `~/.local/state/lee-llm-router/events/<host>.jsonl` with a single `O_APPEND` write, 4 KB cap, 17 fixed fields including `route_id` (`provider:model:effort`) and `harness`. `lee-llm-router resolve` and `lee-llm-router dispatch` expose this; `dispatch` runs the provider harness argv with the prompt on argv or stdin (writer thread, no pipe deadlock), streams stdout/stderr, and supervises it with `watchdog.py` (stall flag after `--stall-minutes` of no output and no watched-file activity, never kills; `--max-minutes` ceiling kills, exit 124). Provider dispatch templates were corrected against the installed CLIs (`codex exec …`, `claude --model … --effort … -p`, `agy --dangerously-skip-permissions --model … -p`). Cold start: package `__init__` is lazy (PEP 562), `httpx` deferred, C YAML loader, and an mtime/size-keyed crews parse cache under `~/.cache/lee-llm-router/` (`LEE_LLM_ROUTER_NO_CACHE=1` disables).

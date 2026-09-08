@@ -1,4 +1,4 @@
-﻿"""Doctor CLI tests (Sprint 4 + Sprint 6 export workflow)."""
+"""Doctor CLI tests (Sprint 4 + Sprint 6 export workflow)."""
 
 from __future__ import annotations
 
@@ -395,9 +395,7 @@ def test_doctor_crews_without_config_exits_0(capsys):
     assert exc_info.value.code == 0
 
     out = capsys.readouterr().out
-    assert (
-        "OK crews: 2 crews, 4/4 workers resolved, 0 forbidden-model warning(s)" in out
-    )
+    assert "OK crews: 2 crews, 4/4 workers resolved, 0 role-scoped warning(s)" in out
 
 
 def test_doctor_crews_bad_file_exits_1(tmp_path, capsys):
@@ -438,7 +436,7 @@ def test_doctor_crews_against_live_file_exits_0(capsys):
     out = capsys.readouterr().out
     assert "OK crews:" in out
     assert "23/23 workers resolved" in out
-    assert "gemini-3.1-pro" in out
+    assert "0 role-scoped warning(s)" in out
 
 
 UNREFERENCED_BAD_WORKER_YAML = """
@@ -457,14 +455,28 @@ crews:
       primary: {harness: codex_cli}
 """
 
-FORBIDDEN_WORKER_YAML = """
+ROLE_SCOPED_CODING_WORKER_YAML = """
 workers:
   antigravity_gemini31_pro:
     command: "/usr/bin/env ANTIGRAVITY_STAGE_WORKER_BINARY=/x/bin/agy \
 ANTIGRAVITY_STAGE_WORKER_MODEL=gemini-3.1-pro python3 /x/w.py {stage}"
 crews:
   gemini-pro-crew:
-    description: Uses the forbidden model deliberately.
+    description: Uses the role-scoped model in a coding role.
+    stages:
+      author: antigravity_gemini31_pro
+    governed:
+      primary: {harness: antigravity_cli}
+"""
+
+ROLE_SCOPED_PLANNING_WORKER_YAML = """
+workers:
+  antigravity_gemini31_pro:
+    command: "/usr/bin/env ANTIGRAVITY_STAGE_WORKER_BINARY=/x/bin/agy \
+ANTIGRAVITY_STAGE_WORKER_MODEL=gemini-3.1-pro python3 /x/w.py {stage}"
+crews:
+  gemini-pro-crew:
+    description: Uses the role-scoped model in a planning role.
     stages:
       envision: antigravity_gemini31_pro
     governed:
@@ -487,12 +499,12 @@ def test_doctor_crews_unreferenced_bad_worker_exits_1(tmp_path, capsys):
     assert "orphan_worker" in err
 
 
-def test_doctor_crews_forbidden_model_is_a_warning_not_an_error(tmp_path, capsys):
-    """A gemini-3.1-pro worker warns and keeps exit 0 (the live file has one)."""
+def test_doctor_crews_role_scoped_model_warns_in_coding_stage(tmp_path, capsys):
+    """A gemini-3.1-pro worker in a coding stage warns and keeps exit 0."""
     from lee_llm_router.doctor import main
 
     crews_file = tmp_path / "crews.yaml"
-    crews_file.write_text(FORBIDDEN_WORKER_YAML, encoding="utf-8")
+    crews_file.write_text(ROLE_SCOPED_CODING_WORKER_YAML, encoding="utf-8")
 
     with pytest.raises(SystemExit) as exc_info:
         main(["doctor", "--crews", "--crews-file", str(crews_file)])
@@ -500,10 +512,57 @@ def test_doctor_crews_forbidden_model_is_a_warning_not_an_error(tmp_path, capsys
 
     captured = capsys.readouterr()
     assert "  !  " in captured.out
-    assert "antigravity_gemini31_pro" in captured.out
-    assert "gemini-3.1-pro" in captured.out
-    assert "1/1 workers resolved, 1 forbidden-model warning(s)" in captured.out
+    assert (
+        "Crew 'gemini-pro-crew' stage 'author' uses role-scoped model 'gemini-3.1-pro' in a coding role; the resolver will never choose it there (decisions.md D188)"
+        in captured.out
+    )
+    assert "1/1 workers resolved, 1 role-scoped warning(s)" in captured.out
     assert captured.err == ""
+
+
+def test_doctor_crews_role_scoped_model_no_warning_in_planning_stage(tmp_path, capsys):
+    """A gemini-3.1-pro worker in a planning stage emits no warning and exits 0."""
+    from lee_llm_router.doctor import main
+
+    crews_file = tmp_path / "crews.yaml"
+    crews_file.write_text(ROLE_SCOPED_PLANNING_WORKER_YAML, encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["doctor", "--crews", "--crews-file", str(crews_file)])
+    assert exc_info.value.code == 0
+
+    captured = capsys.readouterr()
+    assert "  !  " not in captured.out
+    assert "1/1 workers resolved, 0 role-scoped warning(s)" in captured.out
+    assert captured.err == ""
+
+
+def test_doctor_crews_unmapped_stage_warns(monkeypatch):
+    """A crew stage with no role class emits a warning citing D188."""
+    from lee_llm_router.crews import Crew, CrewsConfig, Stage, Worker
+    from lee_llm_router.doctor import check_crews
+
+    worker = Worker(
+        id="w1",
+        command="/usr/bin/env CODEX_STAGE_WORKER_BINARY=/x/bin/codex CODEX_STAGE_WORKER_MODEL=gpt-5.6-sol python3 /x/w.py {stage}",
+    )
+    crew = Crew(
+        name="test-crew",
+        description="test",
+        stages={"unknown_stage": Stage(name="unknown_stage", workers=("w1",))},
+        governed={},
+    )
+    config = CrewsConfig(
+        workers={"w1": worker}, crews={"test-crew": crew}, path=Path("/x/crews.yaml")
+    )
+
+    monkeypatch.setattr("lee_llm_router.crews.load_crews", lambda _p=None: config)
+    errors, warnings, crew_count, resolved_count, total = check_crews()
+    assert not errors
+    assert any(
+        "stage 'unknown_stage' has no role class (decisions.md D188)" in w
+        for w in warnings
+    )
 
 
 AVAILABILITY_SUBSCRIPTIONS = [
@@ -831,6 +890,7 @@ crews:
       envision: codex_sol_high
       ideate: [codex_luna_max, claude_sonnet5_high]
       score: antigravity_gemini31_pro
+      author: antigravity_gemini31_pro
 """
 """Synthetic crews file for ``resolve`` CLI tests — not the live crews file.
 
@@ -1098,7 +1158,40 @@ def test_resolve_flex_not_eligible_json_error_object(tmp_path, capsys):
 
 
 def test_resolve_forbidden_model_exit_3_cites_decision(tmp_path, capsys):
-    """A forbidden named worker refuses at exit 3, citing D152/D153."""
+    """A role-scoped named worker in a coding role refuses at exit 3, citing D188."""
+    from lee_llm_router.doctor import main
+
+    crews_file = _write_resolve_crews(tmp_path)
+    availability_file = _write_resolve_availability(tmp_path)
+    events_file = tmp_path / "events.jsonl"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "resolve",
+                "--crew",
+                "resolve-crew",
+                "--role",
+                "author",
+                "--crews-file",
+                str(crews_file),
+                "--availability-file",
+                str(availability_file),
+                "--events-file",
+                str(events_file),
+            ]
+        )
+    assert exc_info.value.code == 3
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "D188" in captured.err
+    assert "gemini-3.1-pro" in captured.err
+    assert not events_file.exists()
+
+
+def test_resolve_role_scoped_model_planning_exits_0(tmp_path, capsys):
+    """A role-scoped named worker in a planning role exits 0 and resolves."""
     from lee_llm_router.doctor import main
 
     crews_file = _write_resolve_crews(tmp_path)
@@ -1121,12 +1214,12 @@ def test_resolve_forbidden_model_exit_3_cites_decision(tmp_path, capsys):
                 str(events_file),
             ]
         )
-    assert exc_info.value.code == 3
+    assert exc_info.value.code == 0
 
     captured = capsys.readouterr()
-    assert captured.out == ""
-    assert "D152/D153" in captured.err
-    assert not events_file.exists()
+    assert "worker: antigravity_gemini31_pro" in captured.out
+    assert "model: gemini-3.1-pro" in captured.out
+    assert events_file.exists()
 
 
 def test_resolve_bind_success_records_authorized_by(tmp_path, capsys):
@@ -1315,3 +1408,257 @@ def test_resolve_unknown_crew_exit_3(tmp_path, capsys):
     assert captured.out == ""
     assert "unknown crew" in captured.err
     assert not events_file.exists()
+
+
+def test_resolve_positional_equals_flag_form(tmp_path, capsys):
+    """Positional form produces output identical to flag form."""
+    from lee_llm_router.doctor import main
+
+    crews_file = _write_resolve_crews(tmp_path)
+    availability_file = _write_resolve_availability(
+        tmp_path,
+        _resolve_entry("OpenAI/Codex", "Weekly limit", "ON TRACK", 90.0),
+    )
+    events_pos = tmp_path / "events_pos.jsonl"
+    events_flag = tmp_path / "events_flag.jsonl"
+
+    # Positional form with --json
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "resolve",
+                "resolve-crew",
+                "envision",
+                "--json",
+                "--crews-file",
+                str(crews_file),
+                "--availability-file",
+                str(availability_file),
+                "--events-file",
+                str(events_pos),
+            ]
+        )
+    assert exc_info.value.code == 0
+    pos_json = json.loads(capsys.readouterr().out)
+
+    # Flag form with --json
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "resolve",
+                "--crew",
+                "resolve-crew",
+                "--role",
+                "envision",
+                "--json",
+                "--crews-file",
+                str(crews_file),
+                "--availability-file",
+                str(availability_file),
+                "--events-file",
+                str(events_flag),
+            ]
+        )
+    assert exc_info.value.code == 0
+    flag_json = json.loads(capsys.readouterr().out)
+
+    # Remove ts / event_path per contract
+    pos_json.pop("event_path", None)
+    pos_json.pop("ts", None)
+    flag_json.pop("event_path", None)
+    flag_json.pop("ts", None)
+
+    assert pos_json == flag_json
+
+
+def test_resolve_fast_path_and_argparse_agree(tmp_path, monkeypatch, capsys):
+    """Fast path and argparse path produce byte-identical output."""
+    from lee_llm_router.doctor import main
+
+    crews_file = _write_resolve_crews(tmp_path)
+    availability_file = _write_resolve_availability(
+        tmp_path,
+        _resolve_entry("OpenAI/Codex", "Weekly limit", "ON TRACK", 90.0),
+    )
+
+    args = [
+        "resolve",
+        "resolve-crew",
+        "envision",
+        "--mode",
+        "strict",
+        "--json",
+        "--no-event",
+        "--crews-file",
+        str(crews_file),
+        "--availability-file",
+        str(availability_file),
+    ]
+
+    # Fast path
+    with pytest.raises(SystemExit) as exc_info:
+        main(args)
+    assert exc_info.value.code == 0
+    fast_out = capsys.readouterr().out
+
+    # Argparse path (force by monkeypatching _try_fast_resolve to return None)
+    monkeypatch.setattr("lee_llm_router.doctor._try_fast_resolve", lambda argv: None)
+    with pytest.raises(SystemExit) as exc_info:
+        main(args)
+    assert exc_info.value.code == 0
+    argparse_out = capsys.readouterr().out
+
+    assert fast_out == argparse_out
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        ["--crew", "c2"],
+        ["--role", "r2"],
+        ["--crew", "c2", "--role", "r2"],
+    ],
+)
+def test_resolve_positionals_mixed_with_flags_exit_3(extra_args, capsys):
+    """Positionals given together with --crew or --role exit 3 usage error."""
+    from lee_llm_router.doctor import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["resolve", "c1", "r1", *extra_args, "--no-event"])
+    assert exc_info.value.code == 3
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "specify either 'resolve CREW ROLE [options]'" in captured.err
+    assert "--crew CREW --role ROLE" in captured.err
+
+
+def test_resolve_one_positional_mixed_with_flag_exit_3(capsys):
+    """One positional mixed with --role exits 3 usage error."""
+    from lee_llm_router.doctor import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["resolve", "openai-economy", "--role", "envision", "--no-event"])
+    assert exc_info.value.code == 3
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "specify either 'resolve CREW ROLE [options]'" in captured.err
+    assert "--crew CREW --role ROLE" in captured.err
+
+
+def test_resolve_one_positional_without_other_exit_3(capsys):
+    """One positional without the other exits 3 usage error."""
+    from lee_llm_router.doctor import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["resolve", "c1", "--no-event"])
+    assert exc_info.value.code == 3
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "specify either 'resolve CREW ROLE [options]'" in captured.err
+
+
+def test_resolve_more_than_two_positionals_exit_3(capsys):
+    """More than two positionals exits 3 usage error."""
+    from lee_llm_router.doctor import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["resolve", "c1", "r1", "extra", "--no-event"])
+    assert exc_info.value.code == 3
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "specify either 'resolve CREW ROLE [options]'" in captured.err
+
+
+def test_resolve_zero_positionals_and_no_flags_exit_3(capsys):
+    """Zero positionals and no flags exits 3 usage error (not argparse exit 2)."""
+    from lee_llm_router.doctor import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["resolve"])
+    assert exc_info.value.code == 3
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "specify either 'resolve CREW ROLE [options]'" in captured.err
+
+
+def test_resolve_only_one_flag_exit_3(capsys):
+    """Only --crew or only --role exits 3 usage error."""
+    from lee_llm_router.doctor import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["resolve", "--crew", "c1"])
+    assert exc_info.value.code == 3
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "specify either 'resolve CREW ROLE [options]'" in captured.err
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["resolve", "--role", "r1"])
+    assert exc_info.value.code == 3
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "specify either 'resolve CREW ROLE [options]'" in captured.err
+
+
+def test_resolve_usage_error_with_json_outputs_json(capsys):
+    """Usage error with --json prints JSON object on stdout and message on stderr."""
+    from lee_llm_router.doctor import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["resolve", "c1", "--json"])
+    assert exc_info.value.code == 3
+
+    captured = capsys.readouterr()
+    assert "specify either 'resolve CREW ROLE [options]'" in captured.err
+    data = json.loads(captured.out)
+    assert data["exit_code"] == 3
+    assert data["kind"] == "usage"
+    assert "specify either 'resolve CREW ROLE [options]'" in data["error"]
+
+
+def test_try_fast_resolve_positional_and_flag_forms():
+    """_try_fast_resolve accepts positional form and rejects invalid forms."""
+    from lee_llm_router.doctor import _try_fast_resolve
+
+    # Valid positional
+    fast = _try_fast_resolve(["resolve-crew", "envision", "--mode", "flex", "--json"])
+    assert fast is not None
+    assert fast.crew == "resolve-crew"
+    assert fast.role == "envision"
+    assert fast.mode == "flex"
+    assert fast.json is True
+
+    # Valid flag
+    fast = _try_fast_resolve(["--crew", "resolve-crew", "--role", "envision"])
+    assert fast is not None
+    assert fast.crew == "resolve-crew"
+    assert fast.role == "envision"
+
+    # Invalid cases fall back (return None)
+    assert _try_fast_resolve(["resolve-crew"]) is None
+    assert _try_fast_resolve(["resolve-crew", "envision", "extra"]) is None
+    assert _try_fast_resolve(["resolve-crew", "--role", "envision"]) is None
+    assert _try_fast_resolve(["--crew", "resolve-crew"]) is None
+    assert _try_fast_resolve([]) is None
+    assert _try_fast_resolve(["--help"]) is None
+
+
+def test_resolve_help_shows_positionals(capsys):
+    """resolve --help exits 0 and includes positional arguments in usage."""
+    from lee_llm_router.doctor import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["resolve", "--help"])
+    assert exc_info.value.code == 0
+
+    out = capsys.readouterr().out
+    assert "CREW ROLE" in out
+    assert "--crew NAME" in out
+    assert "--role STAGE" in out
