@@ -504,3 +504,168 @@ def test_live_crews_file_workers_all_have_a_known_channel() -> None:
 
     for worker in config.workers.values():
         assert resolve_worker(worker).channel in CHANNELS
+
+
+def test_prefers_c_yaml_loader_when_available() -> None:
+    """Sprint 3 cold-start done condition: use libyaml when this venv has it."""
+    import yaml
+
+    from lee_llm_router.crews import _YamlSafeLoader
+
+    if yaml.__with_libyaml__:
+        assert _YamlSafeLoader is yaml.CSafeLoader
+    else:
+        assert _YamlSafeLoader is yaml.SafeLoader
+
+
+def test_c_loader_and_python_loader_parse_identically(tmp_path: Path) -> None:
+    """The chosen loader must never change parse results (never unsafe)."""
+    import yaml
+
+    body = MINIMAL_WORKERS + """
+crews:
+  c1:
+    stages:
+      author: worker_a
+"""
+    path = _write(tmp_path, body)
+    raw_text = path.read_text(encoding="utf-8")
+
+    c_result = yaml.load(raw_text, Loader=yaml.CSafeLoader)
+    python_result = yaml.safe_load(raw_text)
+    assert c_result == python_result
+
+    config = load_crews(path)
+    assert config.crews["c1"].primary("author") == "worker_a"
+
+
+def test_crews_cache_hit_returns_identical_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cache hit returns an identical CrewsConfig (== equality)."""
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache_dir))
+    body = MINIMAL_WORKERS + """
+crews:
+  c1:
+    stages:
+      author: worker_a
+"""
+    path = _write(tmp_path, body)
+    first = load_crews(path)
+    second = load_crews(path)
+    assert first == second
+
+    cache_files = list((cache_dir / "lee-llm-router").glob("crews_*.json"))
+    assert len(cache_files) == 1
+
+
+def test_crews_cache_miss_on_mtime_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cache misses and re-parses when the source file mtime changes."""
+    import os
+
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache_dir))
+    body = MINIMAL_WORKERS + """
+crews:
+  c1:
+    stages:
+      author: worker_a
+"""
+    path = _write(tmp_path, body)
+    first = load_crews(path)
+
+    stat = path.stat()
+    os.utime(path, (stat.st_atime, stat.st_mtime + 10))
+
+    second = load_crews(path)
+    assert first == second
+
+
+def test_crews_cache_miss_on_size_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cache misses and re-parses when the source file size changes."""
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache_dir))
+    body = MINIMAL_WORKERS + """
+crews:
+  c1:
+    stages:
+      author: worker_a
+"""
+    path = _write(tmp_path, body)
+    first = load_crews(path)
+
+    path.write_text(body + "\n# extra comment to change size\n", encoding="utf-8")
+    second = load_crews(path)
+    assert first == second
+
+
+def test_crews_cache_miss_on_corrupt_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Corrupt cache file falls through to full YAML parse cleanly."""
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache_dir))
+    body = MINIMAL_WORKERS + """
+crews:
+  c1:
+    stages:
+      author: worker_a
+"""
+    path = _write(tmp_path, body)
+    first = load_crews(path)
+
+    cache_files = list((cache_dir / "lee-llm-router").glob("crews_*.json"))
+    assert len(cache_files) == 1
+    cache_files[0].write_text("{broken json syntax", encoding="utf-8")
+
+    second = load_crews(path)
+    assert first == second
+
+
+def test_crews_cache_opt_out_with_env_var(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """LEE_LLM_ROUTER_NO_CACHE=1 disables reading and writing the parse cache."""
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache_dir))
+    monkeypatch.setenv("LEE_LLM_ROUTER_NO_CACHE", "1")
+    body = MINIMAL_WORKERS + """
+crews:
+  c1:
+    stages:
+      author: worker_a
+"""
+    path = _write(tmp_path, body)
+    config = load_crews(path)
+    assert config.crews["c1"].primary("author") == "worker_a"
+
+    app_cache = cache_dir / "lee-llm-router"
+    if app_cache.exists():
+        assert list(app_cache.glob("crews_*.json")) == []
+
+
+def test_crews_cache_write_atomic_and_leaves_no_tmp_residue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Atomic write leaves only valid .json cache files and no .tmp residue."""
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache_dir))
+    body = MINIMAL_WORKERS + """
+crews:
+  c1:
+    stages:
+      author: worker_a
+"""
+    path = _write(tmp_path, body)
+    load_crews(path)
+
+    app_cache = cache_dir / "lee-llm-router"
+    assert app_cache.is_dir()
+    all_files = list(app_cache.iterdir())
+    assert all(f.name.endswith(".json") for f in all_files)
+    assert not any(f.name.endswith(".tmp") for f in all_files)

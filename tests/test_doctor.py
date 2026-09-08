@@ -793,3 +793,525 @@ def test_doctor_crews_and_availability_together_exit_0(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "OK crews:" in out
     assert "OK availability:" in out
+
+
+# --------------------------------------------------------------------------
+# resolve
+# --------------------------------------------------------------------------
+
+RESOLVE_CREWS_YAML = """\
+version: 1
+
+workers:
+  codex_sol_high:
+    command: "/usr/bin/env CODEX_STAGE_WORKER_BINARY=/x/bin/codex \
+CODEX_STAGE_WORKER_MODEL=gpt-5.6-sol CODEX_STAGE_WORKER_REASONING_EFFORT=high \
+python3 /x/codex_stage_worker.py {stage} {prompt_path} {response_path}"
+    timeout_seconds: 600
+  codex_luna_max:
+    command: "/usr/bin/env CODEX_STAGE_WORKER_BINARY=/x/bin/codex \
+CODEX_STAGE_WORKER_MODEL=gpt-5.6-luna CODEX_STAGE_WORKER_REASONING_EFFORT=max \
+python3 /x/codex_stage_worker.py {stage} {prompt_path} {response_path}"
+    timeout_seconds: 600
+  claude_sonnet5_high:
+    command: "/usr/bin/env CLAUDE_STAGE_WORKER_BINARY=/x/bin/claude \
+CLAUDE_STAGE_WORKER_MODEL=claude-sonnet-5 CLAUDE_STAGE_WORKER_EFFORT=high \
+python3 /x/claude_stage_worker.py {stage} {prompt_path} {response_path}"
+    timeout_seconds: 600
+  antigravity_gemini31_pro:
+    command: "/usr/bin/env ANTIGRAVITY_STAGE_WORKER_BINARY=/x/bin/agy \
+ANTIGRAVITY_STAGE_WORKER_MODEL=gemini-3.1-pro \
+python3 /x/antigravity_stage_worker.py {stage} {prompt_path} {response_path}"
+    timeout_seconds: 600
+
+crews:
+  resolve-crew:
+    description: Fixture crew for the resolve CLI.
+    stages:
+      envision: codex_sol_high
+      ideate: [codex_luna_max, claude_sonnet5_high]
+      score: antigravity_gemini31_pro
+"""
+"""Synthetic crews file for ``resolve`` CLI tests — not the live crews file.
+
+Mirrors the helper pattern in ``tests/test_resolver.py`` (a small, self-contained
+crews YAML) but is not imported across test modules, per the packet's
+instructions.
+"""
+
+
+def _write_resolve_crews(tmp_path: Path) -> Path:
+    """Write :data:`RESOLVE_CREWS_YAML` to ``tmp_path`` and return its path."""
+    path = tmp_path / "resolve_crews.yaml"
+    path.write_text(RESOLVE_CREWS_YAML, encoding="utf-8")
+    return path
+
+
+def _resolve_entry(
+    provider: str,
+    bucket: str,
+    status: str,
+    remaining_pct: float,
+    **kwargs,
+) -> dict:
+    """Build one raw ``subscriptions`` record for a synthetic snapshot."""
+    entry = {
+        "provider": provider,
+        "bucket": bucket,
+        "status": status,
+        "remaining_pct": remaining_pct,
+    }
+    entry.update(kwargs)
+    return entry
+
+
+def _write_resolve_availability(tmp_path: Path, *entries: dict) -> Path:
+    """Write a synthetic, fresh availability snapshot and return its path."""
+    from datetime import datetime, timezone
+
+    payload = {
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+        "host": "testhost",
+        "subscriptions": list(entries),
+    }
+    path = tmp_path / "resolve_availability.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_resolve_strict_success_text_fields_and_event(tmp_path, capsys):
+    """Strict success prints fields in order and appends exactly one event."""
+    from lee_llm_router.doctor import main
+
+    crews_file = _write_resolve_crews(tmp_path)
+    availability_file = _write_resolve_availability(
+        tmp_path,
+        _resolve_entry("OpenAI/Codex", "Weekly limit", "ON TRACK", 90.0),
+    )
+    events_file = tmp_path / "events.jsonl"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "resolve",
+                "--crew",
+                "resolve-crew",
+                "--role",
+                "envision",
+                "--crews-file",
+                str(crews_file),
+                "--availability-file",
+                str(availability_file),
+                "--events-file",
+                str(events_file),
+            ]
+        )
+    assert exc_info.value.code == 0
+
+    lines = capsys.readouterr().out.splitlines()
+    field_names = [line.split(":", 1)[0] for line in lines]
+    assert field_names == [
+        "worker",
+        "provider",
+        "model",
+        "effort",
+        "channel",
+        "headroom",
+        "route_id",
+        "dispatch",
+        "reason",
+        "event",
+    ]
+    assert "worker: codex_sol_high" in lines
+    assert "provider: codex_cli" in lines
+    assert "model: gpt-5.6-sol" in lines
+    assert "effort: high" in lines
+    assert "channel: openai-sub" in lines
+    assert any(line.startswith("headroom: healthy") for line in lines)
+    route_line = next(line for line in lines if line.startswith("route_id: "))
+    route_id = route_line.split("route_id: ", 1)[1]
+    assert route_id == "codex_cli:gpt-5.6-sol:high"
+    assert lines[-1] == f"event: {events_file}"
+
+    events = events_file.read_text(encoding="utf-8").splitlines()
+    assert len(events) == 1
+    event = json.loads(events[0])
+    assert event["harness"] == "cli"
+    assert event["mode"] == "strict"
+    assert event["route_id"] == route_id
+
+
+def test_resolve_harness_flag_recorded_in_event(tmp_path, capsys):
+    """--harness codex is recorded verbatim on the event line."""
+    from lee_llm_router.doctor import main
+
+    crews_file = _write_resolve_crews(tmp_path)
+    availability_file = _write_resolve_availability(
+        tmp_path,
+        _resolve_entry("OpenAI/Codex", "Weekly limit", "ON TRACK", 90.0),
+    )
+    events_file = tmp_path / "events.jsonl"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "resolve",
+                "--crew",
+                "resolve-crew",
+                "--role",
+                "envision",
+                "--harness",
+                "codex",
+                "--crews-file",
+                str(crews_file),
+                "--availability-file",
+                str(availability_file),
+                "--events-file",
+                str(events_file),
+            ]
+        )
+    assert exc_info.value.code == 0
+
+    event = json.loads(events_file.read_text(encoding="utf-8").splitlines()[0])
+    assert event["harness"] == "codex"
+
+
+def test_resolve_json_success_includes_pace_ratio_and_event_path(tmp_path, capsys):
+    """--json prints the resolution dict plus pace_ratio and event_path."""
+    from lee_llm_router.doctor import main
+
+    crews_file = _write_resolve_crews(tmp_path)
+    availability_file = _write_resolve_availability(
+        tmp_path,
+        _resolve_entry(
+            "OpenAI/Codex", "Weekly limit", "ON TRACK", 90.0, pace_ratio=0.8
+        ),
+    )
+    events_file = tmp_path / "events.jsonl"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "resolve",
+                "--crew",
+                "resolve-crew",
+                "--role",
+                "envision",
+                "--json",
+                "--crews-file",
+                str(crews_file),
+                "--availability-file",
+                str(availability_file),
+                "--events-file",
+                str(events_file),
+            ]
+        )
+    assert exc_info.value.code == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["worker_id"] == "codex_sol_high"
+    assert "pace_ratio" in payload
+    assert payload["pace_ratio"] == pytest.approx(0.8)
+    assert payload["event_path"] == str(events_file)
+
+
+def test_resolve_flex_not_eligible_exit_2_with_remedy(tmp_path, capsys):
+    """Flex refusal: exit 2, stderr carries the remedy, stdout stays empty."""
+    from lee_llm_router.doctor import main
+    from lee_llm_router.resolver import REMEDY_WAIT
+
+    crews_file = _write_resolve_crews(tmp_path)
+    availability_file = _write_resolve_availability(
+        tmp_path,
+        _resolve_entry("OpenAI/Codex", "Weekly limit", "TOO FAST", 0.0),
+        _resolve_entry("Anthropic/Claude", "Weekly limit", "TOO FAST", 0.0),
+    )
+    events_file = tmp_path / "events.jsonl"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "resolve",
+                "--crew",
+                "resolve-crew",
+                "--role",
+                "ideate",
+                "--mode",
+                "flex",
+                "--crews-file",
+                str(crews_file),
+                "--availability-file",
+                str(availability_file),
+                "--events-file",
+                str(events_file),
+            ]
+        )
+    assert exc_info.value.code == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "resolve: " in captured.err
+    assert f"remedy: {REMEDY_WAIT}" in captured.err
+    assert not events_file.exists()
+
+
+def test_resolve_flex_not_eligible_json_error_object(tmp_path, capsys):
+    """Flex refusal with --json: the error object lands on stdout."""
+    from lee_llm_router.doctor import main
+
+    crews_file = _write_resolve_crews(tmp_path)
+    availability_file = _write_resolve_availability(
+        tmp_path,
+        _resolve_entry("OpenAI/Codex", "Weekly limit", "TOO FAST", 0.0),
+        _resolve_entry("Anthropic/Claude", "Weekly limit", "TOO FAST", 0.0),
+    )
+    events_file = tmp_path / "events.jsonl"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "resolve",
+                "--crew",
+                "resolve-crew",
+                "--role",
+                "ideate",
+                "--mode",
+                "flex",
+                "--json",
+                "--crews-file",
+                str(crews_file),
+                "--availability-file",
+                str(availability_file),
+                "--events-file",
+                str(events_file),
+            ]
+        )
+    assert exc_info.value.code == 2
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["exit_code"] == 2
+    assert payload["kind"] == "not_eligible"
+    assert payload["remedy"]
+    assert "resolve: " in captured.err
+    assert not events_file.exists()
+
+
+def test_resolve_forbidden_model_exit_3_cites_decision(tmp_path, capsys):
+    """A forbidden named worker refuses at exit 3, citing D152/D153."""
+    from lee_llm_router.doctor import main
+
+    crews_file = _write_resolve_crews(tmp_path)
+    availability_file = _write_resolve_availability(tmp_path)
+    events_file = tmp_path / "events.jsonl"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "resolve",
+                "--crew",
+                "resolve-crew",
+                "--role",
+                "score",
+                "--crews-file",
+                str(crews_file),
+                "--availability-file",
+                str(availability_file),
+                "--events-file",
+                str(events_file),
+            ]
+        )
+    assert exc_info.value.code == 3
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "D152/D153" in captured.err
+    assert not events_file.exists()
+
+
+def test_resolve_bind_success_records_authorized_by(tmp_path, capsys):
+    """Bind success prints authorized_by and records it on the event."""
+    from lee_llm_router.doctor import main
+
+    crews_file = _write_resolve_crews(tmp_path)
+    availability_file = _write_resolve_availability(
+        tmp_path,
+        _resolve_entry("Anthropic/Claude", "Weekly limit", "ON TRACK", 90.0),
+    )
+    events_file = tmp_path / "events.jsonl"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "resolve",
+                "--crew",
+                "resolve-crew",
+                "--role",
+                "envision",
+                "--mode",
+                "bind",
+                "--worker",
+                "claude_sonnet5_high",
+                "--authorized-by",
+                "lee",
+                "--reason",
+                "escalation test",
+                "--crews-file",
+                str(crews_file),
+                "--availability-file",
+                str(availability_file),
+                "--events-file",
+                str(events_file),
+            ]
+        )
+    assert exc_info.value.code == 0
+
+    out = capsys.readouterr().out
+    assert "worker: claude_sonnet5_high" in out
+    assert "authorized_by: lee" in out
+    assert out.strip().splitlines()[-2] == "authorized_by: lee"
+
+    event = json.loads(events_file.read_text(encoding="utf-8").splitlines()[0])
+    assert event["mode"] == "bind"
+    assert event["authorized_by"] == "lee"
+
+
+def test_resolve_bind_missing_reason_exit_3(tmp_path, capsys):
+    """Bind mode without --reason is a usage error, exit 3, no event."""
+    from lee_llm_router.doctor import main
+
+    crews_file = _write_resolve_crews(tmp_path)
+    availability_file = _write_resolve_availability(tmp_path)
+    events_file = tmp_path / "events.jsonl"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "resolve",
+                "--crew",
+                "resolve-crew",
+                "--role",
+                "envision",
+                "--mode",
+                "bind",
+                "--worker",
+                "claude_sonnet5_high",
+                "--authorized-by",
+                "lee",
+                "--crews-file",
+                str(crews_file),
+                "--availability-file",
+                str(availability_file),
+                "--events-file",
+                str(events_file),
+            ]
+        )
+    assert exc_info.value.code == 3
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "reason" in captured.err
+    assert not events_file.exists()
+
+
+def test_resolve_no_event_flag_writes_nothing(tmp_path, capsys):
+    """--no-event writes no event and ends the text output accordingly."""
+    from lee_llm_router.doctor import main
+
+    crews_file = _write_resolve_crews(tmp_path)
+    availability_file = _write_resolve_availability(
+        tmp_path,
+        _resolve_entry("OpenAI/Codex", "Weekly limit", "ON TRACK", 90.0),
+    )
+    events_file = tmp_path / "events.jsonl"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "resolve",
+                "--crew",
+                "resolve-crew",
+                "--role",
+                "envision",
+                "--no-event",
+                "--crews-file",
+                str(crews_file),
+                "--availability-file",
+                str(availability_file),
+                "--events-file",
+                str(events_file),
+            ]
+        )
+    assert exc_info.value.code == 0
+
+    out = capsys.readouterr().out
+    assert out.splitlines()[-1] == "event: not recorded (--no-event)"
+    assert not events_file.exists()
+
+
+def test_resolve_event_write_failure_still_prints_resolution(tmp_path, capsys):
+    """A ledger the write cannot reach is exit 3, but the resolution prints."""
+    from lee_llm_router.doctor import main
+
+    crews_file = _write_resolve_crews(tmp_path)
+    availability_file = _write_resolve_availability(
+        tmp_path,
+        _resolve_entry("OpenAI/Codex", "Weekly limit", "ON TRACK", 90.0),
+    )
+    blocking_file = tmp_path / "blocking"
+    blocking_file.write_text("not a directory", encoding="utf-8")
+    events_file = blocking_file / "sub" / "events.jsonl"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "resolve",
+                "--crew",
+                "resolve-crew",
+                "--role",
+                "envision",
+                "--crews-file",
+                str(crews_file),
+                "--availability-file",
+                str(availability_file),
+                "--events-file",
+                str(events_file),
+            ]
+        )
+    assert exc_info.value.code == 3
+
+    captured = capsys.readouterr()
+    assert "worker: codex_sol_high" in captured.out
+    assert "resolve: could not record event" in captured.err
+
+
+def test_resolve_unknown_crew_exit_3(tmp_path, capsys):
+    """An unknown crew name is a config error, exit 3."""
+    from lee_llm_router.doctor import main
+
+    crews_file = _write_resolve_crews(tmp_path)
+    availability_file = _write_resolve_availability(tmp_path)
+    events_file = tmp_path / "events.jsonl"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "resolve",
+                "--crew",
+                "does-not-exist",
+                "--role",
+                "envision",
+                "--crews-file",
+                str(crews_file),
+                "--availability-file",
+                str(availability_file),
+                "--events-file",
+                str(events_file),
+            ]
+        )
+    assert exc_info.value.code == 3
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "unknown crew" in captured.err
+    assert not events_file.exists()

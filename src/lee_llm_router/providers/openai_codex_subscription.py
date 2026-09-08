@@ -4,6 +4,24 @@ This adapter mirrors OpenClaw's credential discovery strategy:
 1) access_token_env (if configured)
 2) macOS keychain (service: "Codex Auth")
 3) CODEX_HOME/auth.json (or ~/.codex/auth.json)
+
+``httpx`` is imported lazily, inside
+:meth:`OpenAICodexSubscriptionHTTPProvider.complete` and
+:meth:`OpenAICodexSubscriptionHTTPProvider.complete_async`, so that importing
+this module (via provider registration) does not pull ``httpx`` into a
+cold-start consumer that only resolves a CLI worker. The ``httpx.Response``
+type hint in :func:`_collect_stream_events` is unevaluated at runtime thanks
+to ``from __future__ import annotations``. See
+``docs/crew-resolver/sprint-plan.md`` Sprint 3's "under 50 ms" done
+condition.
+
+Module-level ``__getattr__`` (PEP 562) makes ``lee_llm_router.providers.
+openai_codex_subscription.httpx`` resolve to the real ``httpx`` module on
+attribute access — without importing it at module-import time — so
+``unittest.mock.patch`` targets like ``"lee_llm_router.providers.
+openai_codex_subscription.httpx.Client"`` keep working: patch's dotted-path
+lookup does a ``getattr`` on this module to find ``httpx`` before patching an
+attribute on it.
 """
 
 from __future__ import annotations
@@ -16,12 +34,22 @@ import sys
 import time
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
-
-import httpx
+from typing import TYPE_CHECKING, Any
 
 from lee_llm_router.providers.base import FailureType, LLMRouterError
 from lee_llm_router.response import LLMRequest, LLMResponse, LLMUsage
+
+if TYPE_CHECKING:
+    import httpx
+
+
+def __getattr__(name: str) -> Any:
+    if name == "httpx":
+        import httpx
+
+        globals()["httpx"] = httpx
+        return httpx
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _resolve_codex_home() -> Path:
@@ -483,6 +511,8 @@ class OpenAICodexSubscriptionHTTPProvider:
             )
 
     def complete(self, request: LLMRequest, config: dict[str, Any]) -> LLMResponse:
+        import httpx
+
         url, headers, payload, timeout = _build_request_parts(request, config)
 
         try:
@@ -515,6 +545,8 @@ class OpenAICodexSubscriptionHTTPProvider:
     async def complete_async(
         self, request: LLMRequest, config: dict[str, Any]
     ) -> LLMResponse:
+        import httpx
+
         url, headers, payload, timeout = _build_request_parts(request, config)
 
         try:

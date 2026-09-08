@@ -35,9 +35,10 @@ def make_request(**kwargs) -> LLMRequest:
 def make_pi_harness_config(mode: str, **overrides):
     config = {
         "command": sys.executable,
+        "subcommand": None,
         "args": [str(PI_HARNESS), mode],
         "model_flag": "--model",
-        "output_flag": "--output-last-message",
+        "output_flag": None,
     }
     config.update(overrides)
     return config
@@ -520,6 +521,7 @@ def test_codex_cli_provider_allows_disabling_default_flags_for_pi_harness():
     config = make_pi_harness_config(
         "strict_success_json",
         response_format="json",
+        subcommand=None,
         model_flag=None,
         output_flag=None,
     )
@@ -630,13 +632,18 @@ def test_claude_code_cli_provider_defaults_and_prompt_flag():
     with patch(
         "subprocess.run",
         return_value=subprocess.CompletedProcess(
-            ["claude", "-p", "hello"], 0, "ok", ""
+            ["claude", "--model", "claude-3.7-sonnet", "-p", "hello"], 0, "ok", ""
         ),
     ) as mock_run:
         response = provider.complete(request, {"command": "claude"})
 
-    assert mock_run.call_args.args[0][0] == "claude"
-    assert mock_run.call_args.args[0][-2:] == ["-p", "hello"]
+    assert mock_run.call_args.args[0] == [
+        "claude",
+        "--model",
+        "claude-3.7-sonnet",
+        "-p",
+        "hello",
+    ]
     assert response.provider == "claude_code_cli"
     assert response.text == "ok"
 
@@ -876,6 +883,7 @@ def test_antigravity_validate_config_accepts_minimal_and_full_config():
             "command": "/usr/local/bin/agy",
             "model": "gemini-3.7-flash",
             "effort": "high",
+            "print_timeout": "90m",
             "timeout": 300,
         }
     )
@@ -889,8 +897,13 @@ def test_antigravity_validate_config_accepts_minimal_and_full_config():
         {"model": 123},
         {"model": "gemini-3.7-flash", "command": ""},
         {"model": "gemini-3.7-flash", "effort": "extreme"},
+        {"model": "gemini-3.7-flash", "effort": "max"},
         {"model": "gemini-3.7-flash", "effort": 3},
         {"model": "gemini-3.7-flash", "timeout": "soon"},
+        {"model": "gemini-3.7-flash", "print_timeout": 123},
+        {"model": "gemini-3.7-flash", "print_timeout": ""},
+        {"model": "gemini-3.7-flash", "print_timeout": "   "},
+        {"model": "gemini-3.7-flash", "print_timeout": None},
     ],
 )
 def test_antigravity_validate_config_rejects_invalid(config):
@@ -901,15 +914,41 @@ def test_antigravity_validate_config_rejects_invalid(config):
     assert exc.value.failure_type == FailureType.PROVIDER_ERROR
 
 
+@pytest.mark.parametrize(
+    "bad_timeout",
+    [
+        123,
+        90.0,
+        True,
+        [],
+        {},
+        "",
+        "   ",
+        None,
+    ],
+)
+def test_antigravity_validate_config_rejects_non_string_print_timeout(bad_timeout):
+    provider = _antigravity_provider()
+    config = {
+        "command": "agy",
+        "model": "gemini-3.7-flash",
+        "print_timeout": bad_timeout,
+    }
+    with pytest.raises(LLMRouterError) as exc:
+        provider.validate_config(config)
+    assert exc.value.failure_type == FailureType.PROVIDER_ERROR
+
+
 def test_antigravity_build_command_exact_argv():
     provider = _antigravity_provider()
 
     assert provider.build_command(dict(AGY_CONFIG)) == [
         "agy",
-        "-p",
+        "--dangerously-skip-permissions",
         "--model",
         "gemini-3.7-flash",
-        "--dangerously-skip-permissions",
+        "-p",
+        "{prompt}",
     ]
 
 
@@ -923,12 +962,13 @@ def test_antigravity_build_command_with_effort_and_overrides():
     )
     assert cmd == [
         "agy",
-        "-p",
+        "--dangerously-skip-permissions",
         "--model",
         "gemini-3.1-pro",
         "--effort",
         "high",
-        "--dangerously-skip-permissions",
+        "-p",
+        "{prompt}",
     ]
 
 
@@ -938,6 +978,74 @@ def test_antigravity_build_command_rejects_bad_effort_override():
     with pytest.raises(LLMRouterError) as exc:
         provider.build_command(dict(AGY_CONFIG), effort="ludicrous")
     assert exc.value.failure_type == FailureType.PROVIDER_ERROR
+
+    with pytest.raises(LLMRouterError) as exc_max:
+        provider.build_command(dict(AGY_CONFIG), effort="max")
+    assert exc_max.value.failure_type == FailureType.PROVIDER_ERROR
+
+
+def test_antigravity_build_command_placeholder_is_last():
+    from lee_llm_router.providers.antigravity_cli import PROMPT_PLACEHOLDER
+
+    provider = _antigravity_provider()
+    assert PROMPT_PLACEHOLDER == "{prompt}"
+
+    cmd = provider.build_command(dict(AGY_CONFIG))
+    assert cmd[-1] == PROMPT_PLACEHOLDER
+    assert cmd[-2] == "-p"
+
+    cmd_full = provider.build_command(
+        {
+            "model": "gemini-3.7-flash",
+            "effort": "high",
+            "print_timeout": "90m",
+        }
+    )
+    assert cmd_full[-1] == PROMPT_PLACEHOLDER
+    assert cmd_full[-2] == "-p"
+
+
+def test_antigravity_build_command_print_timeout_inserted_before_p():
+    provider = _antigravity_provider()
+    config = {
+        "command": "agy",
+        "model": "gemini-3.7-flash",
+        "effort": "high",
+        "print_timeout": "90m",
+    }
+    cmd = provider.build_command(config)
+    assert cmd == [
+        "agy",
+        "--dangerously-skip-permissions",
+        "--model",
+        "gemini-3.7-flash",
+        "--effort",
+        "high",
+        "--print-timeout",
+        "90m",
+        "-p",
+        "{prompt}",
+    ]
+    p_idx = cmd.index("-p")
+    assert cmd[p_idx - 2 : p_idx] == ["--print-timeout", "90m"]
+
+    cmd_no_effort = provider.build_command(
+        {
+            "command": "agy",
+            "model": "gemini-3.7-flash",
+            "print_timeout": "45s",
+        }
+    )
+    assert cmd_no_effort == [
+        "agy",
+        "--dangerously-skip-permissions",
+        "--model",
+        "gemini-3.7-flash",
+        "--print-timeout",
+        "45s",
+        "-p",
+        "{prompt}",
+    ]
 
 
 def test_antigravity_complete_success_sends_prompt_on_stdin():
@@ -960,16 +1068,41 @@ def test_antigravity_complete_success_sends_prompt_on_stdin():
 
     assert mock_run.call_args.args[0] == [
         "agy",
-        "-p",
+        "--dangerously-skip-permissions",
         "--model",
         "gemini-3.7-flash",
         "--effort",
         "medium",
-        "--dangerously-skip-permissions",
+        "-p",
+        "be terse\n\nhello",
     ]
-    assert mock_run.call_args.kwargs["input"] == "be terse\n\nhello"
+    assert mock_run.call_args.kwargs.get("input") is None
+    assert mock_run.call_args.kwargs.get("stdin") == subprocess.DEVNULL
     assert response.text == "answer"
     assert response.provider == "antigravity_cli"
+
+
+def test_antigravity_complete_substitutes_prompt_in_argv_and_stdin_not_used():
+    provider = _antigravity_provider()
+    request = make_request(
+        model="gemini-3.7-flash",
+        messages=[
+            {"role": "system", "content": "system instruction"},
+            {"role": "user", "content": "user query"},
+        ],
+    )
+
+    with patch(
+        "subprocess.run",
+        return_value=subprocess.CompletedProcess([], 0, "model output\n", ""),
+    ) as mock_run:
+        response = provider.complete(request, dict(AGY_CONFIG))
+
+    argv = mock_run.call_args.args[0]
+    assert argv[-2:] == ["-p", "system instruction\n\nuser query"]
+    assert mock_run.call_args.kwargs.get("input") is None
+    assert mock_run.call_args.kwargs.get("stdin") == subprocess.DEVNULL
+    assert response.text == "model output"
 
 
 def test_antigravity_complete_timeout_is_typed_timeout():
@@ -1012,17 +1145,19 @@ def test_antigravity_complete_missing_binary_is_provider_error():
 def test_antigravity_complete_with_fake_script(tmp_path):
     provider = _antigravity_provider()
     script = tmp_path / "fake_agy.py"
-    script.write_text("import sys\nprint('stdin:' + sys.stdin.read().strip())\n")
+    script.write_text(
+        "import sys\n" "assert not sys.stdin.read()\n" "print('argv:' + sys.argv[-1])\n"
+    )
     request = make_request(messages=[{"role": "user", "content": "ping"}])
 
     with patch.object(
         provider,
         "build_command",
-        return_value=[sys.executable, str(script)],
+        return_value=[sys.executable, str(script), "-p", "{prompt}"],
     ):
         response = provider.complete(request, dict(AGY_CONFIG))
 
-    assert response.text == "stdin:ping"
+    assert response.text == "argv:ping"
 
 
 def test_antigravity_registry_lookup_by_name_and_aliases():
@@ -1094,9 +1229,9 @@ def test_codex_build_command_exact_argv():
 
     assert provider.build_command({"command": "codex"}, model="gpt-5.6-sol") == [
         "codex",
+        "exec",
         "--model",
         "gpt-5.6-sol",
-        "--output-last-message",
         "{prompt}",
     ]
 
@@ -1110,11 +1245,11 @@ def test_codex_build_command_with_effort_uses_config_override_flag():
 
     assert cmd == [
         "codex",
+        "exec",
         "--model",
         "gpt-5.6-sol",
         "-c",
         "model_reasoning_effort=high",
-        "--output-last-message",
         "{prompt}",
     ]
 
@@ -1126,6 +1261,13 @@ def test_codex_build_command_without_effort_omits_flag():
 
     cmd = provider.build_command({}, model="gpt-5.6-sol")
 
+    assert cmd == [
+        "codex",
+        "exec",
+        "--model",
+        "gpt-5.6-sol",
+        "{prompt}",
+    ]
     assert "-c" not in cmd
     assert not any(part.startswith("model_reasoning_effort") for part in cmd)
 
@@ -1143,8 +1285,202 @@ def test_codex_complete_passes_request_effort_to_argv():
         provider.complete(request, {"command": "codex"})
 
     argv = mock_run.call_args.args[0]
+    assert argv[:2] == ["codex", "exec"]
     assert argv[argv.index("-c") + 1] == "model_reasoning_effort=high"
     assert argv[-1] == "hello"
+
+
+def test_codex_build_command_contract1_default_exact_match():
+    from lee_llm_router.providers.codex_cli import CodexCLIProvider
+
+    provider = CodexCLIProvider()
+    assert provider.build_command(
+        {"command": "codex", "model": "m"}, effort="high"
+    ) == [
+        "codex",
+        "exec",
+        "--model",
+        "m",
+        "-c",
+        "model_reasoning_effort=high",
+        "{prompt}",
+    ]
+
+
+def test_codex_build_command_subcommand_null_removes_exec():
+    from lee_llm_router.providers.codex_cli import CodexCLIProvider
+
+    provider = CodexCLIProvider()
+    cmd = provider.build_command(
+        {"command": "codex", "model": "m", "subcommand": None}, effort="high"
+    )
+    assert cmd == [
+        "codex",
+        "--model",
+        "m",
+        "-c",
+        "model_reasoning_effort=high",
+        "{prompt}",
+    ]
+    assert "exec" not in cmd
+
+
+def test_codex_build_command_custom_subcommand():
+    from lee_llm_router.providers.codex_cli import CodexCLIProvider
+
+    provider = CodexCLIProvider()
+    cmd = provider.build_command(
+        {"command": "codex", "model": "m", "subcommand": "resume"}
+    )
+    assert cmd == [
+        "codex",
+        "resume",
+        "--model",
+        "m",
+        "{prompt}",
+    ]
+
+
+def test_codex_build_command_output_flag_and_output_path_placement():
+    from lee_llm_router.providers.codex_cli import CodexCLIProvider
+
+    provider = CodexCLIProvider()
+    cmd = provider.build_command(
+        {
+            "command": "codex",
+            "model": "m",
+            "output_flag": "--output-last-message",
+            "output_path": "/tmp/out.txt",
+        },
+        effort="high",
+    )
+    assert cmd == [
+        "codex",
+        "exec",
+        "--model",
+        "m",
+        "-c",
+        "model_reasoning_effort=high",
+        "--output-last-message",
+        "/tmp/out.txt",
+        "{prompt}",
+    ]
+    flag_idx = cmd.index("--output-last-message")
+    assert cmd[flag_idx : flag_idx + 2] == ["--output-last-message", "/tmp/out.txt"]
+    assert flag_idx < cmd.index("{prompt}")
+    assert cmd[-1] == "{prompt}"
+
+
+def test_codex_complete_with_output_flag_and_output_path_mocked():
+    from lee_llm_router.providers.codex_cli import CodexCLIProvider
+
+    provider = CodexCLIProvider()
+    request = make_request(model="m", effort="high")
+    config = {
+        "command": "codex",
+        "output_flag": "--output-last-message",
+        "output_path": "/tmp/out.txt",
+    }
+
+    with patch(
+        "subprocess.run",
+        return_value=subprocess.CompletedProcess([], 0, "response from stdout", ""),
+    ) as mock_run:
+        response = provider.complete(request, config)
+
+    argv = mock_run.call_args.args[0]
+    assert argv == [
+        "codex",
+        "exec",
+        "--model",
+        "m",
+        "-c",
+        "model_reasoning_effort=high",
+        "--output-last-message",
+        "/tmp/out.txt",
+        "hello",
+    ]
+    assert argv[-1] == "hello"
+    assert response.text == "response from stdout"
+
+
+def test_codex_complete_reads_from_output_path_file_when_present(tmp_path):
+    from lee_llm_router.providers.codex_cli import CodexCLIProvider
+
+    provider = CodexCLIProvider()
+    request = make_request(model="m")
+    out_file = tmp_path / "last_message.txt"
+    out_file.write_text("response from file", encoding="utf-8")
+
+    config = {
+        "command": "codex",
+        "output_flag": "--output-last-message",
+        "output_path": str(out_file),
+    }
+
+    with patch(
+        "subprocess.run",
+        return_value=subprocess.CompletedProcess([], 0, "stdout fallback", ""),
+    ):
+        response = provider.complete(request, config)
+
+    assert response.text == "response from file"
+
+
+def test_claude_code_and_gemini_subclass_argv_unchanged():
+    from lee_llm_router.providers.codex_cli import (
+        ClaudeCodeCLIProvider,
+        GeminiCLIProvider,
+    )
+
+    claude = ClaudeCodeCLIProvider()
+    claude_cmd = claude.build_command(
+        {"command": "claude", "model": "m"}, effort="high"
+    )
+    assert claude_cmd == [
+        "claude",
+        "--model",
+        "m",
+        "--effort",
+        "high",
+        "-p",
+        "{prompt}",
+    ]
+    assert "exec" not in claude_cmd
+
+    gemini = GeminiCLIProvider()
+    gemini_cmd = gemini.build_command({"command": "gemini"}, effort="high")
+    assert gemini_cmd == ["gemini", "-p", "{prompt}"]
+    assert "exec" not in gemini_cmd
+
+
+@pytest.mark.parametrize(
+    "config,effort",
+    [
+        ({"command": "codex"}, None),
+        ({"command": "codex", "model": "m"}, "high"),
+        ({"command": "codex", "subcommand": None}, "low"),
+        (
+            {
+                "command": "codex",
+                "output_flag": "--output-last-message",
+                "output_path": "/tmp/out.txt",
+            },
+            None,
+        ),
+        ({"command": "codex", "prompt_flag": "-p"}, None),
+        ({"command": "codex", "args": ["--foo", "bar"]}, "medium"),
+    ],
+)
+def test_codex_build_command_placeholder_always_last(config, effort):
+    from lee_llm_router.providers.codex_cli import (
+        PROMPT_PLACEHOLDER,
+        CodexCLIProvider,
+    )
+
+    provider = CodexCLIProvider()
+    cmd = provider.build_command(config, effort=effort)
+    assert cmd[-1] == PROMPT_PLACEHOLDER
 
 
 def test_claude_code_cli_effort_flag_is_its_own():
@@ -1155,6 +1491,61 @@ def test_claude_code_cli_effort_flag_is_its_own():
     cmd = provider.build_command({"command": "claude"}, effort="high")
 
     assert cmd == ["claude", "--effort", "high", "-p", "{prompt}"]
+
+
+def test_claude_code_cli_build_command_includes_model_flag():
+    from lee_llm_router.providers.codex_cli import ClaudeCodeCLIProvider
+
+    provider = ClaudeCodeCLIProvider()
+
+    cmd = provider.build_command(
+        {"command": "claude", "model": "claude-opus-5"}, effort="high"
+    )
+
+    assert cmd == [
+        "claude",
+        "--model",
+        "claude-opus-5",
+        "--effort",
+        "high",
+        "-p",
+        "{prompt}",
+    ]
+
+
+def test_claude_code_cli_build_command_model_override_wins():
+    from lee_llm_router.providers.codex_cli import ClaudeCodeCLIProvider
+
+    provider = ClaudeCodeCLIProvider()
+
+    cmd = provider.build_command(
+        {"command": "claude", "model": "claude-opus-5"},
+        model="claude-fable-5-1",
+    )
+
+    assert cmd == ["claude", "--model", "claude-fable-5-1", "-p", "{prompt}"]
+
+
+def test_claude_code_cli_build_command_no_model_omits_flag():
+    from lee_llm_router.providers.codex_cli import ClaudeCodeCLIProvider
+
+    provider = ClaudeCodeCLIProvider()
+
+    cmd = provider.build_command({"command": "claude"})
+
+    assert cmd == ["claude", "-p", "{prompt}"]
+
+
+def test_claude_code_cli_model_flag_null_disables_flag():
+    from lee_llm_router.providers.codex_cli import ClaudeCodeCLIProvider
+
+    provider = ClaudeCodeCLIProvider()
+
+    cmd = provider.build_command(
+        {"command": "claude", "model": "claude-opus-5", "model_flag": None}
+    )
+
+    assert cmd == ["claude", "-p", "{prompt}"]
 
 
 def test_gemini_cli_has_no_effort_flag():
@@ -1177,6 +1568,16 @@ def test_antigravity_complete_passes_request_effort():
 
     argv = mock_run.call_args.args[0]
     assert argv[argv.index("--effort") + 1] == "low"
+    assert argv == [
+        "agy",
+        "--dangerously-skip-permissions",
+        "--model",
+        "gemini-3.7-flash",
+        "--effort",
+        "low",
+        "-p",
+        "hello",
+    ]
 
 
 def test_opencode_ignores_request_effort():

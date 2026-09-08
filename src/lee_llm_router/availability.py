@@ -19,10 +19,8 @@ the provider quotas.
 from __future__ import annotations
 
 import enum
-import json
-import math
 import os
-import socket
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -297,7 +295,19 @@ def resolve_availability_path(explicit: str | Path | None = None) -> Path:
     from_env = os.environ.get(AVAILABILITY_FILE_ENV_VAR)
     if from_env:
         return Path(from_env).expanduser()
-    return DEFAULT_AVAILABILITY_DIR.expanduser() / f"{socket.gethostname()}.json"
+    if "socket" in sys.modules:
+        import socket
+
+        hostname = socket.gethostname()
+    else:
+        try:
+            hostname = os.uname().nodename
+        except AttributeError:
+            import socket
+
+            hostname = socket.gethostname()
+
+    return DEFAULT_AVAILABILITY_DIR.expanduser() / f"{hostname}.json"
 
 
 def load_availability(
@@ -443,6 +453,8 @@ def bucket_health(remaining_fraction: float | None, raw_status: str) -> Health:
     """
     if raw_status.strip().upper() in _NO_DATA_STATUSES:
         return Health.UNKNOWN
+    import math
+
     if remaining_fraction is None or not math.isfinite(remaining_fraction):
         return Health.UNKNOWN
     if remaining_fraction > 1.0:
@@ -683,6 +695,8 @@ def _decode(payload: str | bytes | Mapping[str, Any]) -> Mapping[str, Any]:
     if isinstance(payload, Mapping):
         return payload
     try:
+        import json
+
         raw = json.loads(payload)
     except (TypeError, ValueError) as exc:
         raise AvailabilityError(f"invalid JSON: {exc}") from exc
@@ -741,6 +755,8 @@ def _number(value: Any) -> float | None:
             return None
     else:
         return None
+    import math
+
     return number if math.isfinite(number) else None
 
 

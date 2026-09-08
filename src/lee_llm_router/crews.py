@@ -10,13 +10,24 @@ This module is strictly read-only: it never writes to the crews file.
 
 from __future__ import annotations
 
+import json
 import os
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import yaml
+
+def __getattr__(name: str) -> Any:
+    if name == "_YamlSafeLoader":
+        try:
+            from yaml import CSafeLoader as loader
+        except ImportError:  # pragma: no cover
+            from yaml import SafeLoader as loader
+        return loader
+    if name == "_WORKER_ENV_RE":
+        return _get_worker_env_re()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 DEFAULT_CREWS_FILE = Path("~/projects/auto-orch/config/crews.yaml")
 """Default crews file location (``~`` expanded at load time)."""
@@ -337,27 +348,100 @@ def _parse_crew(
     )
 
 
-def load_crews(path: str | Path | None = None) -> CrewsConfig:
-    """Load and validate the Auto-Orch crews file.
+def _cache_dir() -> Path:
+    """Return the directory holding crews parse caches."""
+    xdg = os.environ.get("XDG_CACHE_HOME")
+    base = Path(xdg) if xdg else Path.home() / ".cache"
+    return base / "lee-llm-router"
 
-    Args:
-        path: Explicit crews file path. When omitted, the path is resolved by
-            :func:`resolve_crews_path`.
 
-    Returns:
-        A :class:`CrewsConfig` preserving worker, crew, and stage file order.
+def _cache_path_for(abs_path: str) -> Path:
+    """Return the cache file path for a crews file's absolute path."""
+    import zlib
 
-    Raises:
-        CrewsConfigError: If the file is missing, is not a mapping, lacks
-            ``workers`` or ``crews``, or declares an invalid stage.
-    """
-    resolved = resolve_crews_path(path)
-    if not resolved.is_file():
-        raise CrewsConfigError(f"crews file not found: {resolved}")
+    hashed = f"{zlib.crc32(abs_path.encode('utf-8')) & 0xFFFFFFFF:08x}"
+    return _cache_dir() / f"crews_{hashed}.json"
+
+
+def _read_cache(
+    cache_file: Path,
+    abs_path: str,
+    size: int,
+    mtime_ns: int,
+) -> dict[str, Any] | None:
+    """Read cached raw crews mapping if path, size, and mtime_ns match."""
     try:
-        raw = yaml.safe_load(resolved.read_text(encoding="utf-8"))
+        text = cache_file.read_text(encoding="utf-8")
+        data = json.loads(text)
+        if (
+            isinstance(data, dict)
+            and data.get("source_path") == abs_path
+            and data.get("size") == size
+            and data.get("mtime_ns") == mtime_ns
+            and isinstance(data.get("raw"), dict)
+        ):
+            return data["raw"]
+    except Exception:
+        return None
+    return None
+
+
+def _write_cache(
+    cache_file: Path,
+    abs_path: str,
+    size: int,
+    mtime_ns: int,
+    raw: dict[str, Any],
+) -> None:
+    """Atomically write raw crews mapping to cache."""
+    try:
+        import tempfile
+
+        cache_dir = cache_file.parent
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "source_path": abs_path,
+            "size": size,
+            "mtime_ns": mtime_ns,
+            "raw": raw,
+        }
+        data = json.dumps(payload)
+        temp_fd, temp_path = tempfile.mkstemp(
+            prefix="crews_",
+            suffix=".tmp",
+            dir=cache_dir,
+        )
+        try:
+            with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
+                f.write(data)
+            os.replace(temp_path, cache_file)
+        except Exception:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
+def _load_yaml(resolved: Path) -> dict[str, Any]:
+    import yaml
+
+    try:
+        from yaml import CSafeLoader as loader
+    except ImportError:  # pragma: no cover
+        from yaml import SafeLoader as loader
+
+    try:
+        raw = yaml.load(  # noqa: S506 - CSafeLoader/SafeLoader only
+            resolved.read_text(encoding="utf-8"), Loader=loader
+        )
     except yaml.YAMLError as exc:
         raise CrewsConfigError(f"{resolved}: invalid YAML: {exc}") from exc
+    return raw
+
+
+def _build_crews_config(raw: Any, resolved: Path) -> CrewsConfig:
     if not isinstance(raw, dict):
         raise CrewsConfigError(f"{resolved}: top level must be a mapping")
     if "workers" not in raw:
@@ -376,6 +460,46 @@ def load_crews(path: str | Path | None = None) -> CrewsConfig:
     return CrewsConfig(workers=workers, crews=crews, path=resolved)
 
 
+def load_crews(path: str | Path | None = None) -> CrewsConfig:
+    """Load and validate the Auto-Orch crews file.
+
+    Args:
+        path: Explicit crews file path. When omitted, the path is resolved by
+            :func:`resolve_crews_path`.
+
+    Returns:
+        A :class:`CrewsConfig` preserving worker, crew, and stage file order.
+
+    Raises:
+        CrewsConfigError: If the file is missing, is not a mapping, lacks
+            ``workers`` or ``crews``, or declares an invalid stage.
+    """
+    resolved = resolve_crews_path(path)
+    if not resolved.is_file():
+        raise CrewsConfigError(f"crews file not found: {resolved}")
+
+    stat = resolved.stat()
+    abs_path = str(resolved.resolve())
+    no_cache = os.environ.get("LEE_LLM_ROUTER_NO_CACHE") == "1"
+    cache_file = _cache_path_for(abs_path)
+
+    if not no_cache:
+        raw = _read_cache(cache_file, abs_path, stat.st_size, stat.st_mtime_ns)
+        if raw is not None:
+            try:
+                return _build_crews_config(raw, resolved)
+            except Exception:
+                pass
+
+    raw = _load_yaml(resolved)
+    config = _build_crews_config(raw, resolved)
+
+    if not no_cache:
+        _write_cache(cache_file, abs_path, stat.st_size, stat.st_mtime_ns, raw)
+
+    return config
+
+
 WORKER_ENV_PREFIX_PROVIDERS: dict[str, str] = {
     "CODEX": "codex_cli",
     "CLAUDE": "claude_code_cli",
@@ -384,6 +508,30 @@ WORKER_ENV_PREFIX_PROVIDERS: dict[str, str] = {
     "ANTIGRAVITY": "antigravity_cli",
 }
 """Maps a stage-worker env-var prefix to a registered router provider name."""
+
+_BUILTIN_REGISTERED_PROVIDERS: frozenset[str] = frozenset(
+    {
+        "codex_cli",
+        "claude_code_cli",
+        "claude_code",
+        "claude",
+        "gemini_cli",
+        "gemini",
+        "omp_cli",
+        "opencode_cli",
+        "opencode",
+        "antigravity_cli",
+        "antigravity",
+        "agy",
+        "openrouter_http",
+        "openai_http",
+        "opencode_subscription_http",
+        "openai_codex_subscription_http",
+        "openai_codex_http",
+        "chatgpt_subscription_http",
+        "mock",
+    }
+)
 
 WORKER_PROVIDER_OVERRIDES: dict[str, tuple[str, str, str | None]] = {}
 """Explicit ``worker_id -> (provider, model, effort)`` pins.
@@ -489,11 +637,21 @@ def channel_for(worker_id: str, provider: str) -> str:
     return channel
 
 
-_WORKER_ENV_RE = re.compile(
+_WORKER_ENV_PATTERN: str = (
     r"(?P<prefix>[A-Z]+)_STAGE_WORKER_"
     r"(?P<key>REASONING_EFFORT|EFFORT|BINARY|MODEL)="
     r"(?P<value>\S+)"
 )
+_worker_env_re_cached: Any = None
+
+
+def _get_worker_env_re() -> Any:
+    global _worker_env_re_cached
+    if _worker_env_re_cached is None:
+        import re
+
+        _worker_env_re_cached = re.compile(_WORKER_ENV_PATTERN)
+    return _worker_env_re_cached
 
 
 def is_never_automatic(model: str | None) -> bool:
@@ -547,7 +705,7 @@ def _parse_worker_command(worker: Worker) -> tuple[str, str, str | None, str | N
     """Parse ``(prefix, model, effort, binary)`` out of a worker command."""
     prefix: str | None = None
     fields: dict[str, str] = {}
-    for match in _WORKER_ENV_RE.finditer(worker.command):
+    for match in _get_worker_env_re().finditer(worker.command):
         found = match.group("prefix")
         if prefix is None:
             prefix = found
@@ -604,15 +762,16 @@ def resolve_worker(worker: Worker) -> ResolvedWorker:
         prefix, model, effort, binary = _parse_worker_command(worker)
         provider = WORKER_ENV_PREFIX_PROVIDERS[prefix]
 
-    from lee_llm_router.providers import registry
+    if provider not in _BUILTIN_REGISTERED_PROVIDERS:
+        from lee_llm_router.providers import registry
 
-    try:
-        registry.get(provider)
-    except KeyError as exc:
-        raise CrewsConfigError(
-            f"worker {worker.id!r} resolves to provider {provider!r}, which is "
-            f"not registered (available: {', '.join(registry.available())})"
-        ) from exc
+        try:
+            registry.get(provider)
+        except KeyError as exc:
+            raise CrewsConfigError(
+                f"worker {worker.id!r} resolves to provider {provider!r}, which is "
+                f"not registered (available: {', '.join(registry.available())})"
+            ) from exc
 
     return ResolvedWorker(
         worker_id=worker.id,

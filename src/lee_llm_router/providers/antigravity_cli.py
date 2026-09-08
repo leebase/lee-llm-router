@@ -1,7 +1,8 @@
 """Subprocess provider for the Antigravity CLI (``agy``).
 
-Invokes ``agy -p --model <model> [--effort <level>]
---dangerously-skip-permissions`` in print mode with the prompt on stdin.
+Invokes ``agy --dangerously-skip-permissions --model <model> [--effort <level>]
+[--print-timeout <dur>] -p <prompt>`` in print mode with the prompt delivered
+as the argument to ``-p``.
 The harness handles authentication internally through its stored Google
 subscription credentials, so no API key configuration is needed here.
 """
@@ -14,6 +15,7 @@ from typing import Any
 from lee_llm_router.providers.base import FailureType, LLMRouterError
 from lee_llm_router.response import LLMRequest, LLMResponse, LLMUsage
 
+PROMPT_PLACEHOLDER = "{prompt}"
 VALID_EFFORTS = ("low", "medium", "high")
 
 
@@ -58,6 +60,15 @@ class AntigravityCLIProvider:
                 failure_type=FailureType.PROVIDER_ERROR,
             )
 
+        if "print_timeout" in config:
+            print_timeout = config["print_timeout"]
+            if not isinstance(print_timeout, str) or not print_timeout.strip():
+                raise LLMRouterError(
+                    f"{self.name} provider key 'print_timeout' "
+                    "must be a non-empty string",
+                    failure_type=FailureType.PROVIDER_ERROR,
+                )
+
     def build_command(
         self,
         config: dict[str, Any],
@@ -66,8 +77,8 @@ class AntigravityCLIProvider:
     ) -> list[str]:
         """Return the dispatch command template as an argv list.
 
-        The prompt is delivered on stdin, so the argv list carries no prompt
-        placeholder.
+        The final positional element is the literal ``{prompt}`` placeholder,
+        which :meth:`complete` replaces with the resolved prompt text.
 
         Args:
             config: Provider configuration mapping.
@@ -85,11 +96,14 @@ class AntigravityCLIProvider:
         resolved_model = model or config["model"]
         resolved_effort = effort if effort is not None else config.get("effort")
 
-        cmd = [command, "-p", "--model", resolved_model]
+        cmd = [command, "--dangerously-skip-permissions", "--model", resolved_model]
         if resolved_effort is not None:
             _validate_effort(resolved_effort, provider_name=self.name)
             cmd.extend(["--effort", resolved_effort])
-        cmd.append("--dangerously-skip-permissions")
+        print_timeout = config.get("print_timeout")
+        if print_timeout is not None:
+            cmd.extend(["--print-timeout", print_timeout])
+        cmd.extend(["-p", PROMPT_PLACEHOLDER])
         return cmd
 
     def complete(self, request: LLMRequest, config: dict[str, Any]) -> LLMResponse:
@@ -111,17 +125,20 @@ class AntigravityCLIProvider:
         command = config.get("command", self.default_command)
         timeout = request.timeout or float(config.get("timeout", 120.0))
         prompt = _build_prompt(request)
-        cmd = self.build_command(
-            config, model=request.model or None, effort=request.effort
-        )
+        cmd = [
+            prompt if part == PROMPT_PLACEHOLDER else part
+            for part in self.build_command(
+                config, model=request.model or None, effort=request.effort
+            )
+        ]
 
         try:
             result = subprocess.run(
                 cmd,
-                input=prompt,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                stdin=subprocess.DEVNULL,
             )
         except subprocess.TimeoutExpired as exc:
             raise LLMRouterError(
@@ -166,7 +183,11 @@ class AntigravityCLIProvider:
 
 
 def _validate_effort(effort: Any, *, provider_name: str) -> None:
-    """Raise unless ``effort`` is one of the supported levels."""
+    """Raise unless ``effort`` is one of the supported levels.
+
+    The ``agy`` CLI accepts only ``low``, ``medium``, or ``high`` reasoning
+    effort (it has no ``max`` level).
+    """
     if effort not in VALID_EFFORTS:
         raise LLMRouterError(
             f"{provider_name} provider key 'effort' must be one of "

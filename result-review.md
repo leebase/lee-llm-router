@@ -6,6 +6,28 @@
 
 ---
 
+## 2026-09-07 - Crew Resolver Sprint 3: resolve CLI, flex/bind, event ledger, dispatch watchdog
+
+**What was built:** `resolver.py` — a pure `resolve()` over the loaded crews and the availability snapshot with three modes. `strict` returns the crew's named worker and vetoes (exit 2) only on `exhausted`/`likely_exhausted`; `degraded`/`unknown` pass with the state named in the reason, so a dead availability cron cannot halt governed runs. `flex` walks the stage list in declared order by tier (healthy, then degraded, then unknown as a stated last resort), skips never-automatic workers (Fable 5.1, Luna Max, Opus 5) unless the stage names only one, and exits 2 with a remedy (`refresh availability` or `wait for reset at <time>`) when nothing is eligible. `bind` requires `--worker --authorized-by --reason`, may name any worker, reports headroom and never vetoes. Gemini 3.1 Pro is refused in every mode (exit 3, D152/D153). `events.py` appends one compact JSON line per successful resolution to `~/.local/state/lee-llm-router/events/<host>.jsonl` with a single `O_APPEND` write, 4 KB cap, 17 fixed fields including `route_id` (`provider:model:effort`) and `harness`. `lee-llm-router resolve` and `lee-llm-router dispatch` expose this; `dispatch` runs the provider harness argv with the prompt on argv or stdin (writer thread, no pipe deadlock), streams stdout/stderr, and supervises it with `watchdog.py` (stall flag after `--stall-minutes` of no output and no watched-file activity, never kills; `--max-minutes` ceiling kills, exit 124). Provider dispatch templates were corrected against the installed CLIs (`codex exec …`, `claude --model … --effort … -p`, `agy --dangerously-skip-permissions --model … -p`). Cold start: package `__init__` is lazy (PEP 562), `httpx` deferred, C YAML loader, and an mtime/size-keyed crews parse cache under `~/.cache/lee-llm-router/` (`LEE_LLM_ROUTER_NO_CACHE=1` disables).
+
+**Why it matters:** This is the seam every harness shim (Sprint 4) will call: one place that knows who is allowed, who is funded, and who was chosen, with the escalation authority on the record. The event ledger's `route_id` is what the benchmark compares cost-to-accept on.
+
+**Evidence (supervisor-observed):** 517 tests; Black/Ruff clean on `src/`; `resolve` on the live crews file and real snapshot, 5 cold runs: 51/44/42/44/48 ms (median 44 ms; gate < 50). End-to-end dispatch with harmless binaries: 300 KB stdin prompt round-trips; 1 MB output drained with the child's exit code; stall flagged without kill; ceiling kills with 124. Ledger: `docs/crew-resolver/execution-log.md`.
+
+**Review:** Sol Low (Codex, read-only). Round 1 FAIL (one Medium: flex silently skipped a forbidden candidate — supervisor packet/review-prompt inconsistency; repaired so the skip is named in the reason with the D152/D153 citation, and an all-forbidden stage exits 3). Round 2 **PASS**, no findings. Reviewer's own cold-start median 49.1 ms; supervisor's 44 ms. 521 tests.
+
+**How to Verify**
+
+```bash
+PYTHONPATH=src .venv/bin/python -m pytest -q
+PYTHONPATH=src .venv/bin/python -m lee_llm_router.doctor resolve --crew openai-economy --role author --mode flex --no-event
+PYTHONPATH=src .venv/bin/python -m lee_llm_router.doctor resolve --crew gemini-pro-crew --role envision --no-event   # exit 3, forbidden
+PYTHONPATH=src .venv/bin/python -m lee_llm_router.doctor dispatch --crew openai-economy --role author --prompt hi --no-event --dry-run
+for i in 1 2 3 4 5; do s=$(date +%s%N); PYTHONPATH=src .venv/bin/python -m lee_llm_router.doctor resolve --crew openai-economy --role author --mode flex --no-event >/dev/null; e=$(date +%s%N); echo $(( (e-s)/1000000 )); done
+```
+
+---
+
 ## 2026-09-07 - Crew Resolver Sprint 2: Availability Snapshot and Refresh
 
 **What was built:** `availability.py` reads the `ai-subs` snapshot (`~/.local/state/lee-llm-router/availability/<host>.json`, env `LEE_LLM_ROUTER_AVAILABILITY_FILE`) and normalizes it to per-channel headroom (`healthy | degraded | likely_exhausted | exhausted | unknown`) across six funding channels (openai-sub, anthropic-sub, gemini-sub, gemini-sub-thirdparty, openrouter, opencode-go). Fail-closed: snapshots older than 90 minutes, future-skewed beyond 5 minutes, non-finite or out-of-range values, and malformed files all read as `unknown`, never `healthy`; the older of `observed_at`/`written_at` governs age. `crews.py` gains the worker → channel map (`PROVIDER_CHANNELS`, overrides). `scripts/refresh_availability.sh` runs ai-subs, validates, and writes the snapshot atomically; the hourly cron line is documented in `docs/availability-refresh.md`, not installed. `doctor --availability` renders the reader's verdict.

@@ -1,4 +1,4 @@
-﻿# Lee LLM Router
+# Lee LLM Router
 
 A lightweight LLM routing kernel extracted from LeeClaw and Meridian. It supports config-driven routing, provider adapters, telemetry, doctor tooling, and explicit source export for downstream vendoring.
 
@@ -122,6 +122,26 @@ bucket count; a missing or stale snapshot is a warning, not a failure.
 `--config` is optional when either flag is given. See
 [docs/config.md](docs/config.md#crews) and
 [docs/availability-refresh.md](docs/availability-refresh.md).
+
+### Resolve
+
+```bash
+lee-llm-router resolve --crew openai-economy --role author
+lee-llm-router resolve --crew openai-economy --role author --mode flex --json
+lee-llm-router resolve --crew openai-economy --role author --mode bind \
+  --worker codex_terra_high --authorized-by lee --reason "quota exhausted"
+lee-llm-router dispatch --crew openai-economy --role author --mode flex --prompt "Review plan"
+```
+
+Answers "which worker runs this crew's stage right now, and why": resolves via
+`strict` (default), `flex`, or `bind` mode, prints the worker, provider, model,
+route id, dispatch command, and reason, and appends one line to the event
+ledger for every successful resolution (`--no-event` suppresses that write).
+Exit `0` on success, `2` when nothing is eligible, `3` for a config, usage, or
+forbidden-model refusal. Never invokes a provider binary. `dispatch` resolves
+the worker, runs the harness, and supervises execution under the stall watchdog. See
+[docs/config.md#resolving-a-worker](docs/config.md#resolving-a-worker) and
+[docs/config.md#dispatching](docs/config.md#dispatching).
 
 ### Export Source
 

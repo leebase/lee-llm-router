@@ -10,7 +10,7 @@
 |-----------|-------|
 | **Phase** | P4 complete; pi harness reliability shipped |
 | **Mode** | 2 (Implementation with approval) |
-| **Last Updated** | 2026-09-07 (Crew Resolver Sprint 2 closed, review PASS round 8) |
+| **Last Updated** | 2026-09-07 (Crew Resolver Sprint 3 closed, review PASS round 2) |
 
 ### Sprint Status
 | Sprint | Status | Completion |
@@ -24,14 +24,15 @@
 | Sprint 7 - Pi Coding Harness Reliability and Harness Validation | Done | 100% |
 | Crew Resolver S1 - Crews as a routing policy (`docs/crew-resolver/sprint-plan.md`) | Done | 100% |
 | Crew Resolver S2 - Availability snapshot and refresh script | Done | 100% |
-| Crew Resolver S3 - resolve CLI, flex, bind, event ledger | Next | 0% |
+| Crew Resolver S3 - resolve CLI, flex, bind, event ledger, dispatch watchdog | Done | 100% |
+| Crew Resolver S4 - Four harness shims | Next | 0% |
 
 ---
 
 ## What's Happening Now
 
 ### Current Work Stream
-Crew-aware worker resolver lane (D187). Sprint 1 committed `bea61bd`. Sprint 2 (availability reader `availability.py`, channel map, `scripts/refresh_availability.sh`, `doctor --availability`) closed 2026-09-07 with an independent PASS (Sol Low, read-only) on round 8. Every finding across seven failing rounds was repaired: non-finite values, future skew, naive UTC, oldest-timestamp staleness, malformed-record fail-closed with the ai-subs badge vocabulary, script validation parity, temp cleanup, a test time bomb, and a misnamed test. See `docs/crew-resolver/execution-log.md` for the round-by-round ledger. Cron line documented, not installed. Cron for the hourly refresh is documented, not installed (Lee/Chief). Next is Sprint 3 (`resolve` CLI, flex, bind, event ledger). See `docs/crew-resolver/execution-log.md` and `needs-lee.md`.
+Crew-aware worker resolver lane (D187). Sprint 1 committed `bea61bd`; Sprint 2 committed `6dd9402` (review PASS round 8; hourly refresh cron installed by Lee). Sprint 3 built 2026-09-07 in thirteen packets (P15–P27): `resolver.py` (strict/flex/bind, refusals), `events.py` (append-only JSONL ledger), `watchdog.py` (stall/ceiling with injected clock), `dispatch.py` + `lee-llm-router resolve|dispatch`, provider argv corrections against the real `codex`/`claude`/`agy` CLIs, and a cold-start pass (lazy package init, deferred httpx, C YAML loader, crews parse cache) that brought `resolve` to a 44 ms median. Staffing shifted mid-sprint to Gemini 3.8 Flash via `agy` when the Anthropic session bucket hit 15%, then back as it reset. Independent review (Sol Low): round 1 one Medium, round 2 PASS; committed. Open Lee decisions in `docs/crew-resolver/needs-lee.md` (Gemini 3.1 Pro's standing). Next: Sprint 4 shims.
 
 Prior stream:
 Sprint 7 is complete. The pi coding harness path now has a repo-local reproduction fixture, stricter CLI harness contract handling, explicit `doctor` validation, regression coverage, and a user-style verification path. No downstream migration work is executed from this repo now; downstream projects are handled separately.
@@ -90,7 +91,7 @@ Sprint 7 is complete. The pi coding harness path now has a repo-local reproducti
 
 | Rank | Action | Owner | Done When |
 |------|--------|-------|----------|
-| 1 | Install the hourly availability refresh cron on A8Max (`docs/availability-refresh.md`), then run Crew Resolver Sprint 3 (`resolve` CLI, flex, bind, event ledger, stall watchdog) | Lee/Chief (cron) + supervisor | Snapshot refreshed hourly; `resolve` returns a worker in < 50 ms with strict/flex/bind/refusal tests |
+| 1 | Crew Resolver Sprint 4: four harness shims (Claude Code `/crew`, Codex prompt, OMP command, OpenCode) generated from one template by `shims install --dry-run|--apply`; apply is Lee's call | Supervisor + Lee | Each shim yields the same resolution as the CLI; ledger shows four harness tags |
 | 2 | Decide whether to productize an optional doctor smoke-execution mode for CLI harness roles | Human + AI | We know whether runtime smoke tests should become part of the public CLI |
 | 3 | Reassess broader harness-aware planning as a separate sprint | Human + AI | Follow-on planning is grounded in a stable pi harness baseline |
 

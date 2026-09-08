@@ -1,9 +1,21 @@
-﻿"""Doctor CLI - config validation, environment diagnostics, and source export.
+"""Doctor CLI - config validation, environment diagnostics, and source export.
 
 Commands:
     lee-llm-router doctor --config <path> [--role <role>] [--crews]
                           [--availability]
     lee-llm-router crews list [--crews-file <path>] [--json]
+    lee-llm-router resolve --crew <name> --role <stage> [--mode strict|flex|bind]
+                           [--worker <id>] [--authorized-by <who>] [--reason <why>]
+                           [--harness <tag>] [--json] [--crews-file <path>]
+                           [--availability-file <path>] [--events-file <path>]
+                           [--no-event]
+    lee-llm-router dispatch --crew <name> --role <stage> [--mode strict|flex|bind]
+                            [--worker <id>] [--authorized-by <who>] [--reason <why>]
+                            [--harness <tag>] [--prompt-file <path> | --prompt <text>]
+                            [--stall-minutes N] [--max-minutes N]
+                            [--watch-dir <path> ...] [--crews-file <path>]
+                            [--availability-file <path>] [--events-file <path>]
+                            [--no-event] [--dry-run]
     lee-llm-router template
     lee-llm-router trace --last N
     lee-llm-router export-source --dest <path> [--force]
@@ -11,17 +23,17 @@ Commands:
 
 from __future__ import annotations
 
-import argparse
-import json
-import os
-import shutil
-import subprocess
 import sys
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import argparse
+    from datetime import datetime
+    from pathlib import Path
 
 MANIFEST_NAME = ".lee_llm_router_export.json"
+DEFAULT_STALL_MINUTES = 10
+DEFAULT_MAX_MINUTES = 120
 
 
 def check_config(
@@ -33,6 +45,10 @@ def check_config(
     Returns:
         (errors, warnings) - errors are blocking; warnings are informational.
     """
+    import os
+    import shutil
+    from pathlib import Path
+
     from lee_llm_router.config import ConfigError, load_config
     from lee_llm_router.providers.base import LLMRouterError
     from lee_llm_router.providers.registry import get as get_provider
@@ -133,12 +149,19 @@ def check_config(
 
 def get_template() -> str:
     """Return the contents of the bundled llm.example.yaml."""
+    from pathlib import Path
+
     template_path = Path(__file__).parent / "templates" / "llm.example.yaml"
     return template_path.read_text(encoding="utf-8")
 
 
 def export_source(dest: str | Path, force: bool = False) -> dict[str, str | None]:
     """Export the package tree as a vendorable source snapshot."""
+    import json
+    import shutil
+    from datetime import datetime, timezone
+    from pathlib import Path
+
     from lee_llm_router import __version__
 
     package_root = Path(__file__).resolve().parent
@@ -186,6 +209,8 @@ def export_source(dest: str | Path, force: bool = False) -> dict[str, str | None
 
 
 def _get_git_commit(repo_root: Path) -> str | None:
+    import subprocess
+
     try:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -487,6 +512,8 @@ def _format_crew(entry: dict[str, Any]) -> list[str]:
 
 
 def _run_crews_list(args: argparse.Namespace) -> int:
+    import json
+
     from lee_llm_router.crews import CrewsConfigError
 
     try:
@@ -503,6 +530,268 @@ def _run_crews_list(args: argparse.Namespace) -> int:
         for line in _format_crew(entry):
             print(line)
     return 0
+
+
+RESOLVE_MODES: tuple[str, ...] = ("strict", "flex", "bind")
+"""The ``--mode`` values ``resolve`` accepts (mirrors ``resolver.MODES``)."""
+
+
+def _resolve_field_lines(resolution: Any) -> list[str]:
+    """Render a successful resolution as the ``resolve`` text-output fields.
+
+    Args:
+        resolution: The :class:`~lee_llm_router.resolver.Resolution`.
+
+    Returns:
+        One line per field, in the command's documented order, with an
+        ``authorized_by`` line appended when the resolution is a bind.
+    """
+    import shlex
+
+    from lee_llm_router.resolver import DEFAULT_EFFORT_TOKEN
+
+    dispatch = shlex.join(resolution.dispatch_command)
+    if resolution.prompt_delivery == "stdin":
+        dispatch += " [prompt on stdin]"
+
+    if resolution.headroom_remaining_fraction is None:
+        headroom = resolution.headroom
+    else:
+        pct = round(resolution.headroom_remaining_fraction * 100)
+        headroom = f"{resolution.headroom} ({pct}% remaining)"
+
+    lines = [
+        f"worker: {resolution.worker_id}",
+        f"provider: {resolution.provider}",
+        f"model: {resolution.model}",
+        f"effort: {resolution.effort or DEFAULT_EFFORT_TOKEN}",
+        f"channel: {resolution.channel}",
+        f"headroom: {headroom}",
+        f"route_id: {resolution.route_id}",
+        f"dispatch: {dispatch}",
+        f"reason: {resolution.reason}",
+    ]
+    if resolution.mode == "bind":
+        lines.append(f"authorized_by: {resolution.authorized_by}")
+    return lines
+
+
+def _print_resolve_refusal(
+    error: Any,
+    *,
+    as_json: bool,
+    prefix: str = "resolve",
+) -> int:
+    """Print a ``resolve`` refusal and return its exit code.
+
+    Args:
+        error: The :class:`~lee_llm_router.resolver.ResolutionError`.
+        as_json: Whether ``--json`` was requested.
+        prefix: Subcommand name for stderr message (default: ``"resolve"``).
+
+    Returns:
+        ``error.exit_code``.
+    """
+    print(f"{prefix}: {error.message}", file=sys.stderr)
+    if error.remedy:
+        print(f"remedy: {error.remedy}", file=sys.stderr)
+    if as_json:
+        import json
+
+        print(json.dumps(error.to_dict(), indent=2))
+    return error.exit_code
+
+
+def _perform_resolve(
+    args: argparse.Namespace,
+    *,
+    as_json: bool = False,
+    prefix: str = "resolve",
+) -> tuple[Any | None, int]:
+    """Resolve which worker runs a crew's stage.
+
+    Args:
+        args: Parsed command arguments.
+        as_json: Whether refusals should be emitted as JSON.
+        prefix: Subcommand prefix for stderr on refusal.
+
+    Returns:
+        ``(resolution, exit_code)`` where ``exit_code`` is 0 on success, or 2/3
+        on refusal after printing to stderr.
+    """
+    from lee_llm_router.availability import load_availability
+    from lee_llm_router.crews import CrewsConfigError, load_crews
+    from lee_llm_router.resolver import ResolutionError, resolve
+
+    try:
+        crews_config = load_crews(getattr(args, "crews_file", None))
+    except CrewsConfigError as exc:
+        error = ResolutionError(str(exc), exit_code=3, kind="config")
+        return None, _print_resolve_refusal(error, as_json=as_json, prefix=prefix)
+
+    snapshot = load_availability(getattr(args, "availability_file", None))
+
+    try:
+        resolution = resolve(
+            crews_config,
+            snapshot,
+            crew=args.crew,
+            role=args.role,
+            mode=args.mode,
+            worker=args.worker,
+            authorized_by=args.authorized_by,
+            reason=args.reason,
+        )
+    except ResolutionError as exc:
+        return None, _print_resolve_refusal(exc, as_json=as_json, prefix=prefix)
+
+    return resolution, 0
+
+
+def _record_resolution_event(
+    resolution: Any,
+    args: argparse.Namespace,
+) -> tuple[str | None, str | None]:
+    """Append one event to the ledger unless ``--no-event`` is given.
+
+    Args:
+        resolution: The :class:`~lee_llm_router.resolver.Resolution`.
+        args: Parsed command arguments.
+
+    Returns:
+        ``(event_path, event_error)`` where ``event_path`` is the path written
+        to, and ``event_error`` is the error message string on write failure.
+    """
+    if args.no_event:
+        return None, None
+
+    from lee_llm_router import events as events_mod
+
+    event = events_mod.build_event(
+        harness=args.harness,
+        crew=resolution.crew,
+        role=resolution.role,
+        mode=resolution.mode,
+        worker_id=resolution.worker_id,
+        provider=resolution.provider,
+        model=resolution.model,
+        effort=resolution.effort,
+        channel=resolution.channel,
+        headroom=resolution.headroom,
+        reason=resolution.reason,
+        authorized_by=resolution.authorized_by,
+        route_id=resolution.route_id,
+        snapshot_observed_at=resolution.snapshot_observed_at,
+        snapshot_stale=resolution.snapshot_stale,
+    )
+    try:
+        written = events_mod.append_event(event, getattr(args, "events_file", None))
+        return str(written), None
+    except (events_mod.EventError, OSError) as exc:
+        return None, str(exc)
+
+
+def _run_resolve(args: argparse.Namespace) -> int:
+    """Resolve which worker runs a crew's stage and print/record the result.
+
+    Loads the crews file and the availability snapshot, calls
+    :func:`lee_llm_router.resolver.resolve`, prints the resolution (text or
+    ``--json``), and appends one event to the ledger for every successful
+    resolution unless ``--no-event`` is given. A failure to write the event
+    still prints the resolution but turns the exit code into ``3``: an
+    unrecorded resolution is not a completed one.
+    """
+    resolution, exit_code = _perform_resolve(args, as_json=args.json)
+    if resolution is None:
+        return exit_code
+
+    event_path, event_error = _record_resolution_event(resolution, args)
+
+    if args.json:
+        import json
+
+        payload = resolution.to_dict()
+        payload["event_path"] = event_path
+        print(json.dumps(payload, indent=2))
+    else:
+        for line in _resolve_field_lines(resolution):
+            print(line)
+        if args.no_event:
+            print("event: not recorded (--no-event)")
+        elif event_path is not None:
+            print(f"event: {event_path}")
+
+    if event_error is not None:
+        print(f"resolve: could not record event: {event_error}", file=sys.stderr)
+        return 3
+
+    return 0
+
+
+def _run_dispatch(args: argparse.Namespace) -> int:
+    """Resolve, run the harness, supervise with the stall watchdog."""
+    resolution, exit_code = _perform_resolve(args)
+    if resolution is None:
+        return exit_code
+
+    if args.dry_run:
+        event_path, event_error = _record_resolution_event(resolution, args)
+        for line in _resolve_field_lines(resolution):
+            print(line)
+        if args.no_event:
+            print("event: not recorded (--no-event)")
+        elif event_path is not None:
+            print(f"event: {event_path}")
+        if event_error is not None:
+            print(f"dispatch: could not record event: {event_error}", file=sys.stderr)
+            return 3
+        return 0
+
+    if args.prompt is not None and args.prompt_file is not None:
+        print(
+            "dispatch: cannot specify both --prompt and --prompt-file",
+            file=sys.stderr,
+        )
+        return 3
+
+    if args.prompt is not None:
+        prompt = args.prompt
+    elif args.prompt_file is not None:
+        from pathlib import Path
+
+        try:
+            prompt = Path(args.prompt_file).read_text(encoding="utf-8")
+        except OSError as exc:
+            print(f"dispatch: could not read prompt file: {exc}", file=sys.stderr)
+            return 3
+    else:
+        if sys.stdin.isatty():
+            print(
+                "dispatch: prompt required via --prompt, --prompt-file, "
+                "or non-TTY stdin",
+                file=sys.stderr,
+            )
+            return 3
+        prompt = sys.stdin.read()
+
+    if not prompt.strip():
+        print("dispatch: prompt is empty", file=sys.stderr)
+        return 3
+
+    event_path, event_error = _record_resolution_event(resolution, args)
+    if event_error is not None:
+        print(f"dispatch: could not record event: {event_error}", file=sys.stderr)
+        return 3
+
+    from lee_llm_router.dispatch import run_dispatch
+
+    return run_dispatch(
+        resolution=resolution,
+        prompt=prompt,
+        stall_minutes=args.stall_minutes,
+        max_minutes=args.max_minutes,
+        watch_dirs=args.watch_dir or (),
+    )
 
 
 def _run_doctor(args: argparse.Namespace) -> int:
@@ -592,6 +881,9 @@ def _run_template(_args: argparse.Namespace) -> int:
 
 
 def _run_trace(args: argparse.Namespace) -> int:
+    import json
+    from pathlib import Path
+
     trace_dir = Path(args.dir) if args.dir else Path(".lee-llm-router") / "traces"
     n = args.last
 
@@ -645,7 +937,158 @@ def _run_export_source(args: argparse.Namespace) -> int:
     return 0
 
 
+class _FastResolveArgs:
+    """Fast-path argument namespace for resolve."""
+
+    __slots__ = (
+        "command",
+        "crew",
+        "role",
+        "mode",
+        "worker",
+        "authorized_by",
+        "reason",
+        "harness",
+        "json",
+        "crews_file",
+        "availability_file",
+        "events_file",
+        "no_event",
+    )
+
+    def __init__(
+        self,
+        crew: str,
+        role: str,
+        mode: str = "strict",
+        worker: str | None = None,
+        authorized_by: str | None = None,
+        reason: str | None = None,
+        harness: str = "cli",
+        as_json: bool = False,
+        crews_file: str | None = None,
+        availability_file: str | None = None,
+        events_file: str | None = None,
+        no_event: bool = False,
+    ) -> None:
+        self.command = "resolve"
+        self.crew = crew
+        self.role = role
+        self.mode = mode
+        self.worker = worker
+        self.authorized_by = authorized_by
+        self.reason = reason
+        self.harness = harness
+        self.json = as_json
+        self.crews_file = crews_file
+        self.availability_file = availability_file
+        self.events_file = events_file
+        self.no_event = no_event
+
+
+def _try_fast_resolve(argv: list[str]) -> _FastResolveArgs | None:
+    """Fast-path parse arguments for resolve.
+
+    Falls back to argparse on unexpected flags or --help.
+    """
+    crew: str | None = None
+    role: str | None = None
+    mode = "strict"
+    worker: str | None = None
+    authorized_by: str | None = None
+    reason: str | None = None
+    harness = "cli"
+    as_json = False
+    crews_file: str | None = None
+    availability_file: str | None = None
+    events_file: str | None = None
+    no_event = False
+
+    i = 0
+    n = len(argv)
+    while i < n:
+        arg = argv[i]
+        if arg in ("-h", "--help"):
+            return None
+        if arg == "--json":
+            as_json = True
+            i += 1
+            continue
+        if arg == "--no-event":
+            no_event = True
+            i += 1
+            continue
+
+        if not arg.startswith("--"):
+            return None
+
+        opt, has_eq, val = arg.partition("=")
+        if has_eq:
+            opt_name = opt
+            opt_val = val
+            step = 1
+        else:
+            opt_name = arg
+            if i + 1 >= n or argv[i + 1].startswith("--"):
+                return None
+            opt_val = argv[i + 1]
+            step = 2
+
+        if opt_name == "--crew":
+            crew = opt_val
+        elif opt_name == "--role":
+            role = opt_val
+        elif opt_name == "--mode":
+            if opt_val not in RESOLVE_MODES:
+                return None
+            mode = opt_val
+        elif opt_name == "--worker":
+            worker = opt_val
+        elif opt_name == "--authorized-by":
+            authorized_by = opt_val
+        elif opt_name == "--reason":
+            reason = opt_val
+        elif opt_name == "--harness":
+            harness = opt_val
+        elif opt_name == "--crews-file":
+            crews_file = opt_val
+        elif opt_name == "--availability-file":
+            availability_file = opt_val
+        elif opt_name == "--events-file":
+            events_file = opt_val
+        else:
+            return None
+
+        i += step
+
+    if crew is None or role is None:
+        return None
+
+    return _FastResolveArgs(
+        crew=crew,
+        role=role,
+        mode=mode,
+        worker=worker,
+        authorized_by=authorized_by,
+        reason=reason,
+        harness=harness,
+        as_json=as_json,
+        crews_file=crews_file,
+        availability_file=availability_file,
+        events_file=events_file,
+        no_event=no_event,
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
+    args_list = sys.argv[1:] if argv is None else list(argv)
+    if args_list and args_list[0] == "resolve":
+        fast_args = _try_fast_resolve(args_list[1:])
+        if fast_args is not None:
+            sys.exit(_run_resolve(fast_args))
+
+    import argparse
+
     parser = argparse.ArgumentParser(
         prog="lee-llm-router",
         description="Lee LLM Router CLI tools",
@@ -717,6 +1160,198 @@ def main(argv: list[str] | None = None) -> None:
         help="Emit a JSON array instead of plain text",
     )
     crews_list_parser.set_defaults(func=_run_crews_list)
+
+    resolve_parser = subparsers.add_parser(
+        "resolve",
+        help="Resolve which worker runs a crew's stage, and record the event",
+    )
+    resolve_parser.add_argument(
+        "--crew",
+        required=True,
+        metavar="NAME",
+        help="Crew name",
+    )
+    resolve_parser.add_argument(
+        "--role",
+        required=True,
+        metavar="STAGE",
+        help="Cognitive stage name (envision, ideate, reconsider, score, author)",
+    )
+    resolve_parser.add_argument(
+        "--mode",
+        choices=RESOLVE_MODES,
+        default="strict",
+        help="Resolution mode (default: strict)",
+    )
+    resolve_parser.add_argument(
+        "--worker",
+        metavar="ID",
+        default=None,
+        help="Worker id to bind to (bind mode only)",
+    )
+    resolve_parser.add_argument(
+        "--authorized-by",
+        metavar="WHO",
+        default=None,
+        help="Who authorized the bind (bind mode only)",
+    )
+    resolve_parser.add_argument(
+        "--reason",
+        metavar="WHY",
+        default=None,
+        help="Why the bind was authorized (bind mode only)",
+    )
+    resolve_parser.add_argument(
+        "--harness",
+        metavar="TAG",
+        default="cli",
+        help="Calling harness tag recorded in the event (default: cli)",
+    )
+    resolve_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a JSON object instead of plain text",
+    )
+    resolve_parser.add_argument(
+        "--crews-file",
+        metavar="PATH",
+        default=None,
+        help="Path to the crews YAML (default: the Auto-Orch crews file)",
+    )
+    resolve_parser.add_argument(
+        "--availability-file",
+        metavar="PATH",
+        default=None,
+        help="Path to the availability snapshot (default: per-host default)",
+    )
+    resolve_parser.add_argument(
+        "--events-file",
+        metavar="PATH",
+        default=None,
+        help="Path to the event ledger (default: per-host default)",
+    )
+    resolve_parser.add_argument(
+        "--no-event",
+        action="store_true",
+        help="Do not append an event (dry runs, shim self-tests)",
+    )
+    resolve_parser.set_defaults(func=_run_resolve)
+
+    dispatch_parser = subparsers.add_parser(
+        "dispatch",
+        help="Resolve, run the harness, supervise with the stall watchdog",
+    )
+    dispatch_parser.add_argument(
+        "--crew",
+        required=True,
+        metavar="NAME",
+        help="Crew name",
+    )
+    dispatch_parser.add_argument(
+        "--role",
+        required=True,
+        metavar="STAGE",
+        help="Cognitive stage name (envision, ideate, reconsider, score, author)",
+    )
+    dispatch_parser.add_argument(
+        "--mode",
+        choices=RESOLVE_MODES,
+        default="strict",
+        help="Resolution mode (default: strict)",
+    )
+    dispatch_parser.add_argument(
+        "--worker",
+        metavar="ID",
+        default=None,
+        help="Worker id to bind to (bind mode only)",
+    )
+    dispatch_parser.add_argument(
+        "--authorized-by",
+        metavar="WHO",
+        default=None,
+        help="Who authorized the bind (bind mode only)",
+    )
+    dispatch_parser.add_argument(
+        "--reason",
+        metavar="WHY",
+        default=None,
+        help="Why the bind was authorized (bind mode only)",
+    )
+    dispatch_parser.add_argument(
+        "--harness",
+        metavar="TAG",
+        default="cli",
+        help="Calling harness tag recorded in the event (default: cli)",
+    )
+    dispatch_parser.add_argument(
+        "--prompt-file",
+        metavar="PATH",
+        default=None,
+        help="Path to prompt file",
+    )
+    dispatch_parser.add_argument(
+        "--prompt",
+        metavar="TEXT",
+        default=None,
+        help="Prompt text",
+    )
+    dispatch_parser.add_argument(
+        "--stall-minutes",
+        type=float,
+        default=DEFAULT_STALL_MINUTES,
+        metavar="N",
+        help=(
+            f"Minutes of silence before flagging a stall "
+            f"(default: {DEFAULT_STALL_MINUTES})"
+        ),
+    )
+    dispatch_parser.add_argument(
+        "--max-minutes",
+        type=float,
+        default=DEFAULT_MAX_MINUTES,
+        metavar="N",
+        help=(
+            f"Wall-clock ceiling in minutes before killing child "
+            f"(default: {DEFAULT_MAX_MINUTES})"
+        ),
+    )
+    dispatch_parser.add_argument(
+        "--watch-dir",
+        action="extend",
+        nargs="+",
+        default=[],
+        metavar="PATH",
+        help="Directory to watch for file activity (repeatable)",
+    )
+    dispatch_parser.add_argument(
+        "--crews-file",
+        metavar="PATH",
+        default=None,
+        help="Path to the crews YAML (default: the Auto-Orch crews file)",
+    )
+    dispatch_parser.add_argument(
+        "--availability-file",
+        metavar="PATH",
+        default=None,
+        help="Path to the availability snapshot (default: per-host default)",
+    )
+    dispatch_parser.add_argument(
+        "--events-file",
+        metavar="PATH",
+        default=None,
+        help="Path to the event ledger (default: per-host default)",
+    )
+    dispatch_parser.add_argument(
+        "--no-event",
+        action="store_true",
+        help="Do not append an event",
+    )
+    dispatch_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print resolution and command without running",
+    )
+    dispatch_parser.set_defaults(func=_run_dispatch)
 
     template_parser = subparsers.add_parser(
         "template",

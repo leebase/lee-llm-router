@@ -211,10 +211,10 @@ Error mapping:
 
 **Registry name:** `antigravity_cli` (aliases: `antigravity`, `agy`)
 
-Invokes the Antigravity CLI (`agy`) in print mode. The prompt is sent on stdin;
-the response is read from stdout. Per D155, Google subscription models are
-reachable only through this harness, so `--dangerously-skip-permissions` is
-always included for non-interactive dispatch.
+Invokes the Antigravity CLI (`agy`) in print mode. The prompt is passed as the
+argument to `-p`; the response is read from stdout. Per D155, Google subscription
+models are reachable only through this harness, so `--dangerously-skip-permissions`
+is always included for non-interactive dispatch.
 
 ```yaml
 providers:
@@ -223,23 +223,27 @@ providers:
     command: agy               # optional, defaults to "agy"
     model: gemini-3.7-flash    # required
     effort: high               # optional: low | medium | high
+    print_timeout: 90m         # optional, wait timeout for print mode (e.g. "90m")
     timeout: 300               # optional, seconds
 ```
 
 Built command:
-`agy -p --model <model> [--effort <low|medium|high>] --dangerously-skip-permissions`
+`agy --dangerously-skip-permissions --model <model> [--effort <low|medium|high>] [--print-timeout <dur>] -p <prompt>`
 
-`build_command(config, model=None, effort=None)` returns that argv list, and
-`complete()` runs the same builder. Because the prompt is delivered on stdin,
-the list carries no prompt placeholder. `LLMRequest.effort` (set from a crew
-worker's effort by `CrewRoutingPolicy`) overrides the config's `effort`. A
-system message, if present, is prepended to the user prompt.
+`build_command(config, model=None, effort=None)` returns that argv list with the
+literal `{prompt}` placeholder as the final positional element (matching
+`PROMPT_PLACEHOLDER = "{prompt}"`), and `complete()` runs the same builder,
+substituting the placeholder with the prompt text and closing stdin
+(`subprocess.DEVNULL`). `LLMRequest.effort` (set from a crew worker's effort by
+`CrewRoutingPolicy`) overrides the config's `effort`. Reasoning effort accepts
+only `low`, `medium`, or `high` (`agy` has no `max` level). A system message, if
+present, is prepended to the user prompt.
 
 Error mapping:
 
 | Condition | FailureType |
 | --- | --- |
-| Missing/invalid `command`, `model`, `effort`, or `timeout` | `PROVIDER_ERROR` |
+| Missing/invalid `command`, `model`, `effort`, `timeout`, or `print_timeout` | `PROVIDER_ERROR` |
 | Binary not found | `PROVIDER_ERROR` |
 | Non-zero exit | `PROVIDER_ERROR` |
 | Subprocess timeout | `TIMEOUT` |
@@ -250,19 +254,23 @@ Error mapping:
 **Registry name:** `codex_cli`
 
 Invokes a CLI binary via subprocess and returns its stdout. Used for local
-model wrappers (Codex, Ollama scripts, etc.).
+model wrappers (Codex, Ollama scripts, etc.). Non-interactive runs default
+to the `exec` subcommand.
 
 ```yaml
 providers:
   codex_local:
     type: codex_cli
     command: codex
-    model_flag: --model
-    output_flag: --output-last-message
+    subcommand: exec             # optional, defaults to "exec" (null to disable)
+    model_flag: --model          # optional, defaults to "--model"
+    output_flag: null            # optional, defaults to null (e.g. "--output-last-message")
+    output_path: null            # optional file path when output_flag is used
 ```
 
 The last `user` message is passed as the final positional argument to the command.
-Built command: `<command> [args...] [model_flag model] [output_flag] [prompt_flag] <prompt>`
+Built command: `<command> [args...] [subcommand] [model_flag model] [output_flag [output_path]] [prompt_flag] <prompt>`
+Default invocation: `codex exec --model <model> -c model_reasoning_effort=<effort> <prompt>`
 
 For pi-style harness wrappers, add fixed args and require a JSON envelope:
 
@@ -271,6 +279,7 @@ providers:
   pi_harness:
     type: codex_cli
     command: python3
+    subcommand: null
     args:
       - ./scripts/pi_harness.py
     model_flag: null
@@ -283,8 +292,13 @@ When `response_format: json` is enabled, stdout must be a JSON object containing
 non-empty `output_text` or `text` field. Optional `model` and `usage` fields are
 passed through into `LLMResponse`.
 
-Set `model_flag: null` and `output_flag: null` for wrappers that do not accept the
+Set `subcommand: null`, `model_flag: null`, and `output_flag: null` for wrappers that do not accept the
 default Codex CLI flags.
+
+When `output_flag` and `output_path` are both configured (for example,
+`output_flag: "--output-last-message"` and `output_path: "/path/to/last_msg.txt"`),
+both are placed in argv before `{prompt}`, and `complete()` reads the response from that file
+after the run if it exists, falling back to stdout.
 
 ### `build_command` and effort
 
@@ -294,7 +308,15 @@ same builder — the dispatch template and the executed command cannot drift.
 
 ```python
 CodexCLIProvider().build_command({"command": "codex"}, model="gpt-5.6-sol")
-# ["codex", "--model", "gpt-5.6-sol", "--output-last-message", "{prompt}"]
+# ["codex", "exec", "--model", "gpt-5.6-sol", "{prompt}"]
+
+CodexCLIProvider().build_command({"command": "codex", "model": "m"}, effort="high")
+# ["codex", "exec", "--model", "m", "-c", "model_reasoning_effort=high", "{prompt}"]
+
+CodexCLIProvider().build_command(
+    {"command": "codex", "model": "m", "subcommand": None}, effort="high"
+)
+# ["codex", "--model", "m", "-c", "model_reasoning_effort=high", "{prompt}"]
 ```
 
 `effort` falls back to the config's `effort` key when not passed explicitly, and
@@ -350,7 +372,7 @@ providers:
 
 Defaults:
 - `command`: `claude`
-- `model_flag`: `null` (disabled)
+- `model_flag`: `--model`
 - `output_flag`: `null` (disabled)
 - `prompt_flag`: `-p`
 

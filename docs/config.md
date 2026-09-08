@@ -263,6 +263,21 @@ Path resolution order:
 export LEE_LLM_ROUTER_CREWS_FILE=/path/to/crews.yaml
 ```
 
+### Parse cache
+
+To keep cold-start CLI resolution under 50 ms wall clock, `load_crews()` caches
+parsed crews configuration in `${XDG_CACHE_HOME:-~/.cache}/lee-llm-router/`.
+The cache is keyed by the resolved file path, file size, and nanosecond modification
+timestamp (`mtime_ns`). On a cache hit, YAML parsing is skipped entirely. Writes to
+the cache are atomic via a temporary file and replace.
+
+To bypass or disable the cache (e.g. during debugging or benchmarking raw parse time):
+
+```bash
+export LEE_LLM_ROUTER_NO_CACHE=1
+```
+
+
 Each crew declares the five stages `envision`, `ideate`, `reconsider`, `score`,
 and `author`. A stage value may be a single worker id (the form Auto-Orch uses
 today) or an **ordered list** of worker ids, which gives a later flex mode an
@@ -514,3 +529,119 @@ list, an unparseable or wholly absent timestamp — is an **error** (exit 1).
 `--config` is optional when `--availability` is given, and the flag composes
 with `--crews`. See [docs/availability-refresh.md](availability-refresh.md) for
 the refresh script and its cron line.
+
+## Resolving a worker
+
+`lee-llm-router resolve` answers "which worker runs this crew's stage right
+now, and why" — it loads the crews file and the availability snapshot, calls
+`lee_llm_router.resolver.resolve()`, prints the answer, and records one line to
+the event ledger. It never invokes a provider binary.
+
+```bash
+lee-llm-router resolve --crew openai-economy --role author
+lee-llm-router resolve --crew openai-economy --role author --mode flex
+lee-llm-router resolve --crew openai-economy --role author --mode flex --json
+lee-llm-router resolve --crew openai-economy --role author \
+  --mode bind --worker codex_terra_high \
+  --authorized-by lee --reason "quota exhausted, escalate for the demo"
+```
+
+`--mode` is `strict` (default), `flex`, or `bind` — see
+[resolver.py](../src/lee_llm_router/resolver.py)'s module docstring for the
+semantics of each. `--harness` (default `cli`) is recorded on the event line;
+Sprint 4's shims pass `claude-code`, `codex`, `omp`, or `opencode`.
+`--crews-file` and `--availability-file` mirror the `doctor` flags and the same
+default-resolution order. `--events-file` mirrors `--crews-file` for the event
+ledger (default: `events.resolve_events_path()`, which honours
+`LEE_LLM_ROUTER_EVENTS_FILE`). A missing or unreadable availability snapshot is
+not fatal — every channel reads `unknown` and each mode's unknown-headroom rule
+applies.
+
+Text output, one field per line, in this order:
+
+```
+worker: codex_terra_high
+provider: codex_cli
+model: gpt-5.6-terra
+effort: high
+channel: openai-sub
+headroom: degraded (48% remaining)
+route_id: codex_cli:gpt-5.6-terra:high
+dispatch: /home/lee/.local/bin/codex --model gpt-5.6-terra -c model_reasoning_effort=high --output-last-message '{prompt}'
+reason: flex mode: codex_terra_high chosen on degraded headroom (channel openai-sub degraded (HOT, 48% remaining)); no candidate had healthy headroom
+event: /home/lee/.local/state/lee-llm-router/events/A8Max.jsonl
+```
+
+`effort` reads `default` when the worker declares none. `headroom` is the
+channel's health, plus `(N% remaining)` when the snapshot knows a fraction.
+`dispatch` is the provider's argv, `shlex.join`-ed, with a trailing
+` [prompt on stdin]` when the harness takes its prompt on stdin rather than in
+argv. In `--mode bind`, an `authorized_by` line follows `reason`. The last line
+is always `event: <path>` after a successful write, or
+`event: not recorded (--no-event)` when `--no-event` was passed.
+
+`--json` prints exactly `resolver.Resolution.to_dict()` (which already carries
+`pace_ratio`, for Sprint 6's recalibration) with one field added: a top-level
+`event_path` — the ledger path written to, or `null` when nothing was
+recorded.
+
+Exit codes are exactly `ResolutionError.exit_code`: `0` on success, `2` when
+nothing in the candidate set is eligible (e.g. every candidate's channel is
+exhausted), `3` for a config, usage, or forbidden-model refusal — including an
+unknown crew or role, a bind missing `--worker`/`--authorized-by`/`--reason`,
+or a worker resolving to a `FORBIDDEN_MODELS` entry (cites `decisions.md
+D152/D153`). On refusal, stdout stays empty and stderr gets `resolve:
+<message>`, plus a second line `remedy: <remedy>` when the resolver suggests
+one; with `--json`, stderr is unchanged and stdout gets
+`{"error": ..., "exit_code": ..., "kind": ..., "remedy": ...}` instead of the
+resolution. A refusal never writes an event.
+
+Every **successful** resolution appends exactly one event via
+`events.build_event()` / `events.append_event()` — refusals do not. Pass
+`--no-event` to suppress the write for a dry run or a shim self-test. If the
+write itself fails (an unwritable path, an oversized encoded line), the
+resolution is still printed, but the exit code becomes `3` and stderr explains
+why: a resolution that never reached the ledger is not a completed one.
+
+### Dispatching
+
+`lee-llm-router dispatch` resolves the worker and executes the harness command
+under supervision of the stall watchdog (`StallWatchdog`).
+
+```bash
+lee-llm-router dispatch --crew openai-economy --role author --prompt "Draft the release notes"
+lee-llm-router dispatch --crew openai-economy --role author --mode flex \
+  --prompt-file prompt.txt --watch-dir ./src
+lee-llm-router dispatch --crew openai-economy --role author --mode flex \
+  --prompt "Draft tests" --stall-minutes 5 --max-minutes 30
+lee-llm-router dispatch --crew openai-economy --role author --mode flex \
+  --prompt "Preview command" --no-event --dry-run
+```
+
+- **Resolution**: Resolution is identical to `resolve` (same exit codes 2/3, same
+  refusal lines and remedies) and takes place before any child process starts.
+  `--dry-run` prints what `resolve` would print (including the command with prompt
+  delivery marker) and exits 0 without running anything.
+- **Event ledger**: Exactly one event line is written to the ledger before the
+  child starts (honouring `--no-event`). Refusals and usage errors never write an event.
+- **Prompt delivery**: Exactly one prompt source must be supplied:
+  `--prompt "<text>"`, `--prompt-file PATH`, or standard input when neither is given
+  (standard input must not be a TTY, else exit 3). An empty prompt exits 3.
+  - When `prompt_delivery` is `"argv"`, `{prompt}` in the command template is
+    replaced with the prompt text.
+  - When `prompt_delivery` is `"stdin"`, the prompt bytes are written to the
+    child's stdin pipe and closed.
+- **Streaming & Watchdog Supervision**: Child stdout/stderr are streamed to the
+  parent as bytes arrive. `watchdog.run_supervised` checks activity across ticks
+  by tracking cumulative output bytes and file modifications in any `--watch-dir`
+  paths.
+  - **Stall**: If no output and no file changes occur for `--stall-minutes` (default
+    `10`), a warning is printed to stderr:
+    `dispatch: no output and no file activity for N min (worker <id>, elapsed M min); still waiting, ceiling <max> min`
+    The child process continues running.
+  - **Ceiling**: If elapsed time reaches `--max-minutes` (default `120`), the child
+    is killed, stderr receives `dispatch: killed after <max> min ceiling`, and
+    dispatch exits with code `124`.
+  - **Normal completion**: Otherwise, dispatch exits with the child's exit code.
+- **Exit-code precedence**: Resolution refusal (2/3) > usage error (3) > killed (124) > child exit code.
+

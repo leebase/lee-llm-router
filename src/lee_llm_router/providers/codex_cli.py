@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 from json import JSONDecodeError
+from pathlib import Path
 from typing import Any
 
 from lee_llm_router.providers.base import FailureType, LLMRouterError
@@ -19,8 +20,9 @@ class CodexCLIProvider:
     name = "codex_cli"
     supported_types = {"codex_cli"}
     default_command = "codex"
+    default_subcommand = "exec"
     default_model_flag = "--model"
-    default_output_flag = "--output-last-message"
+    default_output_flag = None
     default_prompt_flag = None
 
     def _resolve_config_command(self, config: dict[str, Any]) -> str:
@@ -71,8 +73,10 @@ class CodexCLIProvider:
             )
 
         for key, default in (
+            ("subcommand", self.default_subcommand),
             ("model_flag", self.default_model_flag),
             ("output_flag", self.default_output_flag),
+            ("output_path", None),
             ("prompt_flag", self.default_prompt_flag),
         ):
             self._resolve_config_string_flag(config, key, default)
@@ -115,6 +119,11 @@ class CodexCLIProvider:
         self.validate_config(config)
 
         command = self._resolve_config_command(config)
+        subcommand = self._resolve_config_string_flag(
+            config,
+            "subcommand",
+            self.default_subcommand,
+        )
         extra_args = list(config.get("args", []))
         model_flag = self._resolve_config_string_flag(
             config,
@@ -126,6 +135,11 @@ class CodexCLIProvider:
             "output_flag",
             self.default_output_flag,
         )
+        output_path = self._resolve_config_string_flag(
+            config,
+            "output_path",
+            None,
+        )
         prompt_flag = self._resolve_config_string_flag(
             config,
             "prompt_flag",
@@ -135,12 +149,16 @@ class CodexCLIProvider:
         resolved_effort = effort if effort is not None else config.get("effort")
 
         cmd = [command, *extra_args]
+        if subcommand:
+            cmd.append(subcommand)
         if resolved_model and model_flag:
             cmd.extend([model_flag, str(resolved_model)])
         if resolved_effort:
             cmd.extend(self._effort_args(str(resolved_effort)))
         if output_flag:
             cmd.append(output_flag)
+            if output_path:
+                cmd.append(str(output_path))
         if prompt_flag:
             cmd.append(prompt_flag)
         cmd.append(PROMPT_PLACEHOLDER)
@@ -152,6 +170,7 @@ class CodexCLIProvider:
         command = self._resolve_config_command(config)
         timeout = request.timeout or float(config.get("timeout", 120.0))
         response_format = self._resolve_response_format(config)
+        output_path = self._resolve_config_string_flag(config, "output_path", None)
 
         # Build prompt from last user message
         user_messages = [m for m in request.messages if m.get("role") == "user"]
@@ -191,6 +210,12 @@ class CodexCLIProvider:
                 failure_type=FailureType.PROVIDER_ERROR,
             )
 
+        output_text = None
+        if output_path:
+            out_file = Path(output_path)
+            if out_file.is_file():
+                output_text = out_file.read_text(encoding="utf-8")
+
         return _build_response(
             request=request,
             result=result,
@@ -198,6 +223,7 @@ class CodexCLIProvider:
             response_format=response_format,
             text_field=config.get("text_field"),
             provider=self.name,
+            output_text=output_text,
         )
 
 
@@ -209,8 +235,9 @@ def _build_response(
     response_format: str,
     provider: str,
     text_field: str | None,
+    output_text: str | None = None,
 ) -> LLMResponse:
-    stdout = result.stdout.strip()
+    stdout = (output_text if output_text is not None else result.stdout).strip()
     raw: dict[str, Any] = {
         "stdout": result.stdout,
         "stderr": result.stderr,
@@ -250,6 +277,7 @@ class GeminiCLIProvider(CodexCLIProvider):
     name = "gemini_cli"
     supported_types = {"gemini_cli", "gemini"}
     default_command = "gemini"
+    default_subcommand = None
     default_model_flag = None
     default_output_flag = None
     default_prompt_flag = "-p"
@@ -272,7 +300,8 @@ class ClaudeCodeCLIProvider(CodexCLIProvider):
     name = "claude_code_cli"
     supported_types = {"claude_code_cli", "claude_code"}
     default_command = "claude"
-    default_model_flag = None
+    default_subcommand = None
+    default_model_flag = "--model"
     default_output_flag = None
     default_prompt_flag = "-p"
 
