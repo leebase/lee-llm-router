@@ -98,6 +98,7 @@ Stop at the end of each sprint and report; do not roll into the next without a r
   crews file and a real snapshot returns a sensible worker in under 50 ms.
 
 ### Sprint 4 — Four harness shims
+- **Packet 1 (D188, Lee 2026-09-07):** replace the blanket Gemini 3.1 Pro refusal with role-scoped eligibility — planner/reviewer roles eligible in strict/flex/bind; coding/implementation roles never automatic and bind refused; stage-name → role-class mapping lives in resolver config in one readable place; skipped workers stay visible in the reason. Tests per mode per role class; `doctor --crews` warning text updated.
 - Claude Code: `/crew` slash command in `~/.claude/commands/` that calls `resolve` and either
   prints the recommendation or dispatches via the returned command.
 - Codex: matching custom prompt in `~/.codex/prompts/`.
