@@ -1662,3 +1662,324 @@ def test_resolve_help_shows_positionals(capsys):
     assert "CREW ROLE" in out
     assert "--crew NAME" in out
     assert "--role STAGE" in out
+
+
+# --------------------------------------------------------------------------
+# crews page
+# --------------------------------------------------------------------------
+
+
+def _write_page_evidence(path: Path, *, score: int = 88) -> Path:
+    """Write one valid staffing-evidence row matching the crews fixture."""
+    payload = {
+        "schema_version": "benchmark.staffing-evidence/2",
+        "rows": [
+            {
+                "acceptance": "accepted",
+                "accepted_count": 1,
+                "cost_low_usd": "0.50",
+                "cost_high_usd": "0.75",
+                "role": "coder",
+                "run_count": 1,
+                "run_ids": ["synthetic-run"],
+                "score_100": score,
+                "task_key": "task-a@v1",
+                "worker_key": "gpt-5.6-sol|codex|high",
+                "worker": {
+                    "effort": "high",
+                    "harness": "codex",
+                    "model": "gpt-5.6-sol",
+                    "provider": "codex",
+                },
+            }
+        ],
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def _page_args(
+    output: Path,
+    crews_file: Path,
+    availability_file: Path,
+    *extra: str,
+) -> list[str]:
+    """Build an isolated page command argument list."""
+    return [
+        "crews",
+        "page",
+        "--out",
+        str(output),
+        "--crews-file",
+        str(crews_file),
+        "--availability-file",
+        str(availability_file),
+        *extra,
+    ]
+
+
+def test_crews_page_cli_generates_live_shaped_page_and_validates_events(
+    tmp_path, capsys
+):
+    """Page success loads every selected input and prints the output path."""
+    from lee_llm_router.doctor import main
+
+    availability_file = _write_snapshot(tmp_path)
+    benchmark_file = _write_page_evidence(
+        tmp_path / "staffing-evidence-2026-09-08.json"
+    )
+    events_file = tmp_path / "events.jsonl"
+    events_file.write_text('{"synthetic": true}\n', encoding="utf-8")
+    output = tmp_path / "crews.html"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            _page_args(
+                output,
+                CREWS_FIXTURE,
+                availability_file,
+                "--benchmark-file",
+                str(benchmark_file),
+                "--events-file",
+                str(events_file),
+            )
+        )
+
+    assert exc_info.value.code == 0
+    assert capsys.readouterr().out.strip() == str(output)
+    page = output.read_text(encoding="utf-8")
+    assert "test-flagship" in page
+    assert "Best score" in page
+    assert "88" in page
+    assert "synthetic-run" in page
+
+
+def test_crews_page_cli_discovers_lexically_latest_benchmark(tmp_path, monkeypatch):
+    """Omitted evidence selects the latest sidecar by filename, not mtime."""
+    from lee_llm_router.doctor import main
+
+    home = tmp_path / "home"
+    exports = home / "projects" / "ai-workforce-benchmark" / "exports"
+    exports.mkdir(parents=True)
+    old = _write_page_evidence(exports / "staffing-evidence-2026-09-07.json", score=71)
+    latest = _write_page_evidence(
+        exports / "staffing-evidence-2026-09-08.json", score=93
+    )
+    old.touch()
+    latest.touch()
+    monkeypatch.setenv("HOME", str(home))
+
+    output = tmp_path / "crews.html"
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            _page_args(
+                output,
+                CREWS_FIXTURE,
+                _write_snapshot(tmp_path),
+            )
+        )
+
+    assert exc_info.value.code == 0
+    assert "93" in output.read_text(encoding="utf-8")
+    assert "71" not in output.read_text(encoding="utf-8")
+
+
+def test_crews_page_cli_missing_benchmark_succeeds_with_notice(tmp_path, capsys):
+    """An explicitly missing optional sidecar is the documented absent state."""
+    from lee_llm_router.doctor import main
+
+    output = tmp_path / "crews.html"
+    missing = tmp_path / "missing-staffing-evidence.json"
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            _page_args(
+                output,
+                CREWS_FIXTURE,
+                _write_snapshot(tmp_path),
+                "--benchmark-file",
+                str(missing),
+            )
+        )
+
+    assert exc_info.value.code == 0
+    assert "No benchmark evidence yet." in output.read_text(encoding="utf-8")
+    assert capsys.readouterr().err == ""
+
+
+def test_crews_page_cli_missing_availability_succeeds_with_all_unknown(
+    tmp_path, capsys
+):
+    """A missing availability snapshot renders every worker as unknown."""
+    from lee_llm_router.doctor import main
+
+    output = tmp_path / "crews.html"
+    missing_availability = tmp_path / "missing-availability.json"
+    missing_benchmark = tmp_path / "missing-staffing-evidence.json"
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            _page_args(
+                output,
+                CREWS_FIXTURE,
+                missing_availability,
+                "--benchmark-file",
+                str(missing_benchmark),
+            )
+        )
+
+    assert exc_info.value.code == 0
+    assert not missing_availability.exists()
+    assert capsys.readouterr().err == ""
+
+    page = output.read_text(encoding="utf-8")
+    from lee_llm_router.crews import load_crews
+
+    worker_count = sum(
+        len(stage.workers)
+        for crew in load_crews(CREWS_FIXTURE).crews.values()
+        for stage in crew.stages.values()
+    )
+    assert page.count('class="headroom unknown"') == worker_count
+    assert page.count("<time>unknown</time>") == worker_count
+    assert page.count("Stale: yes") == worker_count
+
+
+@pytest.mark.parametrize(
+    ("kind", "content"),
+    [
+        ("benchmark", "{not json"),
+        ("events", '{"valid": true}\nnot-json\n'),
+        ("availability", "{not json"),
+    ],
+)
+def test_crews_page_cli_rejects_malformed_input_without_output(
+    tmp_path, capsys, kind, content
+):
+    """Malformed benchmark, event, and availability inputs fail closed."""
+    from lee_llm_router.doctor import main
+
+    availability_file = _write_snapshot(tmp_path)
+    benchmark_file = _write_page_evidence(tmp_path / "evidence.json")
+    events_file = tmp_path / "events.jsonl"
+    events_file.write_text('{"valid": true}\n', encoding="utf-8")
+    selected = {
+        "benchmark": tmp_path / "bad-evidence.json",
+        "events": tmp_path / "bad-events.jsonl",
+        "availability": tmp_path / "bad-availability.json",
+    }[kind]
+    selected.write_text(content, encoding="utf-8")
+    output = tmp_path / f"{kind}.html"
+    args = _page_args(
+        output,
+        CREWS_FIXTURE,
+        availability_file,
+        "--benchmark-file",
+        str(benchmark_file),
+        "--events-file",
+        str(events_file),
+    )
+    if kind == "benchmark":
+        args[args.index("--benchmark-file") + 1] = str(selected)
+    elif kind == "events":
+        args[args.index("--events-file") + 1] = str(selected)
+    else:
+        args[args.index("--availability-file") + 1] = str(selected)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(args)
+
+    assert exc_info.value.code == 3
+    assert not output.exists()
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert len(captured.err.splitlines()) == 1
+    assert "configuration error" in captured.err
+
+
+def test_crews_page_cli_rejects_present_non_file_without_output(tmp_path, capsys):
+    """A present availability directory is not a usable snapshot file."""
+    from lee_llm_router.doctor import main
+
+    availability_dir = tmp_path / "availability"
+    availability_dir.mkdir()
+    output = tmp_path / "crews.html"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            _page_args(
+                output,
+                CREWS_FIXTURE,
+                availability_dir,
+                "--benchmark-file",
+                str(tmp_path / "missing-evidence.json"),
+            )
+        )
+
+    assert exc_info.value.code == 3
+    assert not output.exists()
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert len(captured.err.splitlines()) == 1
+    assert "configuration error" in captured.err
+
+
+def test_crews_page_cli_rejects_bad_crews_and_output_write_failure(tmp_path, capsys):
+    """Crew parsing and output filesystem failures do not leave a page."""
+    from lee_llm_router.doctor import main
+
+    bad_crews = tmp_path / "bad-crews.yaml"
+    bad_crews.write_text("crews: []\n", encoding="utf-8")
+    output = tmp_path / "bad-crews.html"
+    with pytest.raises(SystemExit) as exc_info:
+        main(_page_args(output, bad_crews, _write_snapshot(tmp_path)))
+    assert exc_info.value.code == 3
+    assert not output.exists()
+    assert len(capsys.readouterr().err.splitlines()) == 1
+
+    blocking_parent = tmp_path / "not-a-directory"
+    blocking_parent.write_text("block", encoding="utf-8")
+    blocked_output = blocking_parent / "crews.html"
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            _page_args(
+                blocked_output,
+                CREWS_FIXTURE,
+                _write_snapshot(tmp_path),
+            )
+        )
+    assert exc_info.value.code == 3
+    assert not blocked_output.exists()
+    assert len(capsys.readouterr().err.splitlines()) == 1
+
+
+def test_crews_page_cli_does_not_call_subprocess_or_write_default_events(
+    tmp_path, monkeypatch
+):
+    """Page generation remains a read-only projection with lazy pure imports."""
+    from lee_llm_router.doctor import main
+
+    def fail_subprocess(*_args, **_kwargs):
+        raise AssertionError("page generation must not start a subprocess")
+
+    def fail_event_write(*_args, **_kwargs):
+        raise AssertionError("page generation must not write an event")
+
+    monkeypatch.setattr("subprocess.run", fail_subprocess)
+    monkeypatch.setattr("lee_llm_router.events.append_event", fail_event_write)
+    ledger = tmp_path / "default-events.jsonl"
+    monkeypatch.setenv("LEE_LLM_ROUTER_EVENTS_FILE", str(ledger))
+
+    output = tmp_path / "crews.html"
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            _page_args(
+                output,
+                CREWS_FIXTURE,
+                _write_snapshot(tmp_path),
+                "--benchmark-file",
+                str(tmp_path / "missing-evidence.json"),
+            )
+        )
+
+    assert exc_info.value.code == 0
+    assert output.exists()
+    assert not ledger.exists()

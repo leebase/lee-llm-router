@@ -8,9 +8,9 @@
 
 | Attribute | Value |
 |-----------|-------|
-| **Phase** | P4 complete; pi harness reliability shipped |
+| **Phase** | Crew Resolver Sprint 5 complete; final gates PASS |
 | **Mode** | 2 (Implementation with approval) |
-| **Last Updated** | 2026-09-07 (Crew Resolver Sprint 4 closed, review PASS round 1) |
+| **Last Updated** | 2026-09-08 (Crew Resolver Sprint 5 closed, Sonnet round 4 PASS, Opus final gate PASS) |
 
 ### Sprint Status
 | Sprint | Status | Completion |
@@ -26,14 +26,14 @@
 | Crew Resolver S2 - Availability snapshot and refresh script | Done | 100% |
 | Crew Resolver S3 - resolve CLI, flex, bind, event ledger, dispatch watchdog | Done | 100% |
 | Crew Resolver S4 - D188 role-scoped rule, resolve positionals, four harness shims | Done | 100% |
-| Crew Resolver S5 - Crew page and proposals | Next | 0% |
+| Crew Resolver S5 - Crew page and proposals | Done | 100% |
 
 ---
 
 ## What's Happening Now
 
 ### Current Work Stream
-Crew-aware worker resolver lane (D187). Sprint 1 committed `bea61bd`; Sprint 2 committed `6dd9402` (review PASS round 8; hourly refresh cron installed by Lee). Sprint 3 built 2026-09-07 in thirteen packets (P15–P27): `resolver.py` (strict/flex/bind, refusals), `events.py` (append-only JSONL ledger), `watchdog.py` (stall/ceiling with injected clock), `dispatch.py` + `lee-llm-router resolve|dispatch`, provider argv corrections against the real `codex`/`claude`/`agy` CLIs, and a cold-start pass (lazy package init, deferred httpx, C YAML loader, crews parse cache) that brought `resolve` to a 44 ms median. Staffing shifted mid-sprint to Gemini 3.8 Flash via `agy` when the Anthropic session bucket hit 15%, then back as it reset. Independent review (Sol Low): round 1 one Medium, round 2 PASS; committed. Sprint 4 built 2026-09-07 in five packets (P29–P32, all Gemini 3.8 Flash via `agy`): D188 role-scoped Gemini 3.1 Pro (`ROLE_CLASS_BY_ROLE`), `resolve CREW ROLE` positionals, `shims.py` + one template rendering Claude Code/Codex/OMP/OpenCode targets with marker hashes, `shims install --dry-run|--apply|diff`, and a parity test that runs each rendered shim line as a subprocess (four harness tags, one route_id). Sol Low review PASS round 1; 557 tests; committed. Lee-gated: D188 mapping confirmation and `shims install --apply` (`docs/crew-resolver/needs-lee.md`). Next: Sprint 5 crew page.
+Crew-aware worker resolver lane (D187). Sprint 5 is complete and reviewed: `crews page --out` projects the live crew roster, availability, and optional benchmark evidence into self-contained responsive HTML; missing benchmark and availability inputs degrade safely; present malformed inputs fail closed; and proposals remain advisory and empty until authoritative tier/vendor-independence metadata exists. Luna XHigh via Pi handled three implementation packets and four repair packets. Sonnet 5 High passed on round 4 after three reproduced High findings were repaired; Opus 5 High final gate passed with no findings. 601 tests pass. Publication/navigation/hourly regeneration remain Lee-gated in `docs/crew-resolver/needs-lee.md`. Do not begin Sprint 6 without a new instruction.
 
 Prior stream:
 Sprint 7 is complete. The pi coding harness path now has a repo-local reproduction fixture, stricter CLI harness contract handling, explicit `doctor` validation, regression coverage, and a user-style verification path. No downstream migration work is executed from this repo now; downstream projects are handled separately.
@@ -92,10 +92,9 @@ Sprint 7 is complete. The pi coding harness path now has a repo-local reproducti
 
 | Rank | Action | Owner | Done When |
 |------|--------|-------|----------|
-| 1 | Lee: confirm D188 stage mapping; run `shims install --apply`; invoke `/crew` in each harness (needs-lee items 1–3) | Lee | Live ledger shows four harness tags for one crew/role |
-| 1b | Crew Resolver Sprint 5: `crews page --out` static HTML projection with headroom pips, benchmark sidecar, proposals block | Supervisor | Page renders light/dark, desktop/390 px, with and without sidecar |
-| 2 | Decide whether to productize an optional doctor smoke-execution mode for CLI harness roles | Human + AI | We know whether runtime smoke tests should become part of the public CLI |
-| 3 | Reassess broader harness-aware planning as a separate sprint | Human + AI | Follow-on planning is grounded in a stable pi harness baseline |
+| 1 | Lee: publish `crews.html`, add the nav entry, and attach fail-closed hourly regeneration if desired | Lee | Public page is readable and regenerates only after a successful availability refresh |
+| 2 | Crew Resolver Sprint 6: hardening/adoption evidence | Supervisor | Two-week resolver-use report and Auto-Orch adoption recommendation are complete |
+| 3 | Decide the authoritative tier/vendor-independence metadata source before enabling proposals | Lee + Benchmark/Auto-Orch owners | Proposal predicates can be proven without local invention |
 
 ---
 
@@ -125,5 +124,29 @@ Sprint 7 is complete. The pi coding harness path now has a repo-local reproducti
 - **Primary validation**: `PYTHONPATH=src python -m pytest -q`
 
 ---
+
+## Crew Resolver Sprint 5 — governing contracts (supervisor working context)
+
+These contracts are quoted verbatim in every Sprint 5 packet and review prompt that depends on them.
+
+### S5-C1 — Page command and failure behavior
+
+`lee-llm-router crews page --out <path> [--crews-file <path>] [--availability-file <path>] [--benchmark-file <path>] [--events-file <path>]` writes one self-contained HTML file with inline CSS and no external assets. The page supports light and dark color schemes through `prefers-color-scheme` and is readable without horizontal overflow at 390 CSS pixels. Success exits 0. Invalid crews, availability, benchmark, or event input exits 3 with one concise configuration error. A missing benchmark sidecar is not an error: generation succeeds and the page states `No benchmark evidence yet.` The command never edits `crews.yaml`, never writes the router event ledger, and never calls a provider CLI.
+
+### S5-C2 — Required projection
+
+The page projects all crews and stages from the selected crews file in declared order. Every crew card shows crew name, purpose, and each stage with its ordered worker roster. Every worker shows its channel headroom state (`healthy`, `degraded`, `likely_exhausted`, `exhausted`, or `unknown`), the availability observation time, and whether that observation is stale. When matching benchmark evidence exists, the worker shows best score, cost-to-accept, run count, task count, and the literal label `one task` when task count is exactly one; unavailable measurements are displayed as unknown, never as zero. A role-scoped worker placed on a coding stage is marked `planning/review only`. Human-facing prose outside the evidence appendix contains no source-system names, file paths, or run ids. Run ids may appear only in an appendix.
+
+### S5-C3 — Benchmark matching and proposals
+
+The optional benchmark input is schema `benchmark.staffing-evidence/2`. Evidence matches a crew worker only through an explicit, deterministic identity mapping from the crew worker's provider/model/effort/harness identity to a sidecar `worker_key`; display names are never matching keys. A proposal names a current assignment and a candidate only when both have evidence for the same resolver role and the same benchmark `task_key`, the candidate has at least one accepted run, and the candidate does not cross the current assignment's model tier or vendor-independence boundary. A candidate that is never automatic, or role-scoped on a coding stage, is never proposed. Proposal ordering is deterministic. Proposals are text only; generation never edits `crews.yaml`. If the evidence cannot prove every predicate, no proposal is emitted for that comparison.
+
+### S5-C4 — Publication and refresh boundary
+
+The repository implementation can generate an exact candidate for `~/projects/webroot/docs/pages/crews.html`, an exact navigation diff following the existing docs index convention, and an exact hourly-regeneration command that follows a successful availability refresh. Sprint 5 does not publish into webroot, edit webroot navigation, or install/change Lee's live cron without Lee's separate execution decision. A refresh integration must fail closed: a failed availability refresh cannot regenerate a page from a stale or partial newly-written snapshot, and page-generation failure must make the refresh command fail rather than silently preserve a misleading success status.
+
+### S5-C5 — Performance and compatibility
+
+The existing `resolve` behavior and output remain unchanged, and the median of five cold `resolve` runs against the live inputs stays below 50 ms. `crews page` has no latency gate, but its observed wall time is recorded. The full authoritative suite, Black on `src/`, Ruff on `src/`, and `doctor --crews --availability` must pass after every accepted packet.
 
 *This file is a living document - update it frequently.*

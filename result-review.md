@@ -6,6 +6,27 @@
 
 ---
 
+## 2026-09-08 - Crew Resolver Sprint 5: crew page and evidence-safe proposals
+
+**What was built:** `lee-llm-router crews page --out <path>` generates one self-contained responsive HTML page from the authoritative crew roster, the availability snapshot, and the latest optional `benchmark.staffing-evidence/2` sidecar. It shows all crews/stages/workers in declared order, normalized headroom and freshness, benchmark score/cost/run/task evidence, and a run-id appendix. Missing benchmark or availability inputs render explicit unknown/absent states; present malformed inputs exit 3 without a partial page. Proposal selection is deliberately fail-closed: current sources do not prove model-tier and vendor-independence boundaries, so the page says no proposals qualify rather than inventing policy.
+
+**Why it matters:** Lee can inspect staffing evidence and subscription headroom beside the actual crew assignments without querying multiple systems or allowing a generator to edit the routing authority. Publication remains a separate Lee decision.
+
+**Evidence (supervisor-observed):** 601 tests passed; Black/Ruff clean; `doctor --crews --availability` reports 14 crews, 23/23 workers, 0 warnings. Default discovery generated an 80,220-byte page from the current 86-row sidecar. Missing availability generated 70 unknown headroom/observation entries; malformed availability exited 3 with no output. Cold `resolve` median remained 41.00 ms after repairs (<50 ms). Live page body contained no raw provider implementation ids, source paths/names, or run-id wording outside the appendix.
+
+**Review:** Sonnet 5 High rounds 1–3 found three High producer/contract defects; all were reproduced and returned to Luna XHigh. Round 4 PASS with no findings. Opus 5 High final gate PASS with no High, Medium, or Low findings. Seven Luna packets total (three initial, four repair); no model escalation for implementation.
+
+**How to Verify**
+
+```bash
+PYTHONPATH=src .venv/bin/python -m pytest -q
+.venv/bin/black --check src && .venv/bin/ruff check src
+lee-llm-router doctor --crews --availability
+lee-llm-router crews page --out /tmp/crews.html
+```
+
+---
+
 ## 2026-09-07 - Crew Resolver Sprint 4: D188 role-scoped Gemini 3.1 Pro, four harness shims
 
 **What was built:** (1) The blanket Gemini 3.1 Pro refusal became a role-scoped rule (chief-of-staff D188): `ROLE_CLASS_BY_ROLE` in `crews.py` maps stage names to `coding` or `planning_review`; for coding roles a role-scoped model is refused in strict and bind (exit 3, citing D188) and skipped-and-named in flex; for planning/review roles it is an ordinary worker. `doctor --crews` warns only where a crew names it in a coding stage. (2) `resolve CREW ROLE` positionals (equivalent to `--crew/--role`, exit 3 on mixed forms) so one shim line works in every harness via `$ARGUMENTS`. (3) `shims.py` renders one template (`templates/shims/crew.md.tmpl`) into four targets — Claude Code `~/.claude/commands/crew.md`, Codex `~/.codex/prompts/crew.md`, OMP `<project>/.omp/prompts/crew.md`, OpenCode `~/.config/opencode/command/crew.md` — each carrying a `sha256` marker; `lee-llm-router shims install --dry-run|--apply [--force] [--harness TAG] [--project PATH]` and `shims diff` (exit 1 on drift or missing). Shims recommend and never dispatch.

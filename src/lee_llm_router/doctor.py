@@ -4,6 +4,9 @@ Commands:
     lee-llm-router doctor --config <path> [--role <role>] [--crews]
                           [--availability]
     lee-llm-router crews list [--crews-file <path>] [--json]
+    lee-llm-router crews page --out <path> [--crews-file <path>]
+                          [--availability-file <path>] [--benchmark-file <path>]
+                          [--events-file <path>]
     lee-llm-router resolve --crew <name> --role <stage> [--mode strict|flex|bind]
                            [--worker <id>] [--authorized-by <who>] [--reason <why>]
                            [--harness <tag>] [--json] [--crews-file <path>]
@@ -550,6 +553,116 @@ def _run_crews_list(args: argparse.Namespace) -> int:
     for entry in summary:
         for line in _format_crew(entry):
             print(line)
+    return 0
+
+
+class _CrewPageInputError(ValueError):
+    """Raised when a crew-page input cannot be used safely."""
+
+
+def _discover_benchmark_file() -> Path | None:
+    """Return the lexically latest optional staffing-evidence sidecar."""
+    from pathlib import Path
+
+    exports = Path.home() / "projects" / "ai-workforce-benchmark" / "exports"
+    candidates = sorted(
+        (path for path in exports.glob("staffing-evidence-*.json") if path.is_file()),
+        key=lambda path: path.name,
+    )
+    return candidates[-1] if candidates else None
+
+
+def _read_page_events(path: str | Path) -> None:
+    """Validate a caller-supplied event ledger without using the default one."""
+    from lee_llm_router.events import read_events
+
+    try:
+        records = read_events(path)
+    except (OSError, UnicodeError) as exc:
+        raise _CrewPageInputError(f"event file cannot be read: {exc}") from exc
+    if any("_malformed" in record for record in records):
+        raise _CrewPageInputError(f"event file is malformed JSONL: {path}")
+
+
+def _run_crews_page(args: argparse.Namespace) -> int:
+    """Generate the static crew page from explicitly selected input paths."""
+    import stat
+    from pathlib import Path
+
+    from lee_llm_router.availability import (
+        load_availability,
+        resolve_availability_path,
+    )
+    from lee_llm_router.crew_page import (
+        BenchmarkEvidenceError,
+        load_benchmark_evidence,
+        select_proposals,
+        write_crew_page,
+    )
+    from lee_llm_router.crews import CrewsConfigError, load_crews
+
+    try:
+        config = load_crews(getattr(args, "crews_file", None))
+        availability_path = resolve_availability_path(
+            getattr(args, "availability_file", None)
+        )
+        try:
+            availability_stat = availability_path.stat()
+        except FileNotFoundError:
+            if availability_path.is_symlink():
+                raise _CrewPageInputError(
+                    f"availability snapshot is not a regular file: {availability_path}"
+                )
+            availability_present = False
+        except OSError as exc:
+            raise _CrewPageInputError(
+                f"availability snapshot cannot be inspected: {availability_path}: {exc}"
+            ) from exc
+        else:
+            availability_present = True
+            if not stat.S_ISREG(availability_stat.st_mode):
+                raise _CrewPageInputError(
+                    f"availability snapshot is not a regular file: {availability_path}"
+                )
+
+        availability = load_availability(availability_path)
+        if availability.problem is not None and availability_present:
+            raise _CrewPageInputError(
+                f"availability snapshot unusable: {availability.path}: "
+                f"{availability.problem}"
+            )
+
+        benchmark_path = getattr(args, "benchmark_file", None)
+        if benchmark_path is None:
+            benchmark_path = _discover_benchmark_file()
+        evidence = load_benchmark_evidence(benchmark_path)
+
+        events_path = getattr(args, "events_file", None)
+        if events_path is not None:
+            _read_page_events(events_path)
+
+        proposals = select_proposals(config, evidence)
+    except (
+        BenchmarkEvidenceError,
+        CrewsConfigError,
+        _CrewPageInputError,
+        OSError,
+        UnicodeError,
+    ) as exc:
+        message = " ".join(str(exc).split())
+        print(f"crews page: configuration error: {message}", file=sys.stderr)
+        return 3
+
+    try:
+        written = write_crew_page(
+            Path(args.out).expanduser(), config, availability, evidence, proposals
+        )
+    except (OSError, UnicodeError, ValueError) as exc:
+        message = " ".join(str(exc).split())
+        print(f"crews page: could not write output: {message}", file=sys.stderr)
+        return 3
+
+    print(written)
     return 0
 
 
@@ -1281,6 +1394,45 @@ def main(argv: list[str] | None = None) -> None:
         help="Emit a JSON array instead of plain text",
     )
     crews_list_parser.set_defaults(func=_run_crews_list)
+
+    crews_page_parser = crews_sub.add_parser(
+        "page",
+        help="Generate a self-contained HTML crew staffing page",
+    )
+    crews_page_parser.add_argument(
+        "--out",
+        required=True,
+        metavar="PATH",
+        help="Output HTML path; its parent directory must already exist",
+    )
+    crews_page_parser.add_argument(
+        "--crews-file",
+        metavar="PATH",
+        default=None,
+        help="Path to the crews YAML (default: the Auto-Orch crews file)",
+    )
+    crews_page_parser.add_argument(
+        "--availability-file",
+        metavar="PATH",
+        default=None,
+        help="Path to the availability snapshot (default: per-host default)",
+    )
+    crews_page_parser.add_argument(
+        "--benchmark-file",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Path to staffing evidence JSON (default: latest "
+            "~/projects/ai-workforce-benchmark/exports/staffing-evidence-*.json)"
+        ),
+    )
+    crews_page_parser.add_argument(
+        "--events-file",
+        metavar="PATH",
+        default=None,
+        help="Validate this JSONL event ledger without reading the default ledger",
+    )
+    crews_page_parser.set_defaults(func=_run_crews_page)
 
     resolve_parser = subparsers.add_parser(
         "resolve",

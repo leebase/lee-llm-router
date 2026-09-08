@@ -531,6 +531,62 @@ list, an unparseable or wholly absent timestamp — is an **error** (exit 1).
 with `--crews`. See [docs/availability-refresh.md](availability-refresh.md) for
 the refresh script and its cron line.
 
+## Crew staffing page
+
+Generate a self-contained HTML projection without editing the crews file, writing the
+router event ledger, or invoking a provider CLI:
+
+```bash
+lee-llm-router crews page --out <path> \
+  [--crews-file <path>] [--availability-file <path>] \
+  [--benchmark-file <path>] [--events-file <path>]
+```
+
+`--out` is required. The page shows each crew's name and purpose, every declared
+stage and its ordered worker roster, each worker's provider/model/effort, channel
+headroom, observation time, stale state, and (when evidenced) best score,
+cost-to-accept, run count, and task count. A one-task result is labelled `one task`.
+Run ids appear only in the evidence appendix. Proposal text is advisory only: it
+never edits `crews.yaml` and must be applied by Lee or Chief of Staff separately.
+A missing availability snapshot is not an error; every worker is rendered with
+`unknown` headroom and observation time. A present malformed, unreadable, or
+non-regular availability path is a configuration error and exits 3.
+
+When `--benchmark-file` is omitted, the command selects the lexically latest
+`staffing-evidence-*.json` under
+`~/projects/ai-workforce-benchmark/exports`. If no sidecar is present, generation
+still succeeds and the page says `No benchmark evidence yet.` A present but malformed
+sidecar is a configuration error and exits 3. A supplied `--events-file` is read
+only for JSONL validation; a missing, unreadable, or malformed file exits 3. When it
+is omitted, the default live event ledger is not read.
+
+The publication candidate is:
+
+```text
+~/projects/webroot/docs/pages/crews.html
+```
+
+Sprint 5 does not publish that file or edit webroot. Following the existing docs
+index page-link convention, the exact navigation entry to add to
+`~/projects/webroot/docs/index.html` is:
+
+```html
+<a href="pages/crews.html">Crews</a>
+```
+
+Lee can use this fail-closed command after a successful availability refresh:
+
+```bash
+/home/lee/projects/lee-llm-router/scripts/refresh_availability.sh && \
+  PYTHONPATH=/home/lee/projects/lee-llm-router/src \
+  /home/lee/projects/lee-llm-router/.venv/bin/python -m lee_llm_router.doctor \
+  crews page --out /home/lee/projects/webroot/docs/pages/crews.html
+```
+
+The `&&` prevents generation from a failed refresh, and a page-generation failure
+is the command's non-zero status. Sprint 5 documents this handoff only; it did not
+publish the page, edit navigation, or install/change the hourly cron.
+
 ## Resolving a worker
 
 `lee-llm-router resolve` answers "which worker runs this crew's stage right

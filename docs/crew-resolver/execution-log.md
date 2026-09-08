@@ -270,3 +270,70 @@ Supervisor decision (not in plan text): `dispatch_command` returned by `resolve`
 - Known Low: worker added `is_single_channel = is_routable_bucket` alias because the packet named the helper wrongly; harmless, remove in the next touch of `availability.py`.
 ### P33b — refresh tests count 12 with 3 `OpenCode/Go` entries — Gemini 3.8 Flash high via agy — ACCEPTED
 - Supervisor: `pytest -q` → `569 passed`; black/ruff clean on src. Live `doctor --availability` → 12 buckets, `opencode-go: degraded` (worst-of over buckets; Monthly badge TOO FAST at pace 1.6 with 89% remaining — the Sprint 2 pace-vs-headroom calibration note applies). Flex still prefers healthy channels first, so `opencode-go-economy`/`-balanced` `author` (opencode_go_qwen37_plus) now resolve on a known channel instead of the unknown tier.
+
+## 2026-09-07 — Crew Resolver Sprint 5 opened (Lee-authorized bounded supervisor lane)
+
+Baseline personally observed before dispatch: `PYTHONPATH=src .venv/bin/python -m pytest -q` → 569 passed; `black --check src` → 26 unchanged; `ruff check src` → all passed; `doctor --crews --availability` → 14 crews, 23/23 resolved, 0 role-scoped warnings, snapshot age 7 minutes with 12 buckets. Tree was `main...origin/main [ahead 10]`, clean before the supervisor added the S5 contracts to `context.md`. Live inputs inspected: 14-crew Auto-Orch YAML, A8Max snapshot, `benchmark.staffing-evidence/2` sidecar generated 2026-09-08T00:00:31Z with 45 rows. Webroot convention inspected; publication remains Lee-gated. Current-turn staffing supersedes the older pre-prompt note: Sol Low supervisor; Luna XHigh through Pi for implementation; Sonnet 5 High through Claude for independent review; Opus 5 High final gate.
+
+### P34 — benchmark evidence and proposal core — Luna XHigh via Pi — ACCEPTED (supervisor-verified)
+- Authority: new `crew_page.py` and `tests/test_crew_page.py` only. Worker stayed within authority; `context.md` was the supervisor's pre-existing edit.
+- Worker runtime was approximately 13 minutes; no repair or escalation. Added explicit sidecar validation, deterministic identity mapping, aggregate metrics, and fail-closed proposal predicates.
+- Observed: focused 15 passed; full suite 584 passed; Black/Ruff clean; live doctor unchanged. Supervisor read the full production/test files. No live input or event write.
+
+### P35 — self-contained HTML renderer — Luna XHigh via Pi — ACCEPTED (supervisor-verified)
+- Authority: `crew_page.py` and `tests/test_crew_page.py` only. Worker stayed within authority.
+- Worker runtime approximately 8 minutes; no repair or escalation. Added escaped ordered roster rendering, headroom/staleness, evidence metrics, proposal and no-proposal states, run-id appendix, inline light/dark/mobile CSS, and atomic caller-selected output.
+- Observed: focused 18 passed; full suite 587 passed; Black/Ruff clean; live doctor unchanged. Direct live API render: 14 crews, 23 workers, 45 evidence rows, 0 qualifying proposals, 73,460 bytes; machinery/source-token scan found `Run ids` only inside the appendix.
+
+### P36 — `crews page` CLI and product documentation — Luna XHigh via Pi — ACCEPTED (supervisor-verified)
+- Authority: `doctor.py`, `tests/test_doctor.py`, `docs/config.md`, with integration correction authority over P34/P35 files unused. Worker stayed within authority.
+- Worker runtime approximately 7 minutes; no repair or escalation. Added lazy CLI wiring, latest-sidecar discovery, optional explicit event-ledger validation, fail-closed errors/no partial output, and publication/refresh handoff documentation. Did not modify refresh script, cron, webroot, crews.yaml, harnesses, or live ledger.
+- Observed: focused 93 passed; full suite 595 passed; Black/Ruff clean; live doctor unchanged. Live CLI page: exit 0, 73,460 bytes, 0.06 s. Explicit missing sidecar: exit 0 with `No benchmark evidence yet.` Malformed event JSONL: exit 3 and no output. Cold `resolve` runs 51.64/47.48/40.20/45.96/41.41 ms, median 45.96 ms (<50 ms contract).
+
+## Sprint 5 Sonnet review round 1 — FAIL (1 High, 0 Medium, 2 Low)
+- High reproduced and accepted: `WORKER_POLICIES` invents `standard/frontier/economy` tiers and uses distribution channel as `vendor_boundary`. Governing decisions and live crews do not define those fields. Concrete reproduction by inspection: the OMP mapping assigns Gemini/Qwen/GLM/DeepSeek the same `("economy", "openrouter")` boundary, while one OpenAI Luna model receives different boundaries by harness. This could permit a future cross-vendor proposal. Current live sidecar emits 0 proposals, so the defect is latent but real.
+- Root cause: supervisor packet P34 incorrectly instructed Luna to encode a local policy map when authoritative metadata was absent. S5-C3 itself supplies the correct fail-closed rule: if every predicate cannot be proved, emit no proposal. P37 removes the invented authority and preserves explicit absence.
+- Low 1 accepted as contract hardening: raw provider implementation ids appear in main-card prose. P35's packet text allowed provider/model identities, but S5-C2's exact machinery-name prohibition is stronger. P37 renders human labels without `_cli` machinery ids.
+- Low 2 accepted as cleanup: governed-role entries in `BENCHMARK_ROLES_BY_RESOLVER_ROLE` are unreachable because proposals iterate stage roles only. P37 removes the dead entries.
+
+### P37 — remove invented proposal boundaries; public-label cleanup — Luna XHigh via Pi — REPAIR INCOMPLETE, core High fixed
+- Luna removed `WORKER_POLICIES`; proposal selection now returns no proposals because current inputs cannot prove the two boundary predicates. It also removed unreachable governed-role mappings and humanized worker-card provider values. Focused 94 passed; full suite 596 passed; Black/Ruff clean.
+- Supervisor reproduced the High as fixed: no tier/vendor table remains and live proposals remain explicitly empty. Supervisor then found the Low cleanup incomplete: live mixed-flagship purpose still contained `codex_cli` before the appendix. Root cause was the repair packet/test covering worker cards but not untrusted crew purpose prose. Sent P37b to Luna; no escalation.
+
+### P37b — sanitize known provider implementation ids in crew purposes — Luna XHigh via Pi — ACCEPTED (supervisor-verified)
+- Files remained within `crew_page.py` and `tests/test_crew_page.py`. Added fixed-token sanitation before escaping purpose prose and a two-token regression test.
+- Observed: focused 95 passed; full suite 597 passed; Black/Ruff clean; live doctor passes. Live page main body contains none of the five known `_cli` provider ids, `/home/`, sidecar filename, `run_id`, or `run id`; 14 crew cards remain; 73,037 bytes. Cold resolve 44.58/41.00/43.05/40.94/39.38 ms, median 41.00 ms.
+
+## Sprint 5 Sonnet review round 2 — FAIL (1 High, 0 Medium, 1 Low)
+- High reproduced and accepted against the authoritative exporter: `build_rows` uses the earliest valid run for representative `acceptance`/cost, but counts all accepted runs in `accepted_count`. A valid retry group can therefore be `acceptance=not_accepted, accepted_count=1`. Current loader rejects it; supervisor's exact synthetic schema-v2 row raised `BenchmarkEvidenceError` and would make the CLI exit 3.
+- Repair also must correct derived semantics: `accepted_count > 0` proves acceptance, but representative cost is cost-to-accept only when representative acceptance is accepted; otherwise accepted cost is unknown in schema v2.
+- Low accepted: D188 planning/review-only rendering works but lacks a regression test. P38 adds it.
+- Reviewer harness note: `--permission-mode plan` caused Claude to save a plan file under `~/.claude/plans/` despite explicit read-only instructions. No project/live configuration was changed. Future review rounds will use `dontAsk` with Read/Grep/Glob and allowlisted read-only Bash, not plan mode.
+
+### P38 — grouped retry schema semantics + D188 badge regression — Luna XHigh via Pi — ACCEPTED (supervisor-verified)
+- Files: `crew_page.py`, `tests/test_crew_page.py` only. Loader decouples representative acceptance from aggregate accepted count; accepted-run metrics sum all `accepted_count`; cost-to-accept uses only accepted representatives and otherwise stays unknown. Added exact grouped-retry CLI path and D188 badge test.
+- Observed: exact reproducer loads one row, `accepted=True`, accepted count 1, cost None. Focused 97 passed; full suite 599 passed; Black/Ruff clean; live doctor passes. Latest default-discovered live sidecar (`staffing-evidence-20260908.json`, 86 rows) generates 80,220-byte page.
+
+## Sprint 5 Sonnet review round 3 — FAIL (1 High, 0 Medium, 0 Low)
+- High reproduced and accepted: `crews page` exits 3 on a missing availability file, while established resolver/doctor behavior treats absence as all channels unknown. This prevents pre-refresh/manual page generation and contradicts S5-C2's legitimate unknown state. Present malformed input must remain fatal. Sent P39 to Luna; no escalation.
+
+### P39 — missing availability renders unknown; malformed remains fatal — Luna XHigh via Pi — ACCEPTED (supervisor-verified)
+- Files: `doctor.py`, `tests/test_doctor.py`, `docs/config.md`; within authority. Added missing/non-file distinction and documented it.
+- Observed: explicit missing snapshot → exit 0, page exists, 70 headroom-unknown and 70 observation-time-unknown entries; input remains absent. Present malformed JSON → exit 3 and no output. Focused 99 passed; full suite 601 passed; Black/Ruff clean; live doctor passes.
+
+## Sprint 5 Sonnet review round 4 — PASS (no High, Medium, or Low findings)
+- Reviewer independently observed 601 passed, Black/Ruff clean, live doctor 14 crews/23 workers/0 warnings, live page exit 0 in 0.067 s with 14 crew cards/70 worker cards/current evidence/no proposals, schema and identity mapping alignment, repair integrity, atomic write, and escaping.
+- Reviewer-process incident: Sonnet accidentally ran one live `resolve` without `--no-event`, appending a `mixed-flagship/author → codex_sol_high` line to the append-only live ledger at `2026-09-08T10:30:14Z`. The reviewer disclosed it and did not attempt deletion. Supervisor preserves append-only history and classifies the line as review contamination, not product evidence. No code/config/webroot/cron/harness mutation occurred.
+
+## Sprint 5 Opus 5 High final gate — PASS (no High, Medium, or Low findings)
+- Opus independently inspected exact git scope, contracts, live artifact, authoritative benchmark producer/schema, identity mapping, availability semantics, HTML escaping, atomic write, publication boundary, and lazy resolve path. Its runtime Bash allowlist prevented rerunning pytest/Black/Ruff/page commands, so supervisor-observed runtime gates remain authoritative.
+- Non-blocking operational notes recorded for handoff: generated files use `mkstemp` mode 0600, so publication must set web-readable mode; proposal selection intentionally remains inert until an authoritative tier/vendor-independence source exists.
+- Economics retrospective: 7 Luna XHigh/Pi packets attempted. Three initial packets passed immediate supervisor verification, though later independent review found cross-cutting defects. Four repair packets followed: P37 fixed the High but needed P37b for a missed Low path; P38 and P39 passed first repair verification. No implementation escalation. Sonnet required four review rounds; Opus required one final gate. Evidence supports Luna XHigh as economically appropriate: it completed every bounded implementation/repair packet, and stronger models remained supervisors/reviewers rather than implementation fallbacks.
+
+### P38 — grouped retry sidecar semantics + D188 badge regression — Luna XHigh via Pi — ACCEPTED (supervisor-verified)
+- `crew_page.py` now accepts independent representative `acceptance` and aggregate `accepted_count`; metrics sum aggregate accepted counts and expose cost-to-accept only when the representative itself was accepted. Tests cover the exact valid retry shape through loader and CLI plus D188 coding-stage badge rendering.
+- Observed: exact reproducer → rows 1, accepted true, accepted_count 1, cost None. Focused 97 passed; full suite 599 passed; Black/Ruff clean; live doctor passes. Default discovery selected the current 86-row `staffing-evidence-20260908.json`; CLI exit 0, 80,220 bytes.
+
+## Sprint 5 Sonnet review round 3 — FAIL (1 High, 0 Medium, 0 Low)
+- High reproduced and accepted: `crews page` rejects a missing availability file, while established `resolve` and `doctor --availability` semantics treat missing snapshot as all channels unknown. The missing-file condition should permit a manual/fresh-install page with unknown headroom; malformed or unreadable existing inputs remain errors. No test covered missing availability.
+- Root cause: P36 grouped missing and malformed availability under one `snapshot.problem` check. P39 is a narrow Luna repair; no escalation.
