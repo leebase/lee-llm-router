@@ -363,13 +363,13 @@ channel, and one harness draws on two. Every `ResolvedWorker` carries a
 `CHANNELS` declares the six known channels; `PROVIDER_CHANNELS` maps each
 registered provider to its default:
 
-| Router provider | Funding channel |
-|---|---|
-| `codex_cli` | `openai-sub` |
-| `claude_code_cli` | `anthropic-sub` |
-| `antigravity_cli` | `gemini-sub` |
-| `opencode_cli` | `opencode-go` |
-| `omp_cli` | `openrouter` |
+| Router provider | Funding channel | Snapshot source |
+|---|---|---|
+| `codex_cli` | `openai-sub` | `OpenAI/Codex` |
+| `claude_code_cli` | `anthropic-sub` | `Anthropic/Claude` |
+| `antigravity_cli` | `gemini-sub` | `Gemini/agy` (`Gemini models`*) |
+| `opencode_cli` | `opencode-go` | `OpenCode/Go` |
+| `omp_cli` | `openrouter` | no source today |
 
 The sixth channel, `gemini-sub-thirdparty`, has no provider default: it covers
 the Claude and GPT models Antigravity brokers, which bill to a separate bucket

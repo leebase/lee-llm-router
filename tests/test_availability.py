@@ -13,11 +13,14 @@ from lee_llm_router.availability import (
     CHANNELS,
     GEMINI_CHANNELS,
     MAX_FUTURE_SKEW_MINUTES,
+    OPENCODE_GO_PROVIDER,
     AvailabilityError,
     Health,
+    _safe_timestamp,
     bucket_health,
     channels_for,
     is_routable_bucket,
+    is_single_channel,
     load_availability,
     parse_availability,
     resolve_availability_path,
@@ -84,11 +87,17 @@ def test_live_sample_channel_healths() -> None:
     assert thirdparty.health is Health.HEALTHY
     assert thirdparty.remaining_fraction == pytest.approx(0.85)
 
-    # No source exists for these two today.
-    for channel in ("openrouter", "opencode-go"):
-        headroom = snapshot.headroom(channel)
-        assert headroom.health is Health.UNKNOWN
-        assert headroom.buckets == ()
+    # OpenRouter has no source today.
+    openrouter = snapshot.headroom("openrouter")
+    assert openrouter.health is Health.UNKNOWN
+    assert openrouter.buckets == ()
+
+    # OpenCode: three buckets; Monthly is TOO FAST -> degraded.
+    opencode = snapshot.headroom("opencode-go")
+    assert opencode.health is Health.DEGRADED
+    assert opencode.limiting_bucket == "Monthly"
+    assert opencode.remaining_fraction == pytest.approx(0.89)
+    assert len(opencode.buckets) == 3
 
 
 def test_live_sample_bucket_routing() -> None:
@@ -111,7 +120,13 @@ def test_live_sample_bucket_routing() -> None:
         "Claude/GPT models — weekly",
         "Claude/GPT models — 5-hour",
     ]
-    assert sum(len(v) for v in names.values()) == 9
+    assert names["opencode-go"] == [
+        "Rolling — 5-hour",
+        "Weekly",
+        "Monthly",
+    ]
+    assert names["openrouter"] == []
+    assert sum(len(v) for v in names.values()) == 12
 
 
 def test_live_sample_resets_at_normalised_to_utc() -> None:
@@ -124,6 +139,15 @@ def test_live_sample_resets_at_normalised_to_utc() -> None:
     assert weekly.resets_in_hours == pytest.approx(93.49)
     assert weekly.pace_ratio == pytest.approx(1.17)
     assert weekly.raw_status == "HOT"
+
+    # OpenCode carries timestamps with microseconds.
+    rolling = snapshot.headroom("opencode-go").buckets[0]
+    assert rolling.resets_at == datetime(
+        2026, 9, 8, 7, 20, 21, 278000, tzinfo=timezone.utc
+    )
+    assert rolling.resets_in_hours == pytest.approx(4.5)
+    assert rolling.pace_ratio == pytest.approx(0.1)
+    assert rolling.raw_status == "COLD"
 
 
 # --------------------------------------------------------------------------
@@ -837,7 +861,7 @@ def test_wellformed_records_are_not_flagged() -> None:
         "gemini-sub": Health.DEGRADED,
         "gemini-sub-thirdparty": Health.HEALTHY,
         "openrouter": Health.UNKNOWN,
-        "opencode-go": Health.UNKNOWN,
+        "opencode-go": Health.DEGRADED,
     }
 
 
@@ -967,3 +991,62 @@ def test_live_sample_routing_is_unaffected_by_the_fan_out() -> None:
     assert len(snapshot.headroom("gemini-sub-thirdparty").buckets) == 2
     assert snapshot.headroom("gemini-sub").health is Health.DEGRADED
     assert snapshot.headroom("gemini-sub-thirdparty").health is Health.HEALTHY
+
+
+# --------------------------------------------------------------------------
+# Packet P33 — OpenCode/Go provider label
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bucket_name",
+    ["Rolling — 5-hour", "Weekly", "Monthly", "arbitrary-bucket", ""],
+)
+def test_opencode_go_channels_for_and_is_single_channel(bucket_name: str) -> None:
+    """OpenCode/Go maps to ('opencode-go',) for any bucket and is single-channel."""
+    assert channels_for(OPENCODE_GO_PROVIDER, bucket_name) == ("opencode-go",)
+    assert channels_for("OpenCode/Go", bucket_name) == ("opencode-go",)
+    assert is_routable_bucket(OPENCODE_GO_PROVIDER, bucket_name) is True
+    assert is_single_channel(OPENCODE_GO_PROVIDER, bucket_name) is True
+
+
+@pytest.mark.parametrize(
+    "unknown_label",
+    ["Mystery/Vendor", "OpenCode", "OpenCode/Python", "opencode/go", "", "   "],
+)
+def test_unknown_provider_label_returns_empty_channels(unknown_label: str) -> None:
+    """Unknown provider labels still return empty channels and are not routable."""
+    assert channels_for(unknown_label, "Weekly") == ()
+    assert is_routable_bucket(unknown_label, "Weekly") is False
+    assert is_single_channel(unknown_label, "Weekly") is False
+
+
+def test_microsecond_resets_at_timestamp_parsing() -> None:
+    """Timestamps carrying microseconds parse into aware UTC with microseconds intact."""
+    raw_stamp = "2026-09-08T02:20:21.278000-05:00"
+    parsed = _safe_timestamp(raw_stamp)
+    assert parsed is not None
+    assert parsed == datetime(2026, 9, 8, 7, 20, 21, 278000, tzinfo=timezone.utc)
+    assert parsed.microsecond == 278000
+
+    payload = {
+        "observed_at": "2026-09-07T12:00:00.123456+00:00",
+        "subscriptions": [
+            {
+                "provider": "OpenCode/Go",
+                "bucket": "Rolling — 5-hour",
+                "status": "COLD",
+                "used_pct": 1.0,
+                "remaining_pct": 99.0,
+                "resets_at": raw_stamp,
+            }
+        ],
+    }
+    snapshot = parse_availability(
+        payload, now=datetime(2026, 9, 7, 12, 1, tzinfo=timezone.utc)
+    )
+    assert snapshot.stale is False
+    opencode = snapshot.headroom("opencode-go")
+    assert opencode.health is Health.HEALTHY
+    assert len(opencode.buckets) == 1
+    assert opencode.buckets[0].resets_at == parsed

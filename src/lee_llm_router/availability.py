@@ -60,6 +60,10 @@ GEMINI_BUCKET_PREFIXES: tuple[tuple[str, str], ...] = (
 )
 """Bucket-name prefixes that pin a ``Gemini/agy`` record to one channel."""
 
+OPENCODE_GO_PROVIDER = "OpenCode/Go"
+"""Provider label ``ai-subs`` emits for OpenCode Go."""
+
+
 DEGRADED_STATUSES: frozenset[str] = frozenset({"TOO FAST", "HOT"})
 """Raw ``ai-subs`` status badges that mean "burning too fast" regardless of pct."""
 
@@ -496,6 +500,8 @@ def channels_for(provider: str, bucket_name: str) -> tuple[str, ...]:
             if name.startswith(prefix):
                 return (channel,)
         return GEMINI_CHANNELS
+    if label == OPENCODE_GO_PROVIDER:
+        return ("opencode-go",)
     return ()
 
 
@@ -514,6 +520,9 @@ def is_routable_bucket(provider: str, bucket_name: str) -> bool:
         against either one and the record is treated as malformed.
     """
     return len(channels_for(provider, bucket_name)) == 1
+
+
+is_single_channel = is_routable_bucket
 
 
 def is_known_status(raw_status: str) -> bool:

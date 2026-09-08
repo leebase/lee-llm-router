@@ -107,7 +107,7 @@ def test_dry_run_prints_json_and_writes_nothing(tmp_path: Path) -> None:
     printed = json.loads(result.stdout)
     assert printed["host"]
     assert printed["written_at"]
-    assert len(printed["subscriptions"]) == 9
+    assert len(printed["subscriptions"]) == 12
 
 
 def test_missing_marker_fails_and_leaves_snapshot_untouched(tmp_path: Path) -> None:
@@ -389,7 +389,11 @@ def test_the_live_sample_still_passes_validation(tmp_path: Path) -> None:
     result = _run(["--input", str(capture)], snapshot)
 
     assert result.returncode == 0, result.stderr
-    assert len(json.loads(snapshot.read_text(encoding="utf-8"))["subscriptions"]) == 9
+    written = json.loads(snapshot.read_text(encoding="utf-8"))
+    assert len(written["subscriptions"]) == 12
+    assert (
+        sum(1 for s in written["subscriptions"] if s["provider"] == "OpenCode/Go") == 3
+    )
 
 
 # --------------------------------------------------------------------------
