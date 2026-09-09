@@ -7,25 +7,6 @@ here if discovered.
 
 ## Expected open items
 
-- **P0-2/P0-7 router-fixture scope contradiction.** Required per-worker
-  provider-channel derivation removes OMP's old static `openrouter` default.
-  Six existing router fixtures in `tests/test_resolver.py`,
-  `tests/test_dispatch.py`, and `tests/test_crew_page.py` omit
-  `OMP_STAGE_WORKER_PROVIDER` and now correctly fail closed. P0-2's packet
-  scope names only `tests/test_staffing_catalog.py`, `tests/test_crews.py`, and
-  the stale worker-count assertion in `tests/test_doctor.py`; P0-7 is scoped
-  to Auto-Orch. P0-2 nevertheless requires the full router suite green. Need
-  authority either to update those six router fixtures in P0-2 or a different
-  explicit compatibility rule that does not contradict fail-closed channel
-  derivation.
-- **P0-8 benchmark verification environment drift.** The scoped benchmark
-  suite reports `257 passed, 2 failed`; after removing supervisor-created
-  packet `__pycache__` debris, the remaining external failure is the installed
-  OpenCode binary version `1.18.30` versus the repository's pinned cleared
-  native version `1.18.26`. Changing the pin or installed binary is outside
-  P0-8. Need an environment correction or explicit authority to refresh the
-  benchmark's cleared-version contract before P0-8 can pass its full suite.
-
 - OpenCode Go monthly plan fee and capacity are unknown (P0-4).
 - `opencode-go/mimo-v2.5` remains unpriced: the pinned Zen catalog publishes
   only the distinct `mimo-v2.5-free` id, while OpenRouter publishes
@@ -98,3 +79,18 @@ P0-2 may continue; P0-8 and P0-9 are unblocked by the P0-1 commit `aaefb9a`.
   by this round under D86/D87. The authorized runtime requirement is exactly
   `jsonschema>=4.26,<5`; vendoring, system-package reliance, and a partial
   validator remain forbidden.
+
+## Resolved by Chief, round 5 (2026-09-09)
+
+See `docs/staffing/chief-answers-5.md`: channel inference for `pi_cli`/`omp_cli` fails open
+to `unknown`; four named test files join P0-2's scope for fixture-only updates with a strict
+reviewer rule; the benchmark's OpenCode version-pin mismatch is excluded from P0-8's gate and
+recorded, pin unchanged.
+
+- **P0-2 channel behavior and fixture scope:** resolved under D86/D87.
+  Uninferrable Pi/OMP channels resolve to `unknown` rather than raising. The
+  four named router test files are in scope for fixture-only updates under the
+  line-by-line review restriction.
+- **P0-8 OpenCode environment drift:** resolved as a single permitted gate
+  exclusion. Installed `1.18.30` versus pinned `1.18.26` stays recorded; the
+  reproducibility pin must not change.

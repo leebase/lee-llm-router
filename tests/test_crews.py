@@ -23,6 +23,13 @@ from lee_llm_router.crews import (
     resolve_worker,
     role_class,
 )
+from lee_llm_router.providers.base import FailureType, LLMRouterError
+from lee_llm_router.providers.pi_cli import (
+    PROMPT_PLACEHOLDER,
+    READ_ONLY_TOOLS,
+    SYSTEM_PROMPT,
+    PiCLIProvider,
+)
 
 FIXTURE = Path(__file__).parent / "fixtures" / "crews.yaml"
 LIVE_CREWS_FILE = Path("/home/lee/projects/auto-orch/config/crews.yaml")
@@ -312,18 +319,31 @@ def test_resolve_worker_antigravity_prefix() -> None:
 
 
 def test_worker_provider_override_wins_over_parsing(monkeypatch) -> None:
+    from lee_llm_router.crews import UNKNOWN_CHANNEL, WORKER_CHANNEL_OVERRIDES
+
     monkeypatch.setitem(
         WORKER_PROVIDER_OVERRIDES,
         "codex_sol_high",
         ("omp_cli", "pinned-model", "low"),
     )
 
+    # A provider override to a worker-derived provider with no stage-worker
+    # provider signal fails OPEN to ``unknown`` (D86/D87), never raises.
     resolved = resolve_worker(_worker("codex_sol_high", CODEX_COMMAND))
 
     assert resolved.provider == "omp_cli"
     assert resolved.model == "pinned-model"
     assert resolved.effort == "low"
     assert resolved.harness_binary is None
+    assert resolved.channel == UNKNOWN_CHANNEL
+
+    # An explicit channel pin supplies the missing funding channel and also
+    # beats the per-worker derivation table.
+    monkeypatch.setitem(WORKER_CHANNEL_OVERRIDES, "codex_sol_high", "openrouter")
+
+    pinned = resolve_worker(_worker("codex_sol_high", CODEX_COMMAND))
+
+    assert pinned.channel == "openrouter"
 
 
 def test_resolve_worker_unknown_prefix_raises() -> None:
@@ -410,6 +430,7 @@ def test_live_crews_file_workers_all_resolve() -> None:
 
 OMP_COMMAND = (
     "/usr/bin/env OMP_STAGE_WORKER_BINARY=/x/bin/omp "
+    "OMP_STAGE_WORKER_PROVIDER=openrouter "
     "OMP_STAGE_WORKER_MODEL=gemini-3.8-flash-high "
     "python3 /x/omp_stage_worker.py {stage} {prompt_path} {response_path}"
 )
@@ -422,12 +443,14 @@ def test_resolve_worker_omp_prefix() -> None:
     assert resolved.model == "gemini-3.8-flash-high"
     assert resolved.effort is None
     assert resolved.harness_binary == "/x/bin/omp"
+    assert resolved.channel == "openrouter"
 
 
-def test_omp_prefix_is_registered() -> None:
+def test_omp_and_pi_prefixes_are_registered() -> None:
     from lee_llm_router.crews import WORKER_ENV_PREFIX_PROVIDERS
 
     assert WORKER_ENV_PREFIX_PROVIDERS["OMP"] == "omp_cli"
+    assert WORKER_ENV_PREFIX_PROVIDERS["PI"] == "pi_cli"
 
 
 CHANNEL_COMMANDS: dict[str, tuple[str, str]] = {
@@ -435,7 +458,6 @@ CHANNEL_COMMANDS: dict[str, tuple[str, str]] = {
     "claude_code_cli": ("claude_opus5_high", CLAUDE_COMMAND),
     "antigravity_cli": ("agy_flash_high", ANTIGRAVITY_COMMAND),
     "opencode_cli": ("opencode_deepseek", OPENCODE_COMMAND),
-    "omp_cli": ("omp_flash_high", OMP_COMMAND),
 }
 
 
@@ -453,9 +475,37 @@ def test_channels_are_the_declared_funding_channels() -> None:
 
 
 def test_every_provider_channel_is_a_known_channel() -> None:
+    from typing import Mapping
+
     from lee_llm_router.crews import CHANNELS, PROVIDER_CHANNELS
 
-    assert set(PROVIDER_CHANNELS.values()) <= set(CHANNELS)
+    expected: set[str] = set()
+    for value in PROVIDER_CHANNELS.values():
+        if isinstance(value, str):
+            expected.add(value)
+        else:
+            assert isinstance(value, Mapping)
+            expected.update(value.values())
+    assert expected <= set(CHANNELS)
+
+
+def test_worker_derived_providers_have_no_static_default() -> None:
+    """P0-2c: pi_cli/omp_cli resolve per worker and never a static channel."""
+    from lee_llm_router.crews import (
+        HARNESS_PROVIDER_CHANNELS,
+        PROVIDER_CHANNELS,
+        WORKER_DERIVED_CHANNEL_PROVIDERS,
+    )
+
+    assert WORKER_DERIVED_CHANNEL_PROVIDERS == frozenset({"pi_cli", "omp_cli"})
+    for provider in sorted(WORKER_DERIVED_CHANNEL_PROVIDERS):
+        assert PROVIDER_CHANNELS[provider] is HARNESS_PROVIDER_CHANNELS
+    assert set(HARNESS_PROVIDER_CHANNELS) == {
+        "openai-codex",
+        "openrouter",
+        "opencode-go",
+        "anthropic",
+    }
 
 
 @pytest.mark.parametrize(
@@ -465,7 +515,9 @@ def test_every_provider_channel_is_a_known_channel() -> None:
         ("claude_code_cli", "anthropic-sub"),
         ("antigravity_cli", "gemini-sub"),
         ("opencode_cli", "opencode-go"),
-        ("omp_cli", "openrouter"),
+        # omp_cli/pi_cli are intentionally absent: since P0-2c their channel
+        # is derived per worker from the stage-worker _PROVIDER env (see the
+        # P0-2c section below), not a static provider default.
     ],
 )
 def test_resolve_worker_sets_provider_default_channel(
@@ -535,6 +587,134 @@ def test_live_crews_file_workers_all_have_a_known_channel() -> None:
 
     for worker in config.workers.values():
         assert resolve_worker(worker).channel in CHANNELS
+
+
+# --- P0-2c: per-worker channel derivation for pi_cli / omp_cli ------------
+# The Pi and OMP harnesses pick their backend via the stage-worker
+# ``_PROVIDER`` environment variable; the funding channel is derived per
+# worker from HARNESS_PROVIDER_CHANNELS and fails OPEN to ``unknown``
+# (D86/D87) when the signal is missing or unrecognized.
+
+P0_2C_DERIVED_CASES = [
+    ("PI", "pi_cli", "openai-codex", "openai-sub"),
+    ("PI", "pi_cli", "openrouter", "openrouter"),
+    ("PI", "pi_cli", "opencode-go", "opencode-go"),
+    ("PI", "pi_cli", "anthropic", "anthropic-sub"),
+    ("OMP", "omp_cli", "openai-codex", "openai-sub"),
+    ("OMP", "omp_cli", "openrouter", "openrouter"),
+    ("OMP", "omp_cli", "opencode-go", "opencode-go"),
+    ("OMP", "omp_cli", "anthropic", "anthropic-sub"),
+]
+
+
+def _derived_command(prefix: str, provider_id: str) -> str:
+    return (
+        f"/usr/bin/env {prefix}_STAGE_WORKER_BINARY=/x/bin/{prefix.lower()} "
+        f"{prefix}_STAGE_WORKER_PROVIDER={provider_id} "
+        f"{prefix}_STAGE_WORKER_MODEL=gemini-3.8-flash-high "
+        f"python3 /x/{prefix.lower()}_stage_worker.py {{stage}}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("prefix", "provider", "provider_id", "expected_channel"),
+    P0_2C_DERIVED_CASES,
+)
+def test_derived_harness_provider_id_maps_to_channel(
+    prefix: str, provider: str, provider_id: str, expected_channel: str
+) -> None:
+    resolved = resolve_worker(
+        _worker(
+            f"{prefix.lower()}_{provider_id}", _derived_command(prefix, provider_id)
+        )
+    )
+
+    assert resolved.provider == provider
+    assert resolved.model == "gemini-3.8-flash-high"
+    assert resolved.channel == expected_channel
+
+
+@pytest.mark.parametrize("prefix,provider", [("PI", "pi_cli"), ("OMP", "omp_cli")])
+def test_derived_harness_without_provider_env_fails_open(
+    prefix: str, provider: str
+) -> None:
+    """D86/D87: a missing provider signal resolves normally with ``unknown``."""
+    from lee_llm_router.crews import CHANNELS, UNKNOWN_CHANNEL
+
+    command = (
+        f"/usr/bin/env {prefix}_STAGE_WORKER_BINARY=/x/bin/{prefix.lower()} "
+        f"{prefix}_STAGE_WORKER_MODEL=gemini-3.8-flash-high "
+        f"python3 /x/{prefix.lower()}_stage_worker.py {{stage}}"
+    )
+
+    resolved = resolve_worker(_worker(f"{prefix.lower()}_no_provider", command))
+
+    assert resolved.provider == provider
+    assert resolved.model == "gemini-3.8-flash-high"
+    assert resolved.channel == UNKNOWN_CHANNEL
+    assert resolved.channel not in CHANNELS
+
+
+@pytest.mark.parametrize("prefix,provider", [("PI", "pi_cli"), ("OMP", "omp_cli")])
+def test_derived_harness_unknown_provider_env_fails_open(
+    prefix: str, provider: str
+) -> None:
+    """D86/D87: an unrecognized provider id also resolves with ``unknown``."""
+    from lee_llm_router.crews import UNKNOWN_CHANNEL
+
+    resolved = resolve_worker(
+        _worker(f"{prefix.lower()}_mystery", _derived_command(prefix, "mystery-cloud"))
+    )
+
+    assert resolved.provider == provider
+    assert resolved.channel == UNKNOWN_CHANNEL
+
+
+def test_channel_override_beats_derived_harness_channel(monkeypatch) -> None:
+    """An explicit channel pin wins over the per-worker derivation table."""
+    from lee_llm_router.crews import WORKER_CHANNEL_OVERRIDES
+
+    monkeypatch.setitem(WORKER_CHANNEL_OVERRIDES, "pi_openrouter", "anthropic-sub")
+
+    resolved = resolve_worker(
+        _worker("pi_openrouter", _derived_command("PI", "openrouter"))
+    )
+
+    assert resolved.provider == "pi_cli"
+    assert resolved.channel == "anthropic-sub"
+
+
+def test_channel_for_derived_provider_without_env_fails_open() -> None:
+    """D86/D87: channel_for never raises for a missing provider signal."""
+    from lee_llm_router.crews import UNKNOWN_CHANNEL, channel_for
+
+    assert channel_for("some_pi_worker", "pi_cli") == UNKNOWN_CHANNEL
+    assert channel_for("some_omp_worker", "omp_cli") == UNKNOWN_CHANNEL
+
+
+def test_channel_for_derived_provider_unknown_env_fails_open() -> None:
+    """D86/D87: an unrecognized provider id maps to ``unknown`` too."""
+    from lee_llm_router.crews import UNKNOWN_CHANNEL, channel_for
+
+    assert (
+        channel_for("some_pi_worker", "pi_cli", harness_provider="mystery-cloud")
+        == UNKNOWN_CHANNEL
+    )
+
+
+def test_unknown_channel_is_not_a_funding_channel() -> None:
+    """``unknown`` is a sentinel outside CHANNELS: availability treats it as
+    never healthy, so it must never be mistaken for a fundable channel."""
+    from lee_llm_router.crews import CHANNELS, UNKNOWN_CHANNEL
+
+    assert UNKNOWN_CHANNEL not in CHANNELS
+
+
+def test_channel_for_derived_provider_with_override_env() -> None:
+    """channel_for resolves a mapping entry when given a recognized id."""
+    from lee_llm_router.crews import channel_for
+
+    assert channel_for("w", "omp_cli", harness_provider="anthropic") == "anthropic-sub"
 
 
 def test_prefers_c_yaml_loader_when_available() -> None:
@@ -700,3 +880,146 @@ crews:
     all_files = list(app_cache.iterdir())
     assert all(f.name.endswith(".json") for f in all_files)
     assert not any(f.name.endswith(".tmp") for f in all_files)
+
+
+# --- P0-2b: Pi CLI command builder (pi_cli.py) ---------------------------
+# Scoped strictly to build_command argv construction. No subprocess, no
+# registration, no completion execution is exercised here.
+
+_PI_BASE_TAIL = [
+    "--print",
+    "--mode",
+    "text",
+    "--no-session",
+    "--no-extensions",
+    "--no-skills",
+    "--no-prompt-templates",
+    "--no-themes",
+    "--tools",
+    READ_ONLY_TOOLS,
+    "--system-prompt",
+    SYSTEM_PROMPT,
+]
+
+
+def test_pi_build_command_defaults_match_proven_argv() -> None:
+    argv = PiCLIProvider().build_command({})
+
+    assert argv == ["pi"] + _PI_BASE_TAIL + [PROMPT_PLACEHOLDER]
+    assert isinstance(argv, list)
+
+
+def test_pi_build_command_with_provider_model_thinking_from_config() -> None:
+    argv = PiCLIProvider().build_command(
+        {
+            "provider": "openrouter",
+            "model": "opencode-go/deepseek-v4-flash",
+            "thinking": "high",
+        }
+    )
+
+    assert argv == [
+        "pi",
+        *_PI_BASE_TAIL,
+        "--provider",
+        "openrouter",
+        "--model",
+        "opencode-go/deepseek-v4-flash",
+        "--thinking",
+        "high",
+        PROMPT_PLACEHOLDER,
+    ]
+
+
+def test_pi_build_command_model_and_effort_overrides_beat_config() -> None:
+    argv = PiCLIProvider().build_command(
+        {"model": "config-model", "thinking": "low"},
+        model="override-model",
+        effort="medium",
+    )
+
+    assert "--model" in argv
+    assert argv[argv.index("--model") + 1] == "override-model"
+    assert argv[argv.index("--thinking") + 1] == "medium"
+
+
+def test_pi_build_command_effort_alias_key_in_config() -> None:
+    argv = PiCLIProvider().build_command({"effort": "high"})
+
+    assert argv[argv.index("--thinking") + 1] == "high"
+
+
+def test_pi_build_command_custom_command_key() -> None:
+    argv = PiCLIProvider().build_command({"command": "/x/bin/pi"})
+
+    assert argv[0] == "/x/bin/pi"
+    assert argv[1:] == [*_PI_BASE_TAIL, PROMPT_PLACEHOLDER]
+
+
+def test_pi_prompt_placeholder_is_always_last() -> None:
+    provider = PiCLIProvider()
+
+    for config, model, effort in (
+        ({}, None, None),
+        ({"provider": "p", "model": "m", "thinking": "high"}, None, None),
+        ({"model": "m"}, "m2", "low"),
+    ):
+        argv = provider.build_command(config, model=model, effort=effort)
+        assert argv[-1] == PROMPT_PLACEHOLDER
+        assert PROMPT_PLACEHOLDER not in argv[:-1]
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("command", 7),
+        ("provider", ["openrouter"]),
+        ("model", 3.14),
+        ("thinking", True),
+        ("effort", {"level": "high"}),
+        ("model", "   "),
+    ],
+)
+def test_pi_build_command_invalid_config_types_raise_typed_error(
+    key: str, value: object
+) -> None:
+    provider = PiCLIProvider()
+
+    with pytest.raises(LLMRouterError) as exc_info:
+        provider.build_command({key: value})
+
+    assert exc_info.value.failure_type == FailureType.PROVIDER_ERROR
+    assert key in str(exc_info.value)
+
+
+def test_pi_build_command_invalid_override_types_raise_typed_error() -> None:
+    provider = PiCLIProvider()
+
+    with pytest.raises(LLMRouterError) as model_exc:
+        provider.build_command({}, model=42)
+    assert model_exc.value.failure_type == FailureType.PROVIDER_ERROR
+
+    with pytest.raises(LLMRouterError) as effort_exc:
+        provider.build_command({}, effort=[])
+    assert effort_exc.value.failure_type == FailureType.PROVIDER_ERROR
+
+
+def test_pi_build_command_returns_a_list_not_a_shell_string() -> None:
+    argv = PiCLIProvider().build_command(
+        {"provider": "openrouter", "model": "a/b", "thinking": "high"}
+    )
+
+    assert isinstance(argv, list)
+    assert all(isinstance(part, str) for part in argv)
+    # Every flag/value pair is a discrete argv element — never one
+    # shell-quoted string.
+    assert "--model a/b" not in argv
+    assert "--provider openrouter" not in argv
+
+
+def test_pi_system_prompt_matches_proven_stage_worker_prompt() -> None:
+    assert SYSTEM_PROMPT == (
+        "You are a headless stage worker. Output only the JSON response the "
+        "prompt asks for - no prose, no code fences."
+    )
+    assert READ_ONLY_TOOLS == "read,grep,find,ls"

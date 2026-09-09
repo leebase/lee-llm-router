@@ -14,6 +14,8 @@ from lee_llm_router.doctor import (
     export_source,
     get_template,
 )
+from lee_llm_router.staffing import DOCUMENT_ORDER
+from tests.test_staffing_catalog import _DOC_BUILDERS, write_docs
 
 FIXTURES = Path(__file__).parent / "fixtures"
 PI_HARNESS = FIXTURES / "pi_harness.py"
@@ -435,7 +437,12 @@ def test_doctor_crews_against_live_file_exits_0(capsys):
     assert exc_info.value.code == 0
     out = capsys.readouterr().out
     assert "OK crews:" in out
-    assert "23/23 workers resolved" in out
+    # P0-2c: the live count must be derived from the live crews file, not a
+    # literal, so additive workers never stale this assertion.
+    from lee_llm_router.crews import load_crews
+
+    live_workers = len(load_crews(LIVE_CREWS_FILE).workers)
+    assert f"{live_workers}/{live_workers} workers resolved" in out
     assert "0 role-scoped warning(s)" in out
 
 
@@ -1983,3 +1990,98 @@ def test_crews_page_cli_does_not_call_subprocess_or_write_default_events(
     assert exc_info.value.code == 0
     assert output.exists()
     assert not ledger.exists()
+
+
+# --------------------------------------------------------------------------
+# doctor --catalog (staffing catalog documents)
+# --------------------------------------------------------------------------
+
+
+def test_doctor_catalog_valid_exits_0_with_ok_summary(tmp_path, capsys):
+    """A valid six-document catalog exits 0 with a concise OK summary."""
+    from lee_llm_router.doctor import main
+
+    write_docs(tmp_path, {name: builder() for name, builder in _DOC_BUILDERS.items()})
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["doctor", "--catalog", "--catalog-dir", str(tmp_path)])
+    assert exc_info.value.code == 0
+
+    out = capsys.readouterr().out
+    assert f"OK catalog: {tmp_path}" in out
+    assert "(routes 2, channels 2, terms 1, crews 2)" in out
+
+
+@pytest.mark.parametrize("name", sorted(DOCUMENT_ORDER))
+def test_doctor_catalog_unexpected_field_exits_3_names_document_and_field(
+    tmp_path, capsys, name
+):
+    """Each invalid document exits 3 with a stable error naming doc and path."""
+    from lee_llm_router.doctor import main
+
+    docs = {doc_name: builder() for doc_name, builder in _DOC_BUILDERS.items()}
+    docs[name]["unexpected_field"] = "surprise"
+    write_docs(tmp_path, docs)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["doctor", "--catalog", "--catalog-dir", str(tmp_path)])
+    assert exc_info.value.code == 3
+
+    captured = capsys.readouterr()
+    assert "catalog invalid:" in captured.err
+    assert f"'{name}'" in captured.err
+    assert "$.unexpected_field" in captured.err
+
+
+def test_doctor_catalog_requires_catalog_dir_exits_3(capsys):
+    """--catalog without --catalog-dir is a usage error at exit 3."""
+    from lee_llm_router.doctor import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["doctor", "--catalog"])
+    assert exc_info.value.code == 3
+    assert "--catalog-dir" in capsys.readouterr().err
+
+
+def test_doctor_catalog_missing_document_exits_3_names_document(tmp_path, capsys):
+    """A directory missing a document exits 3 naming that document."""
+    from lee_llm_router.doctor import main
+
+    write_docs(tmp_path, {name: builder() for name, builder in _DOC_BUILDERS.items()})
+    (tmp_path / "channels.yaml").unlink()
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["doctor", "--catalog", "--catalog-dir", str(tmp_path)])
+    assert exc_info.value.code == 3
+
+    err = capsys.readouterr().err
+    assert "catalog invalid:" in err
+    assert "'channels'" in err
+
+
+def test_doctor_catalog_with_crews_and_config_exits_0(tmp_path, capsys):
+    """--catalog composes with --crews and --config without changing exits."""
+    from lee_llm_router.doctor import main
+
+    write_docs(tmp_path, {name: builder() for name, builder in _DOC_BUILDERS.items()})
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "doctor",
+                "--catalog",
+                "--catalog-dir",
+                str(tmp_path),
+                "--crews",
+                "--crews-file",
+                str(CREWS_FIXTURE),
+                "--config",
+                str(FIXTURES / "llm_test.yaml"),
+            ]
+        )
+    assert exc_info.value.code == 0
+
+    out = capsys.readouterr().out
+    assert "OK catalog:" in out
+    assert "OK crews:" in out
+    assert "All checks passed" in out

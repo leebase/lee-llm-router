@@ -14,7 +14,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 
 def __getattr__(name: str) -> Any:
@@ -520,6 +520,7 @@ WORKER_ENV_PREFIX_PROVIDERS: dict[str, str] = {
     "OMP": "omp_cli",
     "OPENCODE": "opencode_cli",
     "ANTIGRAVITY": "antigravity_cli",
+    "PI": "pi_cli",
 }
 """Maps a stage-worker env-var prefix to a registered router provider name."""
 
@@ -543,6 +544,7 @@ _BUILTIN_REGISTERED_PROVIDERS: frozenset[str] = frozenset(
         "openai_codex_subscription_http",
         "openai_codex_http",
         "chatgpt_subscription_http",
+        "pi_cli",
         "mock",
     }
 )
@@ -598,14 +600,57 @@ This mapping lives here rather than in ``crews.yaml`` because funding is the
 router's concern, not Auto-Orch's.
 """
 
-PROVIDER_CHANNELS: dict[str, str] = {
+HARNESS_PROVIDER_CHANNELS: dict[str, str] = {
+    "openai-codex": "openai-sub",
+    "openrouter": "openrouter",
+    "opencode-go": "opencode-go",
+    "anthropic": "anthropic-sub",
+}
+"""Funding channel for each Pi/OMP harness provider id.
+
+The Pi and OMP (oh-my-pi) harnesses select their backend through a provider id
+(the ``--provider`` value a stage worker declares via its
+``<PREFIX>_STAGE_WORKER_PROVIDER`` environment variable). Because several of
+those ids draw on different funding channels from the same harness, the channel
+is per-worker, not per-harness: a ``pi_cli``/``omp_cli`` worker bills to the
+channel of the provider id its own command declares.
+"""
+
+UNKNOWN_CHANNEL = "unknown"
+"""Fail-open channel for workers whose funding channel cannot be inferred.
+
+Per decisions D86/D87 (docs/staffing/chief-answers-5.md): a ``pi_cli`` or
+``omp_cli`` worker that declares no (or an unrecognized) stage-worker provider
+id still resolves normally, but bills to ``unknown``. Availability treats
+``unknown`` as never healthy, and strict mode must not halt a governed run on
+a dead lookup, so this is a sentinel rather than a member of :data:`CHANNELS`.
+"""
+
+WORKER_DERIVED_CHANNEL_PROVIDERS: frozenset[str] = frozenset({"pi_cli", "omp_cli"})
+"""Registered providers whose funding channel is derived per worker.
+
+These harnesses are recognized by :data:`PROVIDER_CHANNELS`, but instead of a
+static default they resolve through :data:`HARNESS_PROVIDER_CHANNELS` from the
+worker's own provider environment. A worker for one of these providers that
+declares no (or an unrecognized) provider id fails open to
+:data:`UNKNOWN_CHANNEL` instead of raising (decisions D86/D87).
+"""
+
+PROVIDER_CHANNELS: dict[str, str | Mapping[str, str]] = {
     "codex_cli": "openai-sub",
     "claude_code_cli": "anthropic-sub",
     "antigravity_cli": "gemini-sub",
     "opencode_cli": "opencode-go",
-    "omp_cli": "openrouter",
+    "omp_cli": HARNESS_PROVIDER_CHANNELS,
+    "pi_cli": HARNESS_PROVIDER_CHANNELS,
 }
-"""Default funding channel for each registered router provider."""
+"""Funding channel for each registered router provider.
+
+A plain string value is the provider's default channel. A mapping value (the
+Pi/OMP harnesses) is the per-worker derivation table keyed by the provider id
+the worker declares in its stage-worker environment; those providers have no
+static default and fail open to :data:`UNKNOWN_CHANNEL` without one.
+"""
 
 WORKER_CHANNEL_OVERRIDES: dict[str, str] = {}
 """Explicit ``worker_id -> channel`` pins that beat :data:`PROVIDER_CHANNELS`.
@@ -617,15 +662,31 @@ default.
 """
 
 
-def channel_for(worker_id: str, provider: str) -> str:
+def channel_for(
+    worker_id: str, provider: str, harness_provider: str | None = None
+) -> str:
     """Return the funding channel a worker's usage bills to.
+
+    Precedence: an explicit :data:`WORKER_CHANNEL_OVERRIDES` pin wins over
+    everything. Otherwise a provider with a plain string entry in
+    :data:`PROVIDER_CHANNELS` bills to that default, while a worker-derived
+    provider (:data:`WORKER_DERIVED_CHANNEL_PROVIDERS`, i.e. ``pi_cli`` and
+    ``omp_cli``) bills to :data:`HARNESS_PROVIDER_CHANNELS[harness_provider]`.
+
+    For the worker-derived providers a missing or unrecognized
+    ``harness_provider`` fails open to :data:`UNKNOWN_CHANNEL` (decisions
+    D86/D87): channel inference never raises for ``pi_cli``/``omp_cli``.
 
     Args:
         worker_id: The worker id from the crews file.
         provider: The registered router provider the worker resolves to.
+        harness_provider: The provider id the worker's own environment
+            declares (``<PREFIX>_STAGE_WORKER_PROVIDER``), for the
+            worker-derived harness providers.
 
     Returns:
-        One of :data:`CHANNELS`.
+        One of :data:`CHANNELS`, or :data:`UNKNOWN_CHANNEL` when a
+        worker-derived provider's funding channel cannot be inferred.
 
     Raises:
         CrewsConfigError: If neither an override nor a provider default maps
@@ -640,23 +701,38 @@ def channel_for(worker_id: str, provider: str) -> str:
             )
         return override
     try:
-        channel = PROVIDER_CHANNELS[provider]
+        entry: str | Mapping[str, str] = PROVIDER_CHANNELS[provider]
     except KeyError as exc:
         known = ", ".join(sorted(PROVIDER_CHANNELS))
         raise CrewsConfigError(
             f"worker {worker_id!r} resolves to provider {provider!r}, which has "
             f"no funding channel (mapped providers: {known})"
         ) from exc
+    if isinstance(entry, str):
+        if entry not in CHANNELS:  # pragma: no cover - guards a bad edit here
+            raise CrewsConfigError(
+                f"provider {provider!r} maps to unknown channel {entry!r}"
+            )
+        return entry
+    # Worker-derived channel (pi_cli / omp_cli): the worker's own provider
+    # environment names the underlying Pi/OMP provider id that pays. Per
+    # decisions D86/D87 this inference fails OPEN to UNKNOWN_CHANNEL — a
+    # missing or unrecognized provider id never raises, it just leaves the
+    # worker with a channel availability treats as never healthy.
+    if harness_provider is None or harness_provider not in entry:
+        return UNKNOWN_CHANNEL
+    channel = entry[harness_provider]
     if channel not in CHANNELS:  # pragma: no cover - guards a bad edit here
         raise CrewsConfigError(
-            f"provider {provider!r} maps to unknown channel {channel!r}"
+            f"stage-worker provider {harness_provider!r} maps to unknown "
+            f"channel {channel!r}"
         )
     return channel
 
 
 _WORKER_ENV_PATTERN: str = (
     r"(?P<prefix>[A-Z]+)_STAGE_WORKER_"
-    r"(?P<key>REASONING_EFFORT|EFFORT|BINARY|MODEL)="
+    r"(?P<key>REASONING_EFFORT|EFFORT|BINARY|MODEL|PROVIDER)="
     r"(?P<value>\S+)"
 )
 _worker_env_re_cached: Any = None
@@ -728,7 +804,9 @@ class ResolvedWorker:
         effort: Reasoning-effort hint, when the worker declares one.
         harness_binary: Path to the harness binary, when declared.
         dispatch_command: The worker's raw command template, unchanged.
-        channel: The funding channel this worker's usage bills to.
+        channel: The funding channel this worker's usage bills to, or
+            :data:`UNKNOWN_CHANNEL` when it cannot be inferred (Pi/OMP
+            workers with a missing or unrecognized provider signal).
     """
 
     worker_id: str
@@ -740,8 +818,15 @@ class ResolvedWorker:
     channel: str
 
 
-def _parse_worker_command(worker: Worker) -> tuple[str, str, str | None, str | None]:
-    """Parse ``(prefix, model, effort, binary)`` out of a worker command."""
+def _parse_worker_command(
+    worker: Worker,
+) -> tuple[str, str, str | None, str | None, str | None]:
+    """Parse ``(prefix, model, effort, binary, provider)`` from a command.
+
+    ``provider`` is the value of the worker's ``<PREFIX>_STAGE_WORKER_PROVIDER``
+    environment variable (the Pi/OMP ``--provider`` selection), or ``None``
+    when the command declares none.
+    """
     prefix: str | None = None
     fields: dict[str, str] = {}
     for match in _get_worker_env_re().finditer(worker.command):
@@ -771,7 +856,13 @@ def _parse_worker_command(worker: Worker) -> tuple[str, str, str | None, str | N
         raise CrewsConfigError(
             f"worker {worker.id!r} command declares no " f"{prefix}_STAGE_WORKER_MODEL"
         )
-    return prefix, model, fields.get("EFFORT"), fields.get("BINARY")
+    return (
+        prefix,
+        model,
+        fields.get("EFFORT"),
+        fields.get("BINARY"),
+        fields.get("PROVIDER"),
+    )
 
 
 def resolve_worker(worker: Worker) -> ResolvedWorker:
@@ -779,8 +870,10 @@ def resolve_worker(worker: Worker) -> ResolvedWorker:
 
     The mapping is derived from the worker's command template, which sets
     ``<PREFIX>_STAGE_WORKER_BINARY``/``_MODEL``/``_EFFORT`` (or
-    ``_REASONING_EFFORT``) before invoking the stage-worker script. An entry
-    in :data:`WORKER_PROVIDER_OVERRIDES` wins over that parse.
+    ``_REASONING_EFFORT``) — and, for the Pi/OMP harnesses, the
+    ``_PROVIDER`` id that selects the backend — before invoking the
+    stage-worker script. An entry in :data:`WORKER_PROVIDER_OVERRIDES` wins
+    over that parse.
 
     Args:
         worker: The worker to resolve.
@@ -791,14 +884,19 @@ def resolve_worker(worker: Worker) -> ResolvedWorker:
     Raises:
         CrewsConfigError: If the command uses an unknown prefix, declares no
             model, resolves to a provider that is not registered, or resolves
-            to a provider with no funding channel.
+            to a provider with no funding channel. For the worker-derived
+            channel providers (``pi_cli``/``omp_cli``) a missing or unknown
+            ``<PREFIX>_STAGE_WORKER_PROVIDER`` environment value is not an
+            error: the worker resolves normally with channel
+            :data:`UNKNOWN_CHANNEL` (decisions D86/D87, fail open).
     """
     override = WORKER_PROVIDER_OVERRIDES.get(worker.id)
     if override is not None:
         provider, model, effort = override
         binary: str | None = None
+        provider_env: str | None = None
     else:
-        prefix, model, effort, binary = _parse_worker_command(worker)
+        prefix, model, effort, binary, provider_env = _parse_worker_command(worker)
         provider = WORKER_ENV_PREFIX_PROVIDERS[prefix]
 
     if provider not in _BUILTIN_REGISTERED_PROVIDERS:
@@ -819,5 +917,5 @@ def resolve_worker(worker: Worker) -> ResolvedWorker:
         effort=effort,
         harness_binary=binary,
         dispatch_command=worker.command,
-        channel=channel_for(worker.id, provider),
+        channel=channel_for(worker.id, provider, harness_provider=provider_env),
     )

@@ -2,7 +2,7 @@
 
 Commands:
     lee-llm-router doctor --config <path> [--role <role>] [--crews]
-                          [--availability]
+                          [--availability] [--catalog --catalog-dir <dir>]
     lee-llm-router crews list [--crews-file <path>] [--json]
     lee-llm-router crews page --out <path> [--crews-file <path>]
                           [--availability-file <path>] [--benchmark-file <path>]
@@ -971,9 +971,81 @@ def _run_dispatch(args: argparse.Namespace) -> int:
     )
 
 
+def check_catalog(
+    catalog_dir: str | Path,
+    schema_dir: str | Path | None = None,
+) -> tuple[list[str], list[str], dict[str, Any]]:
+    """Validate and load the six staffing catalog documents in a directory.
+
+    All shape validation, schema handling, and typed construction belong to
+    :func:`lee_llm_router.staffing.catalog.load_staffing_catalog`; this check
+    only renders that reader's verdict. The returned errors carry the loader's
+    stable message, which always names the offending document and, when known,
+    the JSON path of the field at fault.
+
+    Args:
+        catalog_dir: Directory holding the six YAML documents.
+        schema_dir: Explicit schema directory, or None for the bundled default.
+
+    Returns:
+        ``(errors, warnings, details)`` where ``details`` carries the resolved
+        ``path`` and, on success, per-document element counts under ``counts``.
+    """
+    from pathlib import Path
+
+    from lee_llm_router.staffing.catalog import (
+        StaffingCatalogError,
+        load_staffing_catalog,
+    )
+
+    path = Path(catalog_dir)
+    details: dict[str, Any] = {"path": str(path), "counts": {}}
+
+    try:
+        catalog = load_staffing_catalog(path, schema_dir=schema_dir)
+    except StaffingCatalogError as exc:
+        return [f"catalog invalid: {exc}"], [], details
+
+    details["counts"] = {
+        "routes": len(catalog.routes.routes),
+        "channels": len(catalog.channels.channels),
+        "terms": len(catalog.terms.terms),
+        "crews": len(catalog.crews.crews),
+    }
+    return [], [], details
+
+
 def _run_doctor(args: argparse.Namespace) -> int:
     config_path = args.config
     role = getattr(args, "role", None)
+
+    if getattr(args, "catalog", False):
+        catalog_dir = getattr(args, "catalog_dir", None)
+        if catalog_dir is None:
+            print("doctor --catalog requires --catalog-dir PATH", file=sys.stderr)
+            return 3
+        catalog_errors, catalog_warnings, catalog_details = check_catalog(catalog_dir)
+        for warning in catalog_warnings:
+            print(f"  !  {warning}")
+        for error in catalog_errors:
+            print(f"  x  {error}", file=sys.stderr)
+        if catalog_errors:
+            print(
+                f"\nStatus: {len(catalog_errors)} catalog error(s) found",
+                file=sys.stderr,
+            )
+            return 3
+        counts = catalog_details["counts"]
+        print(
+            f"OK catalog: {catalog_details['path']} "
+            f"(routes {counts['routes']}, channels {counts['channels']}, "
+            f"terms {counts['terms']}, crews {counts['crews']})"
+        )
+        if config_path is None and not any(
+            getattr(args, flag, False) for flag in ("crews", "availability")
+        ):
+            return 0
+        print()
 
     if getattr(args, "crews", False):
         (
@@ -1026,7 +1098,10 @@ def _run_doctor(args: argparse.Namespace) -> int:
         print()
 
     if config_path is None:
-        print("doctor requires --config (or --crews / --availability)", file=sys.stderr)
+        print(
+            "doctor requires --config (or --crews / --availability / --catalog)",
+            file=sys.stderr,
+        )
         return 1
 
     print("Lee LLM Router Doctor")
@@ -1368,6 +1443,20 @@ def main(argv: list[str] | None = None) -> None:
         help=(
             "Path to the availability snapshot (default: "
             "~/.local/state/lee-llm-router/availability/<host>.json)"
+        ),
+    )
+    doctor_parser.add_argument(
+        "--catalog",
+        action="store_true",
+        help="Also validate and load the six staffing catalog documents",
+    )
+    doctor_parser.add_argument(
+        "--catalog-dir",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Directory holding routes.yaml, channels.yaml, terms.yaml, "
+            "policy.yaml, classes.yaml, crews.yaml (required with --catalog)"
         ),
     )
     doctor_parser.set_defaults(func=_run_doctor)

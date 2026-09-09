@@ -96,6 +96,10 @@ def worker_command(prefix: str, binary: str, model: str, effort: str | None) -> 
         f"{prefix}_STAGE_WORKER_BINARY={binary}",
         f"{prefix}_STAGE_WORKER_MODEL={model}",
     ]
+    if prefix == "OMP":
+        # P0-2c: the omp_cli funding channel is derived from the stage-worker
+        # provider signal; these synthetic workers bill to openrouter.
+        parts.append("OMP_STAGE_WORKER_PROVIDER=openrouter")
     if effort is not None:
         key = EFFORT_KEYS.get(prefix, "EFFORT")
         parts.append(f"{prefix}_STAGE_WORKER_{key}={effort}")

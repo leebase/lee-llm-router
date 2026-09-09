@@ -282,3 +282,22 @@ or cost line for these attempts.
   `__pycache__` debris created by an over-broad supervisor test command was
   removed explicitly. P0-8 is incomplete and uncommitted.
 - No Phase 1 work began; no phase gate or Astra review ran.
+
+## 2026-09-09 — Restart after Chief round 5
+
+- `docs/staffing/chief-answers-5.md` resolves both prior stops under D86/D87.
+  Pi/OMP channel inference now returns `unknown` for missing/unrecognized
+  provider signals; named router test files are authorized for fixture-only
+  repair. The OpenCode `1.18.30` versus pinned `1.18.26` mismatch is the sole
+  permitted P0-8 suite exclusion.
+- P0-2c round-5 GLM repair completed with full suite `665 passed`; DeepSeek
+  line-by-line re-review PASS with no findings. Only `tests/test_crews.py` and
+  the permitted provider-signal fixture in `tests/test_resolver.py`, plus the
+  dynamic live count in `tests/test_doctor.py`, changed; dispatch semantics
+  remain asserted unchanged.
+- P0-2d GLM added `doctor --catalog`; focused doctor suite `87 passed`, author
+  full suite `675 passed`. DeepSeek review PASS with no High/Medium findings
+  and three Low advisories.
+- Supervisor final P0-2 acceptance: `675 passed in 4.78s`; Black checked 30
+  source files clean; Ruff reports all checks passed. `doctor --catalog` has
+  six negative-document cases that exit 3 naming `$.unexpected_field`.
