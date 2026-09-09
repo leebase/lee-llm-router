@@ -324,3 +324,13 @@ or cost line for these attempts.
   recorded in `needs-lee.md`.
 - No later P0-3/P0-4/P0-5/P0-7 packet and no Phase 1 work began after these
   contradictions were established.
+
+### Chief round 6 received during stop close
+
+- `docs/staffing/chief-answers-6.md` resolves the P0-3/D207 wording defect:
+  catalog coverage is complete, while eligibility excludes routes marked
+  `status: unpriced`. P0-3 may add required `active | unpriced | retired`
+  status and sourced `status_reason`, then split route authoring by source.
+- P0-3 is therefore no longer a stop. P0-8's router rejection of existing
+  four-part prompt-variant worker keys remains unresolved and is the current
+  genuine stop.

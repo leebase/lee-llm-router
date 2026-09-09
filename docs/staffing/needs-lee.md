@@ -7,13 +7,6 @@ here if discovered.
 
 ## Expected open items
 
-- **P0-3 live-route coverage versus D207 exclusion.** The live Auto-Orch file
-  includes worker `opencode_go_mimo_v25`, but OpenCode Zen does not price the
-  exact `opencode-go/mimo-v2.5` id. D207 requires that id be excluded from
-  every Phase 0 route, while P0-3 acceptance requires every live worker map to
-  exactly one route and zero unmapped workers. Both cannot hold. Need an
-  amended P0-3 snapshot rule that explicitly permits this one D207 exclusion,
-  or newly sourced exact-id weights/pricing.
 - **P0-8 router acceptance versus prompt-variant worker keys.** The benchmark
   sidecar legitimately carries four D15 keys shaped
   `model|harness|effort|review-protocol-v1`, while router
@@ -111,6 +104,16 @@ recorded, pin unchanged.
 - **P0-8 OpenCode environment drift:** resolved as a single permitted gate
   exclusion. Installed `1.18.30` versus pinned `1.18.26` stays recorded; the
   reproducibility pin must not change.
+
+## Resolved by Chief, round 6 (2026-09-09)
+
+Source: `docs/staffing/chief-answers-6.md`, D86/D87.
+
+- **P0-3 live-route coverage versus D207 exclusion:** every live worker stays
+  in the complete catalog. Unpriced exact ids use required route status
+  `unpriced` plus a sourced `status_reason`; eligibility excludes them later.
+  P0-3 may add the reviewed `status` schema field and continue in source-sized
+  route packets.
 
 ## Resolved by Chief, round 6 (2026-09-09)
 
