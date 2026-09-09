@@ -7,6 +7,23 @@ here if discovered.
 
 ## Expected open items
 
+- **P0-3 live-route coverage versus D207 exclusion.** The live Auto-Orch file
+  includes worker `opencode_go_mimo_v25`, but OpenCode Zen does not price the
+  exact `opencode-go/mimo-v2.5` id. D207 requires that id be excluded from
+  every Phase 0 route, while P0-3 acceptance requires every live worker map to
+  exactly one route and zero unmapped workers. Both cannot hold. Need an
+  amended P0-3 snapshot rule that explicitly permits this one D207 exclusion,
+  or newly sourced exact-id weights/pricing.
+- **P0-8 router acceptance versus prompt-variant worker keys.** The benchmark
+  sidecar legitimately carries four D15 keys shaped
+  `model|harness|effort|review-protocol-v1`, while router
+  `crew_page.load_benchmark` accepts only the three-part `WorkerIdentity`
+  shape. The committed v5 sidecar already fails the same reader check, so the
+  new additive class/token fields are not the cause. P0-8 nevertheless
+  requires router `test_crew_page` green against v6, and P0-8 scope does not
+  authorize changing the router reader or discarding prompt-variant identity.
+  Need an explicit compatibility rule/scope amendment.
+
 - OpenCode Go monthly plan fee and capacity are unknown (P0-4).
 - `opencode-go/mimo-v2.5` remains unpriced: the pinned Zen catalog publishes
   only the distinct `mimo-v2.5-free` id, while OpenRouter publishes
@@ -94,3 +111,10 @@ recorded, pin unchanged.
 - **P0-8 OpenCode environment drift:** resolved as a single permitted gate
   exclusion. Installed `1.18.30` versus pinned `1.18.26` stays recorded; the
   reproducibility pin must not change.
+
+## Resolved by Chief, round 6 (2026-09-09)
+
+See `docs/staffing/chief-answers-6.md`: the catalog maps every `crews.yaml` worker, including
+`opencode_go_mimo_v25`; routes gain `status: active | unpriced | retired` (schema field added
+under P0-3 scope); `unpriced` routes carry a `status_reason` citing D207 and are excluded by
+eligibility, not absent from the catalog. Continue P0-3, split by source per Rule B.

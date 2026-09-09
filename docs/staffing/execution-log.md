@@ -301,3 +301,26 @@ or cost line for these attempts.
 - Supervisor final P0-2 acceptance: `675 passed in 4.78s`; Black checked 30
   source files clean; Ruff reports all checks passed. `doctor --catalog` has
   six negative-document cases that exit 3 naming `$.unexpected_field`.
+- P0-2 committed as `8cde2fe` (`feat(staffing P0): load and validate
+  catalog`).
+- P0-3a all-routes GLM attempt ran for 590 seconds with zero output and zero
+  changes, then was terminated. Supervisor inspection found a plan stop:
+  live `opencode_go_mimo_v25` must be mapped by P0-3 acceptance but its exact
+  Go id is excluded from all Phase 0 routes by D207 because Zen does not price
+  it. Recorded in `needs-lee.md`; P0-3 chain paused.
+- P0-8 manifest status at the stop: all eight manifests are authored. P0-8a
+  through P0-8g have clean DeepSeek reviews; P0-8h's first review attempt
+  exited 1 because OpenCode Go reported its five-hour usage limit and a
+  27-minute reset, so its review remains pending.
+- P0-8i first GLM attempt wrote three forbidden benchmark tracking docs and
+  narrowed the class taxonomy; Rule A rejected it. The GLM repair restored all
+  three docs exactly to HEAD and reinstated the full P0-1 vocabulary. Focused
+  result: `21 passed, 63 subtests`; scoped full suite: `268 passed, 1` allowed
+  environment failure (`1.18.30` installed vs pinned `1.18.26`). Independent
+  review remains pending because the OpenCode Go review quota is exhausted.
+- P0-8i also proved the existing four-part prompt-variant worker keys are
+  rejected by the router's three-part benchmark reader; committed v5 fails in
+  the same way. This blocks the required router-against-v6 acceptance and is
+  recorded in `needs-lee.md`.
+- No later P0-3/P0-4/P0-5/P0-7 packet and no Phase 1 work began after these
+  contradictions were established.
