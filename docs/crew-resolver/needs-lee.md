@@ -51,3 +51,21 @@ Genuine human decisions only. Everything else was repaired and continued (D86/D8
 3. **Benchmark sidecar assumption:** the implemented reader accepts the observed `benchmark.staffing-evidence/2` schema and defaults to the lexically latest `staffing-evidence-*.json`. The current 86-row sidecar parses cleanly. This is informational unless Benchmark changes its published schema.
 4. **Informational — reviewer ledger contamination:** Sonnet round 4 accidentally ran one live resolution without `--no-event`, appending `mixed-flagship/author → codex_sol_high` at `2026-09-08T10:30:14Z` to `events/A8Max.jsonl`. The ledger is append-only, so the line is retained and explicitly excluded from adoption evidence. No Lee action is recommended unless you want a future event schema field for test/review traffic.
 5. **Proposal authority is intentionally absent.** Sprint 5 refuses to propose swaps because neither the crew file nor benchmark schema authoritatively defines both model tier and vendor-independence boundaries. Decide the owning source before proposals can become non-empty; do not encode another local inference table in the router.
+
+## Sprint 6 evidence-window decision (resolved by Lee 2026-09-08)
+
+1. ~~**Wait for the committed two-week daily-use window or amend it.**~~ **Resolved: do not amend it.** Sprint 6 remains `⏳ BLOCKED / EVIDENCE ACCUMULATING`; engineering health is GREEN and the adoption conclusion is NOT YET MEASURABLE. Earliest meaningful resumption is approximately 2026-09-22. Normal workflow should generate evidence naturally; do not manufacture `/crew` usage. If ordinary work largely bypasses the resolver, that sparse usage is itself valid adoption evidence. No Auto-Orch adoption recommendation should be filed before the genuine window is assessed.
+
+## 2026-09-09 — Sprint 6 window closed as superseded; work continues as the staffing migration
+
+Lee approved the staffing architecture recommendation (chief-of-staff `decisions.md` D204,
+D205). The Sprint 6 adoption window (D196) is closed as superseded: the resolver-as-lookup is
+not the product, so its adoption rate is not the question. The crew resolver's availability
+reader, event ledger, shims, watchdog, providers, and `crews.py` loader survive into the
+staffing service; `resolver.py`'s selection logic, `dispatch.py` as the loop, and the old
+LLMRouter layer are scheduled for removal in Phase 2. Item 5 above ("proposal authority is
+intentionally absent") is resolved by D204 item 1: for `auto` mode, evidence plus policy is the
+routing authority; named crews stay human. Plan:
+`~/projects/chief-of-staff/docs/staffing-migration-sprint-plan.md`; Phase 0 handoff:
+`~/projects/chief-of-staff/docs/staffing-phase0-supervisor-handoff.md`; Phase 0 ledgers live in
+`docs/staffing/` in this repo.
