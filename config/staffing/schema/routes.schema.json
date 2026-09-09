@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lee-llm-router.local/config/staffing/schema/routes.schema.json",
+  "title": "Staffing route catalog",
+  "description": "Top-level catalog of dispatch routes. Route identity is the tuple (model, effort, harness, channel). This schema defines shape only; it encodes no selection, ranking, probability, or pricing decisions. Dispatch templates are data and are never executed by validation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["routes"],
+  "properties": {
+    "routes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/route" },
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "nonemptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["route_id", "model", "effort", "harness", "channel", "dispatch_template", "usage_capture"],
+      "properties": {
+        "route_id": {
+          "description": "Stable string identifier for this route.",
+          "$ref": "#/$defs/nonemptyString"
+        },
+        "model": {
+          "description": "Model identifier; part of the route identity tuple.",
+          "$ref": "#/$defs/nonemptyString"
+        },
+        "effort": {
+          "description": "Model effort dial; part of the route identity tuple. Null only where the harness has no effort dial.",
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "harness": {
+          "description": "Harness identifier; part of the route identity tuple.",
+          "$ref": "#/$defs/nonemptyString"
+        },
+        "channel": {
+          "description": "Channel identifier; part of the route identity tuple. Must match a channel_id in the channel catalog.",
+          "$ref": "#/$defs/nonemptyString"
+        },
+        "dispatch_template": {
+          "description": "Dispatch template as data. Never executed by validation.",
+          "$ref": "#/$defs/nonemptyString"
+        },
+        "usage_capture": {
+          "description": "Exactly one usage capture mechanism.",
+          "type": "string",
+          "enum": ["native_json", "stream_events", "worker_written", "none"]
+        }
+      }
+    }
+  }
+}

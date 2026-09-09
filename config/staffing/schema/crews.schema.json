@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lee-llm-router.local/config/staffing/schema/crews.schema.json",
+  "title": "Named crew catalog",
+  "description": "Top-level catalog of saved staffing blocks (named crews). A named crew records a supervisor route, worker routes per role, a reviewer route, an ordered escalation ladder, an authority value, and an evidence reference. Route references are opaque catalog ids resolved against the route catalog; this schema defines shape only and encodes no selection, ranking, probability, class metadata, or model preference. The authority value `policy` is reserved for the computed `auto` placeholder saved block and means the staffing system's choice.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["crews"],
+  "properties": {
+    "crews": {
+      "description": "Saved staffing blocks. Each crew has a stable crew_id; crew_id `auto` is the single reserved placeholder id and pairs only with authority `policy`.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/crew" },
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "nonemptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "routeRef": {
+      "description": "Opaque reference to a route_id in the route catalog. Shape only: never resolved or interpreted here.",
+      "$ref": "#/$defs/nonemptyString"
+    },
+    "roleKey": {
+      "description": "Role name keying a worker route binding.",
+      "type": "string",
+      "minLength": 1
+    },
+    "crew": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "crew_id",
+        "supervisor_route",
+        "worker_routes",
+        "reviewer_route",
+        "escalation_ladder",
+        "authority",
+        "evidence_ref"
+      ],
+      "properties": {
+        "crew_id": {
+          "description": "Stable identifier for this saved staffing block. The reserved id `auto` marks the computed placeholder block and requires authority `policy`.",
+          "$ref": "#/$defs/nonemptyString"
+        },
+        "supervisor_route": {
+          "description": "Opaque route catalog id used for the supervisor role.",
+          "$ref": "#/$defs/routeRef"
+        },
+        "worker_routes": {
+          "description": "Worker routes keyed by role. Each role binds exactly one nonempty, duplicate-free, order-significant list of opaque route references; the list order is the role's route preference order. A single route must still be encoded as a one-element array.",
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "$ref": "#/$defs/roleKey" },
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "$ref": "#/$defs/routeRef" }
+          }
+        },
+        "reviewer_route": {
+          "description": "Opaque route catalog id used for the reviewer role.",
+          "$ref": "#/$defs/routeRef"
+        },
+        "escalation_ladder": {
+          "description": "Ordered, nonempty escalation ladder of opaque route catalog ids. Array order is the ladder order.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/routeRef" }
+        },
+        "authority": {
+          "description": "Who set this block: `lee` pins or overrides; `chief` chooses under delegated managerial authority; `policy` is reserved for the computed `auto` placeholder and means the staffing system's choice.",
+          "type": "string",
+          "enum": ["lee", "chief", "policy"]
+        },
+        "evidence_ref": {
+          "description": "Nonempty reference to the evidence backing this saved block.",
+          "$ref": "#/$defs/nonemptyString"
+        }
+      },
+      "allOf": [
+        {
+          "description": "Authority `policy` is reserved for the computed placeholder block: it requires crew_id `auto`.",
+          "if": {
+            "properties": { "authority": { "const": "policy" } },
+            "required": ["authority"]
+          },
+          "then": {
+            "properties": { "crew_id": { "const": "auto" } }
+          }
+        },
+        {
+          "description": "crew_id `auto` is the placeholder block: it requires authority `policy`, so a named crew (authority `lee` or `chief`) can never use the `auto` id and the placeholder can never carry `lee` or `chief` authority.",
+          "if": {
+            "properties": { "crew_id": { "const": "auto" } },
+            "required": ["crew_id"]
+          },
+          "then": {
+            "properties": { "authority": { "const": "policy" } }
+          }
+        }
+      ]
+    }
+  }
+}
