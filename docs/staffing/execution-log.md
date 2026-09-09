@@ -187,3 +187,98 @@ run because the prerequisite packets are incomplete.
   the canonical class-key empty tag is `none`, D206 remains verbatim, crew
   route values are ordered arrays, every live catalog constant is classified,
   and provider/registry plumbing is not mislabeled as eligibility policy.
+
+### P0-2 first attempt and stop
+
+| Packet | Route | Start | End | Exit | Tokens / cost | Result |
+|---|---|---|---|---:|---|---|
+| P0-2a loader | GLM 5.3 Flash / Pi / OpenRouter | 2026-09-09T15:21:26-05:00 | 2026-09-09T15:31:30-05:00 | terminated at 590-second ceiling | not printed | zero output and zero file changes; confinement verified |
+
+- The supervisor confirmed `.venv/bin/python` cannot import `jsonschema`, while
+  system Python has `jsonschema 4.26.0`; `pyproject.toml` declares only PyYAML
+  and httpx as runtime dependencies.
+- P0-2 requires exact Draft 2020-12 validation but does not place
+  `pyproject.toml` in scope. Vendoring, relying on an undeclared system package,
+  or implementing a partial validator would not satisfy the packet.
+- This plan/code contradiction is recorded in `needs-lee.md`. P0-2 and its
+  dependent P0-3 through P0-5 and P0-7 chain are paused; independent packets
+  remain eligible to continue.
+
+### P0-2 restart after Chief round 4
+
+- `docs/staffing/chief-answers-4.md` resolves the dependency contradiction
+  under D86/D87 and adds `pyproject.toml` to P0-2 scope for exactly the runtime
+  requirement `jsonschema>=4.26,<5`.
+- Installation into the existing `.venv` is authorized after checking whether
+  the repository is editable-installed. No vendoring, system-package reliance,
+  or partial validator is authorized.
+
+### P0-2 progress after round 4
+
+- Dependency packet added exactly `jsonschema>=4.26,<5`; DeepSeek review PASS
+  with no findings. Editable install was already in use, so the supervisor ran
+  `.venv/bin/pip install -e .`; installed runtime version is `jsonschema
+  4.26.0`.
+- Loader retry: 32 focused tests pass; Black/Ruff clean. DeepSeek review PASS
+  with no High/Medium findings (five Low advisory notes).
+- Pi command-builder packet: 69 focused `tests/test_crews.py` tests pass;
+  Black/Ruff clean. DeepSeek review PASS with no High/Medium findings (three
+  Low advisory notes). The adapter has no `.complete()` or subprocess path.
+- Provider-channel first attempt exited 1 with `Provider finish_reason: error`
+  after leaving a partial `crews.py` diff and no tests. The retry completed 85
+  focused crew tests and Black/Ruff clean, but the full suite exposed six OMP
+  fixtures outside the named P0-2 test scope that encode the removed static
+  channel default. This plan/code scope contradiction is in `needs-lee.md` and
+  is under independent review; P0-2 is not accepted.
+
+### Attempts through the next genuine stop
+
+| Packet | Route | Start | End | Exit | Tokens / cost | Result |
+|---|---|---|---|---:|---|---|
+| P0-2 dependency | GLM 5.3 Flash / Pi / OpenRouter | 15:38:43 | 15:40:27 | 0 | not printed | exact runtime line added |
+| P0-2 dependency review | DeepSeek V4 Pro / Pi / OpenCode Go | 15:41:39 | 15:45:20 | 0 | not printed | PASS, 0 findings |
+| P0-2a loader retry | GLM 5.3 Flash / Pi / OpenRouter | 15:46:18 | 15:55:30 | 0 | not printed | 32 focused tests pass |
+| P0-2a review | DeepSeek V4 Pro / Pi / OpenCode Go | 15:56:25 | 16:03:33 | 0 | not printed | PASS, 5 Low |
+| P0-2b Pi argv | GLM 5.3 Flash / Pi / OpenRouter | 16:05:14 | 16:07:08 | 0 | not printed | 69 focused tests pass |
+| P0-2b review | DeepSeek V4 Pro / Pi / OpenCode Go | 16:08:04 | 16:10:14 | 0 | not printed | PASS, 3 Low |
+| P0-2c channels | GLM 5.3 Flash / Pi / OpenRouter | 16:10:43 | 16:17:52 | 1 | not printed | provider error after partial source diff |
+| P0-2c retry | GLM 5.3 Flash / Pi / OpenRouter | 16:18:45 | 16:22:09 | 0 | not printed | focused 85 pass; full suite 657 pass, 7 fail |
+| P0-2c review | DeepSeek V4 Pro / Pi / OpenCode Go | 16:23:28 | 16:27:47 | 0 | not printed | FAIL Medium; confirms scope contradiction |
+| P0-9a schema | GLM 5.3 Flash / Pi / OpenRouter | 15:33:25 | 15:40:33 | 0 | not printed | authored wrong path and wrong exact vocabularies |
+| P0-9a review | DeepSeek V4 Pro / Pi / OpenCode Go | 15:41:39 | 15:50:39 | 0 | not printed | FAIL, 2 High / 3 Medium / 5 Low |
+| P0-9a repair | GLM 5.3 Flash / Pi / OpenRouter | 15:52:12 | 15:55:54 | 0 | not printed | repaired path/vocabularies, weakened success gate |
+| P0-9a re-review | DeepSeek V4 Pro / Pi / OpenCode Go | 15:57:24 | 15:59:59 | 0 | not printed | FAIL, 2 High |
+| P0-9a escalation | Luna XHigh / Pi / OpenAI subscription | 16:01:51 | 16:05:47 | 0 | not printed | exact success evidence gate repaired |
+| P0-9a final review | DeepSeek V4 Pro / Pi / OpenCode Go | 16:06:28 | 16:10:52 | 0 | not printed | PASS, 3 Low |
+| P0-9b document | GLM 5.3 Flash / Pi / OpenRouter | 16:11:38 | 16:16:20 | 0 | not printed | field map authored; supervisor found schema mismatch |
+| P0-9b repair | GLM 5.3 Flash / Pi / OpenRouter | 16:24:01 | 16:29:03 | 0 | not printed | interactive failure-class wording corrected |
+| P0-8a stale manifest | GLM 5.3 Flash / Pi / OpenRouter | 15:34:14 | 15:37:29 | 0 | not printed | class added |
+| P0-8a review | DeepSeek V4 Pro / Pi / OpenCode Go | 15:40:31 | 15:45:50 | 0 | not printed | clean PASS |
+| P0-8b monthly manifest | GLM 5.3 Flash / Pi / OpenRouter | 15:57:49 | 15:59:38 | 0 | not printed | size initially understated |
+| P0-8b review | DeepSeek V4 Pro / Pi / OpenCode Go | 16:00:38 | 16:04:58 | 0 | not printed | FAIL Medium |
+| P0-8b repair | GLM 5.3 Flash / Pi / OpenRouter | 16:06:08 | 16:06:56 | 0 | not printed | size/key changed to m |
+| P0-8b re-review | DeepSeek V4 Pro / Pi / OpenCode Go | 16:07:14 | 16:12:25 | 0 | not printed | PASS, 3 Low |
+| P0-8c authority manifest | GLM 5.3 Flash / Pi / OpenRouter | 16:13:06 | 16:17:08 | 0 | not printed | invented `routing` tag caught by supervisor |
+| P0-8c repair | GLM 5.3 Flash / Pi / OpenRouter | 16:17:39 | 16:18:24 | 0 | not printed | closed `authority` tag restored |
+| P0-8c review | DeepSeek V4 Pro / Pi / OpenCode Go | 16:19:31 | 16:21:49 | 0 | not printed | clean PASS |
+| P0-8d schema manifest | GLM 5.3 Flash / Pi / OpenRouter | 16:22:28 | 16:24:42 | 0 | not printed | no change; failed to locate external contract |
+| P0-8d retry | GLM 5.3 Flash / Pi / OpenRouter | 16:25:17 | 16:25:58 | 0 | not printed | class authored; review pending at stop |
+
+All times are 2026-09-09 America/Chicago. Pi printed no authoritative token
+or cost line for these attempts.
+
+### Stop disposition
+
+- Independent review confirms P0-2c's production behavior and focused tests
+  are correct, but six existing OMP fixtures outside P0-2's named test-file
+  scope fail closed. This is a Medium plan/code scope contradiction and blocks
+  P0-2's mandatory green full-suite gate.
+- P0-9 schema and document are supervisor-accepted; the document review was
+  performed by the supervisor as explicitly permitted. Schema check and all
+  three examples pass. Its files are committed separately at this stop.
+- P0-8a through P0-8c have clean reviews. P0-8d is authored but unreviewed.
+  Benchmark full suite currently has one external environment failure:
+  installed OpenCode `1.18.30` versus pinned `1.18.26`; the earlier packet
+  `__pycache__` debris created by an over-broad supervisor test command was
+  removed explicitly. P0-8 is incomplete and uncommitted.
+- No Phase 1 work began; no phase gate or Astra review ran.

@@ -7,6 +7,18 @@ here if discovered.
 
 ## Expected open items
 
+- **P0-2/P0-7 router-fixture scope contradiction.** Required per-worker
+  provider-channel derivation removes OMP's old static `openrouter` default.
+  Six existing router fixtures in `tests/test_resolver.py`,
+  `tests/test_dispatch.py`, and `tests/test_crew_page.py` omit
+  `OMP_STAGE_WORKER_PROVIDER` and now correctly fail closed. P0-2's packet
+  scope names only `tests/test_staffing_catalog.py`, `tests/test_crews.py`, and
+  the stale worker-count assertion in `tests/test_doctor.py`; P0-7 is scoped
+  to Auto-Orch. P0-2 nevertheless requires the full router suite green. Need
+  authority either to update those six router fixtures in P0-2 or a different
+  explicit compatibility rule that does not contradict fail-closed channel
+  derivation.
+
 - OpenCode Go monthly plan fee and capacity are unknown (P0-4).
 - `opencode-go/mimo-v2.5` remains unpriced: the pinned Zen catalog publishes
   only the distinct `mimo-v2.5-free` id, while OpenRouter publishes
@@ -68,3 +80,14 @@ class-key string is five segments with `domain_tags` sorted and `+`-joined, `non
 (recommendation §3.1 "Canonical class-key string", with regex); the phase-gate example and
 P0-5 acceptance now use `impl/deterministic/none/s/python`. Supervisor: move both to Resolved
 citing that file and continue P0-1.
+
+## Resolved by Chief, round 4 (2026-09-09)
+
+`jsonschema>=4.26,<5` is authorized as a runtime dependency in `pyproject.toml` (one line, now
+inside P0-2's file set) and installed into `.venv`; see `docs/staffing/chief-answers-4.md`.
+P0-2 may continue; P0-8 and P0-9 are unblocked by the P0-1 commit `aaefb9a`.
+
+- **P0-2 runtime validator dependency / plan-scope contradiction:** resolved
+  by this round under D86/D87. The authorized runtime requirement is exactly
+  `jsonschema>=4.26,<5`; vendoring, system-package reliance, and a partial
+  validator remain forbidden.
