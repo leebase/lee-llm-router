@@ -18,6 +18,13 @@ here if discovered.
   authority either to update those six router fixtures in P0-2 or a different
   explicit compatibility rule that does not contradict fail-closed channel
   derivation.
+- **P0-8 benchmark verification environment drift.** The scoped benchmark
+  suite reports `257 passed, 2 failed`; after removing supervisor-created
+  packet `__pycache__` debris, the remaining external failure is the installed
+  OpenCode binary version `1.18.30` versus the repository's pinned cleared
+  native version `1.18.26`. Changing the pin or installed binary is outside
+  P0-8. Need an environment correction or explicit authority to refresh the
+  benchmark's cleared-version contract before P0-8 can pass its full suite.
 
 - OpenCode Go monthly plan fee and capacity are unknown (P0-4).
 - `opencode-go/mimo-v2.5` remains unpriced: the pinned Zen catalog publishes
