@@ -131,7 +131,11 @@ class Route:
     ``status`` is the schema-enforced lifecycle value (``active``,
     ``unpriced``, or ``retired``); ``status_reason`` is optional here and
     conditionally required by the schema only when ``status`` is
-    ``unpriced``.
+    ``unpriced``. ``family`` is the optional schema field (Chief round 15)
+    carrying an author/candidate independence comparison label only; when
+    absent (the committed routes) the independence family check falls back
+    to the model-vendor-prefix of ``model``. Shape only; no selection,
+    ranking, or pricing logic (D206).
     """
 
     route_id: str
@@ -143,6 +147,7 @@ class Route:
     usage_capture: str
     status: str
     status_reason: str | None = None
+    family: str | None = None
 
 
 @dataclass(frozen=True)

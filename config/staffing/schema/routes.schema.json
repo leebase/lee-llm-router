@@ -63,6 +63,12 @@
           "type": "string",
           "minLength": 1,
           "pattern": "\\S"
+        },
+        "family": {
+          "description": "Optional nonempty author/candidate independence comparison label only (Chief round 15). When present, the reviewer/judge independence check compares this value verbatim instead of the model-vendor-prefix fallback derived from model; it exists solely to join an author route to comparable candidates for the exclusion check, never to map class metadata to a preferred model or route and never as a preference, ranking, selection, probability, or ladder input (D206). Routes may omit it and continue using the model-vendor-prefix fallback.",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
         }
       },
       "allOf": [

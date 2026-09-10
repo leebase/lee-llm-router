@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+import yaml
 
 from lee_llm_router.staffing import load_staffing_catalog
 
@@ -1064,3 +1065,163 @@ def test_explain_author_route_impl_not_applicable(tmp_path, catalog_dir, capsys)
         "independence not applicable for role 'impl' (author route "
         f"{SOL_LOW_ROUTE}, family gpt (from model_vendor_prefix))"
     ) in captured.out
+
+
+# ---------------------------------------------------------------------------
+# Chief round 15 route.family override: the explicit family reaches explain
+# (Astra Medium) — schema + typed Route now carry optional ``family``; these
+# tests exercise the precedence through the scratch catalog and the CLI.
+# ---------------------------------------------------------------------------
+
+
+def _set_route_family(catalog_dir: Path, route_id: str, family: str) -> Path:
+    """Rewrite the scratch catalog's routes.yaml, giving one route a family.
+
+    Operates only on the scratch copy in ``tmp_path``; the committed
+    routes.yaml is never modified (schema + loader now accept the field).
+    """
+    routes_path = catalog_dir / "routes.yaml"
+    doc = yaml.safe_load(routes_path.read_text(encoding="utf-8"))
+    route = next(r for r in doc["routes"] if r["route_id"] == route_id)
+    route["family"] = family
+    routes_path.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    return catalog_dir
+
+
+def _review_author_json(
+    capsys: pytest.CaptureFixture[str],
+    catalog_dir: Path,
+    snapshot: Path,
+    author_route: str,
+):
+    """Run review-class explain with an author route and return the JSON."""
+    code, captured = _run_explain(
+        capsys,
+        "--role",
+        "review",
+        "--class",
+        REVIEW_CLASS,
+        "--at",
+        "2026-09-15",
+        "--availability-file",
+        str(snapshot),
+        "--catalog-dir",
+        str(catalog_dir),
+        "--author-route",
+        author_route,
+        "--json",
+    )
+    assert code == 0
+    return json.loads(captured.out)
+
+
+def test_explain_author_route_family_override_reaches_explain(
+    tmp_path, catalog_dir, capsys
+):
+    """A schema-valid route.family on the author route overrides the prefix.
+
+    The override replaces the model-vendor-prefix fallback in both the
+    recorded family/source and the exclusion: same-prefix routes without
+    the override escape the independence exclusion, and only the route
+    carrying the explicit family is excluded by it.
+    """
+    snapshot = _write_snapshot(tmp_path / "availability.json")
+
+    # Baseline (no override): prefix fallback excludes every claude-* model.
+    baseline = _review_author_json(
+        capsys, catalog_dir, snapshot, SONNET_HIGH_ROUTE
+    )
+    assert baseline["independence"]["family_source"] == "model_vendor_prefix"
+    assert baseline["independence"]["author_family"] == "claude"
+    assert "independence" in _by_route(baseline, FABLE_ROUTE)["reasons"]
+
+    # Override: the explicit family reaches the CLI output and the exclusion.
+    _set_route_family(catalog_dir, SONNET_HIGH_ROUTE, "scribble")
+    payload = _review_author_json(
+        capsys, catalog_dir, snapshot, SONNET_HIGH_ROUTE
+    )
+    assert payload["independence"]["author_route"] == SONNET_HIGH_ROUTE
+    assert payload["independence"]["author_family"] == "scribble"
+    assert payload["independence"]["family_source"] == "route.family"
+    raw = json.dumps(payload, indent=2)
+    assert raw.count('"family_source"') == 1
+    assert '"route.family"' in raw
+
+    # The author route itself is excluded by independence alone.
+    sonnet = _by_route(payload, SONNET_HIGH_ROUTE)
+    assert sonnet["eligible"] is False
+    assert sonnet["reasons"] == ["independence"]
+
+    # Exclusion precedence: same-prefix routes WITHOUT the override are no
+    # longer excluded by independence (their prefix family no longer
+    # matches the override family); their reasons are unchanged otherwise.
+    fable = _by_route(payload, FABLE_ROUTE)
+    assert "independence" not in fable["reasons"]
+    sonnet_medium = _by_route(payload, "claude-claude-sonnet-5-medium-anthropic-sub")
+    assert "independence" not in sonnet_medium["reasons"]
+
+    # Text output records the override family and its source exactly once.
+    code, captured = _run_explain(
+        capsys,
+        "--role",
+        "review",
+        "--class",
+        REVIEW_CLASS,
+        "--at",
+        "2026-09-15",
+        "--availability-file",
+        str(snapshot),
+        "--catalog-dir",
+        str(catalog_dir),
+        "--author-route",
+        SONNET_HIGH_ROUTE,
+    )
+    assert code == 0
+    line = (
+        f"independence: author route {SONNET_HIGH_ROUTE}, family scribble "
+        "(from route.family)"
+    )
+    assert captured.out.splitlines().count(line) == 1
+
+
+def test_explain_candidate_family_override_changes_exclusion(
+    tmp_path, catalog_dir, capsys
+):
+    """A candidate's explicit family takes precedence over its model prefix.
+
+    Giving the z-ai-namespaced GLM route family 'claude' pulls it into the
+    claude author's exclusion set; routes without the override keep the
+    model-vendor-prefix fallback. Comparison keys only (D206) — no route
+    choice, ranking, or probability changes.
+    """
+    snapshot = _write_snapshot(tmp_path / "availability.json")
+
+    # Baseline: GLM is eligible for review with empty reasons.
+    baseline = _review_author_json(
+        capsys, catalog_dir, snapshot, FABLE_ROUTE
+    )
+    assert baseline["independence"]["family_source"] == "model_vendor_prefix"
+    glm_baseline = _by_route(baseline, GLM_OPENROUTER_ROUTE)
+    assert glm_baseline["eligible"] is True
+    assert glm_baseline["reasons"] == []
+
+    # Override the candidate family; exclusion follows the explicit value.
+    _set_route_family(catalog_dir, GLM_OPENROUTER_ROUTE, "claude")
+    payload = _review_author_json(
+        capsys, catalog_dir, snapshot, FABLE_ROUTE
+    )
+    assert payload["independence"]["author_family"] == "claude"
+    assert payload["independence"]["family_source"] == "model_vendor_prefix"
+
+    # Candidate-side precedence: GLM is now excluded by independence alone
+    # despite its z-ai model namespace.
+    glm = _by_route(payload, GLM_OPENROUTER_ROUTE)
+    assert glm["eligible"] is False
+    assert glm["reasons"] == ["independence"]
+
+    # Routes without the override keep the prefix fallback: sonnet is
+    # excluded as same-prefix, deepseek (different prefix) is untouched.
+    sonnet = _by_route(payload, SONNET_HIGH_ROUTE)
+    assert sonnet["reasons"] == ["independence"]
+    deepseek = _by_route(payload, DEEPSEEK_FLASH_ROUTE)
+    assert "independence" not in deepseek["reasons"]

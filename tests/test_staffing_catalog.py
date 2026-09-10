@@ -571,6 +571,50 @@ def test_active_route_with_reason_accepted_and_preserved(tmp_path: Path) -> None
 
 
 # ---------------------------------------------------------------------------
+# Route.family (Chief round 15): optional independence comparison label only
+# ---------------------------------------------------------------------------
+
+
+def test_route_family_absent_defaults_to_none(catalog_dir: Path) -> None:
+    """Committed-style routes without family load with family None."""
+    routes = load_staffing_catalog(catalog_dir).routes
+    assert all(route.family is None for route in routes.routes)
+
+
+def test_route_family_preserved_through_catalog_load(tmp_path: Path) -> None:
+    """A schema-valid route with a nonempty family loads and preserves it."""
+    doc = routes_doc()
+    doc["routes"][0]["family"] = "scratch-family"
+    write_docs(tmp_path, {name: builder() for name, builder in _DOC_BUILDERS.items()})
+    (tmp_path / "routes.yaml").write_text(yaml.safe_dump(doc), encoding="utf-8")
+    routes = load_staffing_catalog(tmp_path).routes
+    assert routes.routes[0].family == "scratch-family"
+    assert routes.routes[1].family is None
+
+
+def test_route_family_blank_rejected_by_schema(tmp_path: Path) -> None:
+    doc = routes_doc()
+    doc["routes"][0]["family"] = ""
+    write_docs(tmp_path, {"routes": doc})
+    with pytest.raises(StaffingCatalogError) as excinfo:
+        load_staffing_document("routes", tmp_path / "routes.yaml")
+    assert excinfo.value.document == "routes"
+    assert excinfo.value.path == "$.routes[0].family"
+    assert "family" in str(excinfo.value)
+    assert excinfo.value.failure_type == FailureType.CONTRACT_VIOLATION
+
+
+def test_route_family_whitespace_only_rejected_by_schema(tmp_path: Path) -> None:
+    doc = routes_doc()
+    doc["routes"][0]["family"] = "   "
+    write_docs(tmp_path, {"routes": doc})
+    with pytest.raises(StaffingCatalogError) as excinfo:
+        load_staffing_document("routes", tmp_path / "routes.yaml")
+    assert excinfo.value.path == "$.routes[0].family"
+    assert excinfo.value.failure_type == FailureType.CONTRACT_VIOLATION
+
+
+# ---------------------------------------------------------------------------
 # Unknown-field invalid cases (one per document) with field/path assertions
 # ---------------------------------------------------------------------------
 
