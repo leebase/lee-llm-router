@@ -130,3 +130,25 @@ full passes (1 skip), Black/Ruff clean. Phase 1 OpenRouter metered total is
 $0.222387757, plus unknown pre-P1-4a text-mode
 attempts; the accidental OpenAI-subscription child has a separate $0.172659
 list/marginal execution estimate and is not a metered API charge.
+
+## P1-5b — Oracle, cost, and record
+
+| Packet | Role | Explain / selection | Excluded summary | Route | Start / end | Exit | Usage / cost | Result |
+|---|---|---|---|---|---|---:|---|---|
+| P1-5b attempt 1 | impl | `catalog explain --role impl --class impl/deterministic/none/m/python --json`; Gemini subscription appeared before GLM but is reserved by D209 for one agy live proof; first authority-eligible implementation rung GLM | Go likely-exhausted; never-automatic and policy exclusions; Gemini held for live-proof consumption identity | `pi-z-ai-glm-5-3-flash-openrouter` | 14:10 / 14:20 | watchdog timeout; process group terminated | `provider_reported`, `pi --mode json events`; input 151132, output 29403, cached 1352448, reasoning unavailable, total 1532983; list/marginal $0.018685650 | partial `run.py` oracle/cost/record types and selection pricing; no CLI/tests; not accepted |
+| P1-5b attempt 2 | impl | fresh same implementation explain; GLM remained first authority-eligible implementation rung | same exclusions/consumption reservation as attempt 1 | `pi-z-ai-glm-5-3-flash-openrouter` | 14:21 / 14:32 | watchdog timeout; process group terminated | `provider_reported`, `pi --mode json events`; input 101444, output 2828, cached 268288, reasoning 2288, total 372560; list/marginal $0.008315300 | no additional file beyond partial `run.py`; CLI/tests still absent; not accepted |
+
+P1-5b stopped at two-round non-convergence; partial code remains uncommitted
+and unreviewed. Phase 1 OpenRouter metered total is $0.249388707 plus unknown
+pre-P1-4a text-mode attempts.
+
+## P1-6 — Rollup
+
+| Packet | Role | Explain / selection | Excluded summary | Route | Start / end | Exit | Usage / cost | Result |
+|---|---|---|---|---|---|---:|---|---|
+| P1-6 attempt 1 | impl | `catalog explain --role impl --class impl/deterministic/none/s/python --json`; Gemini reserved for live proof, first authority-eligible rung GLM | Go likely-exhausted; never-automatic/policy exclusions; Gemini held for live proof | `pi-z-ai-glm-5-3-flash-openrouter` | 14:34 / 14:44 | watchdog timeout; process group terminated | `provider_reported`, `pi --mode json events`; input 186752, output 5077, cached 1110592, reasoning 2493, total 1302421; list/marginal $0.015275650 | no file changes; broad research did not reach implementation; not accepted |
+| P1-6 attempt 2 | impl | fresh same implementation explain; GLM remained first authority-eligible implementation rung | same exclusions/consumption reservation | `pi-z-ai-glm-5-3-flash-openrouter` | 14:45 / 14:55 | watchdog timeout; process group terminated | `provider_reported`, `pi --mode json events`; input 79257, output 8785, cached 217792, reasoning 6335, total 305834; list/marginal $0.008140525 | core-only packet still produced no file changes; not accepted |
+
+P1-6 stopped at two-round non-convergence with no implementation. Phase 1
+OpenRouter metered total is $0.272804882 plus unknown pre-P1-4a text-mode
+attempts.

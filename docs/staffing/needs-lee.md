@@ -346,6 +346,19 @@ router commit `b5ed4b5`; Phase 1 has not begun.
   always required; optional `--route` is an explicit override checked under
   that same role/class context. The corrected-contract attempt is authorized
   as fresh, not a third retry under the superseded contract.
+- P1-5b did not converge in two GLM rounds: both attempts spent the watchdog
+  on the combined oracle + cost + schema record + append surface, leaving only
+  a partial `run.py` and no CLI/tests. Proposed decomposition requiring a
+  ruling before another author attempt: P1-5b1 oracle execution/verification;
+  P1-5b2 cost + complete v2 record + append/CLI. Continue with disjoint
+  packets meanwhile; do not decorate the partial implementation.
+- P1-6 also failed to converge in two GLM rounds, including a core-only retry;
+  neither attempt created an owned file. Current dispatch constraints leave no
+  authorized substitute author: OpenCode Go is `likely_exhausted`, Gemini is
+  reserved for one agy live proof, DeepSeek Flash is the review fallback, and
+  Luna XHigh escalation is defined after review failure rather than author
+  timeout. Ruling needed: authorize a timeout-based author escalation route,
+  or change the GLM watchdog/packet strategy beyond the two-round ceiling.
 
 ## Resolved by Chief, Phase 1 round 1 (2026-09-10)
 
