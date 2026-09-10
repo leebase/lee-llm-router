@@ -334,3 +334,488 @@ or cost line for these attempts.
 - P0-3 is therefore no longer a stop. P0-8's router rejection of existing
   four-part prompt-variant worker keys remains unresolved and is the current
   genuine stop.
+
+## 2026-09-09 — Restart after Chief round 7
+
+- `docs/staffing/chief-answers-7.md` resolves both remaining disposition
+  items under D86/D87. When OpenCode Go reports its five-hour limit, reviews
+  immediately fall back to `deepseek/deepseek-v4-flash | pi | openrouter`;
+  the route and quota reason are recorded per attempt. The $5 metered ceiling
+  remains in force.
+- P0-8's router acceptance is now a no-regression comparison: v6 must validate
+  in the benchmark and produce exactly the same accepted and rejected rows as
+  v5 in `crew_page.load_benchmark`. Its exact
+  `WorkerIdentity.parse(row["worker_key"])` rejection of four-part prompt
+  variants is retained in `needs-lee.md` as Phase 2 work, not repaired in P0-8.
+
+### Round 7 attempt ledger (continued)
+
+| Packet | Route | Start | End | Exit | Tokens/cost | Result / fallback reason |
+|---|---|---|---|---:|---|---|
+| P0-8h review fallback | DeepSeek V4 Flash / Pi / OpenRouter | 17:25:29 | 17:33:26 | 0 | not printed | PASS, 0 High/Medium; fallback because Go five-hour limit |
+| P0-8i broad review fallback | DeepSeek V4 Flash / Pi / OpenRouter | 17:25:29 | 17:35:19 | terminated | not printed | no output in 590-second window; fallback because Go five-hour limit; split per Rule B |
+| P0-8i implementation review fallback | DeepSeek V4 Flash / Pi / OpenRouter | 17:36:23 | 17:45:54 | 0 | not printed | PASS, 0 High/Medium, 2 Low; fallback because Go five-hour limit |
+| P0-8i tests review fallback | DeepSeek V4 Flash / Pi / OpenRouter | 17:36:23 | 17:45:06 | 0 | not printed | PASS, 0 blocking findings, 1 Low and 1 Medium/Low wording note; fallback because Go five-hour limit |
+| P0-8j dated export | GLM 5.3 Flash / Pi / OpenRouter | 17:46:52 | 17:47:09 | 0 | not printed | created only v6 export; 90 rows; sha256 `1e879451089da317e961a61a027bc459c8a99d8549595109086d22afa54786dc` |
+| P0-8j export review fallback | DeepSeek V4 Flash / Pi / OpenRouter | 17:47:42 | 17:57:32 | terminated | not printed | no output in 590-second window; fallback because Go five-hour limit |
+| P0-8j export review | DeepSeek V4 Pro / Pi / OpenCode Go | 17:58:15 | 18:03:45 | 0 | not printed | PASS, 0 High/Medium; Go reset had completed |
+
+All times are 2026-09-09 America/Chicago. Pi printed no authoritative token
+or cost line for these attempts; no additional metered cost can be reconciled
+from their output.
+
+### P0-8 supervisor acceptance evidence (round 7)
+
+- Focused: `21 passed, 63 subtests passed in 0.17s`.
+- Full benchmark suite: `268 passed, 126 subtests passed`; the sole failure is
+  the authorized environment mismatch, installed OpenCode `1.18.30` versus
+  pinned `1.18.26`.
+- Existing v5 sha256 remains
+  `5fd26b8aa85808258f8c5e56022c07c1b8669a7b77e4d9b693a8c0c6069caaf5`;
+  new v6 sha256 is
+  `1e879451089da317e961a61a027bc459c8a99d8549595109086d22afa54786dc`.
+- Router row-by-row reader comparison: v5 and v6 outcomes are identical,
+  each with 86 accepted and 4 rejected rows. The four rejected rows are the
+  two Sol and two Terra `review-protocol-v1` keys; each is rejected at
+  `_parse_row` with `worker_key does not match worker model/harness/effort`.
+- Source hashes independently match the v6 metadata and a repeat export with
+  pinned `generated_at` is byte-identical (`cmp` exit 0). No tracked existing
+  export differs. P0-8 committed in the benchmark as `51c4402`.
+
+### P0-3 route-source ledger
+
+| Packet | Route | Start–end | Exit | Tokens/cost | Result |
+|---|---|---|---:|---|---|
+| P0-3a status schema | GLM/Pi/OpenRouter | 18:04:58–18:07:05 | 0 | not printed | authored |
+| P0-3a review | DeepSeek Pro/Pi/Go | 18:07:36–18:13:06 | 0 | not printed | FAIL Medium: whitespace reason accepted |
+| P0-3a repair | GLM/Pi/OpenRouter | 18:13:44–18:14:27 | 0 | not printed | added scoped non-whitespace rule |
+| P0-3a rereview | DeepSeek Pro/Pi/Go | 18:14:50–18:19:42 | 0 | not printed | PASS |
+| P0-3b Codex routes | GLM/Pi/OpenRouter | 18:20:37–18:24:12 | 0 | not printed | 8 rows |
+| P0-3b review | DeepSeek Pro/Pi/Go | 18:24:44–18:31:26 | 0 | not printed | FAIL Medium: response output mislabeled as usage |
+| P0-3b repair | GLM/Pi/OpenRouter | 18:32:06–18:32:41 | 0 | not printed | usage_capture corrected to none |
+| P0-3b rereview | DeepSeek Pro/Pi/Go | 18:32:57–18:35:07 | 0 | not printed | PASS |
+| P0-3c Claude routes | GLM/Pi/OpenRouter | 18:35:37–18:40:31 | 0 | not printed | 5 rows |
+| P0-3c review | DeepSeek Pro/Pi/Go | 18:41:12–18:44:03 | 0 | not printed | PASS |
+| P0-3d Antigravity routes | GLM/Pi/OpenRouter | 18:44:37–18:54:27 | terminated | not printed | no output; Rule-B retry |
+| P0-3d retry | GLM/Pi/OpenRouter | 18:55:09–18:56:35 | 0 | not printed | 4 rows |
+| P0-3d review | DeepSeek Pro/Pi/Go | 18:57:01–18:59:48 | 0 | not printed | PASS |
+| P0-3e OpenCode routes | GLM/Pi/OpenRouter | 19:00:27–19:05:49 | 0 | not printed | 5 rows; MiMo unpriced |
+| P0-3e review | DeepSeek Pro/Pi/Go | 19:06:24–19:09:53 | 0 | not printed | PASS |
+| P0-3f Pi routes | GLM/Pi/OpenRouter | 19:10:39–19:20:29 | 0 | not printed | 5 rows |
+| P0-3f review | DeepSeek Pro/Pi/Go | 19:20:53–19:26:48 | 0 | not printed | PASS |
+
+All times 2026-09-09 America/Chicago. The resulting route YAML has 27
+schema-valid unique tuples: every live worker tuple plus the five prescribed
+Pi routes and Astra Low. Rule A checks found no packet-created debris.
+
+### P0-3 scope stop
+
+The route schema now requires `status` and preserves `status_reason`, but the
+typed `Route` in `staffing/catalog.py:126-136` has neither field and `_build`
+silently discards both. This contradicts the round-6 requirement that P0-5
+exclude unpriced routes: neither P0-3 nor P0-5 scopes `catalog.py`. Recorded
+in `needs-lee.md`; other data-only work may continue, but P0-3 acceptance and
+the P0-5 chain cannot close without scope authority or a raw-YAML ruling.
+
+## 2026-09-09 — Round 8 continuation and P0-3 named-crew stop
+
+Running metered total: **$0.001 reconciled from printed output; additional
+OpenRouter GLM/DeepSeek usage unreconciled because Pi printed no token/cost
+line.** No attempt reported a charge that would approach the $5 ceiling.
+
+| Packet | Route | Result | Tokens/cost | Running metered total |
+|---|---|---|---|---|
+| P0-3i policy review | DeepSeek Pro / Pi / Go | FAIL Medium: D204 citation absent | not printed | $0.001 reconciled + unknown unprinted |
+| P0-3i repair | GLM / Pi / OpenRouter | D204 added | not printed | $0.001 reconciled + unknown unprinted |
+| P0-3i rereview | DeepSeek Pro / Pi / Go | PASS | not printed | $0.001 reconciled + unknown unprinted |
+| P0-3j classes | GLM / Pi / OpenRouter | authored | not printed | $0.001 reconciled + unknown unprinted |
+| P0-3j review | DeepSeek Pro / Pi / Go | PASS | not printed | $0.001 reconciled + unknown unprinted |
+| P0-3k broad crews | GLM / Pi / OpenRouter | timed out, no output/change | not printed | $0.001 reconciled + unknown unprinted |
+| P0-3k1 six crews | GLM / Pi / OpenRouter | authored | not printed | $0.001 reconciled + unknown unprinted |
+| P0-3k1 review | DeepSeek Pro / Pi / Go | FAIL Medium: invented supervisor mapping | not printed | $0.001 reconciled + unknown unprinted |
+
+Round 8 typed Route work passed author tests (`678 passed`) and independent
+review. Channels required one repair for a false local OpenRouter price ref,
+then passed; policy required the D204 citation repair, then passed; classes
+passed. No worker or reviewer remains running at this stop. P0-3 is uncommitted
+because the named-crew schema/live-input contradiction prevents a clean pass.
+
+## 2026-09-09 — Round 9 continuation stop
+
+Running metered total: **$0.001 reconciled from printed output; additional
+OpenRouter GLM/DeepSeek usage remains unknown because Pi printed no token/cost
+line.** No attempt reported a charge approaching the $5 ceiling.
+
+| Packet | Route | Start–end (CDT) | Exit | Tokens/cost | Result | Running metered total |
+|---|---|---|---:|---|---|---|
+| P0-3k4c1 gemini-flash review | DeepSeek Flash / Pi / OpenRouter fallback (Go quota exhausted) | prior turn–22:28 | 0 | not printed | PASS | $0.001 reconciled + unknown unprinted |
+| P0-3k4d tri-vendor-workhorse | GLM / Pi / OpenRouter | 22:29:29–22:31:07 | 0 | not printed | authored; schema and route checks pass | $0.001 reconciled + unknown unprinted |
+| P0-3k4d review | DeepSeek Flash / Pi / OpenRouter fallback (Go quota exhausted) | 22:31:17–22:34:33 | 0 | not printed | PASS, no High/Medium | $0.001 reconciled + unknown unprinted |
+| P0-3k4e gemini-pro-crew | GLM / Pi / OpenRouter | 22:34:49–22:37:41 | 0 | not printed | authored; exact live reviewer tuple intentionally unmapped because it matches zero routes | $0.001 reconciled + unknown unprinted |
+| P0-3k4e review | DeepSeek Flash / Pi / OpenRouter fallback (Go quota exhausted) | 22:37:58–22:42:28 | 0 | not printed | PASS, no High/Medium | $0.001 reconciled + unknown unprinted |
+| P0-3l sol-low-glm-pi | GLM / Pi / OpenRouter | 22:42:37–22:44:42 | 0 | not printed | authored; schema-valid, all routes active/priced | $0.001 reconciled + unknown unprinted |
+| P0-3l review | DeepSeek Flash / Pi / OpenRouter fallback (Go quota exhausted) | 22:44:51–22:47:49 | 0 | not printed | PASS, no High/Medium | $0.001 reconciled + unknown unprinted |
+
+Rule A inspection after each author showed only `config/staffing/crews.yaml`
+changed within the packet scope; pre-existing user edits and Chief answer files
+remain untouched. All 14 live governed crews and `sol-low-glm-pi` are encoded.
+P0-3 cannot close because neither the plan, D203, round 9, nor any repository
+reference defines the required `luna-sol` route assignments and escalation
+order. Guessing them would violate the no-invented-policy contract. This is
+recorded in `needs-lee.md`. No worker or reviewer remains running.
+
+## 2026-09-09 — Round 10 continuation stop
+
+Running metered total: **$0.001 reconciled from printed output; additional
+OpenRouter GLM/DeepSeek usage remains unknown because Pi printed no token/cost
+line.** No attempt reported a charge approaching the $5 ceiling.
+
+| Packet | Route | Start–end (CDT) | Exit | Tokens/cost | Result | Running metered total |
+|---|---|---|---:|---|---|---|
+| P0-3l2 sol-low round-10 repair | GLM / Pi / OpenRouter | 22:50:33–22:52:31 | 0 | not printed | exact round-10 ordered block | $0.001 reconciled + unknown unprinted |
+| P0-3l2 review | DeepSeek Flash / Pi / OpenRouter fallback (Go quota exhausted) | 22:52:51–22:55:50 | 0 | not printed | PASS | $0.001 reconciled + unknown unprinted |
+| P0-3m luna-sol | GLM / Pi / OpenRouter | 22:56:03–23:04:43 | 0 | not printed | authored; schema-valid | $0.001 reconciled + unknown unprinted |
+| P0-3m review | DeepSeek Flash / Pi / OpenRouter fallback (Go quota exhausted) | 23:05:00–23:08:26 | 0 | not printed | PASS | $0.001 reconciled + unknown unprinted |
+| P0-3n auto placeholder | GLM / Pi / OpenRouter | 23:08:36–23:09:22 | 0 | not printed | authored; schema-valid | $0.001 reconciled + unknown unprinted |
+| P0-3n review | DeepSeek Flash / Pi / OpenRouter fallback (Go quota exhausted) | 23:09:30–23:11:42 | 0 | not printed | PASS | $0.001 reconciled + unknown unprinted |
+| P0-3o typed Crew | GLM / Pi / OpenRouter | 23:12:11–23:14:59 | 0 | not printed | supervisor verification failed: shared fixture changed doctor count | $0.001 reconciled + unknown unprinted |
+| P0-3o repair | GLM / Pi / OpenRouter | 23:15:30–23:16:27 | 0 | not printed | isolated governed fixture; 685 passed | $0.001 reconciled + unknown unprinted |
+| P0-3o review | DeepSeek Flash / Pi / OpenRouter fallback (Go quota exhausted) | 23:16:44–23:19:05 | 0 | not printed | PASS | $0.001 reconciled + unknown unprinted |
+| P0-3p live snapshot | GLM / Pi / OpenRouter | 23:19:34–23:22:10 | 0 | not printed | 7 focused, 692 full passed | $0.001 reconciled + unknown unprinted |
+| P0-3p review | DeepSeek Flash / Pi / OpenRouter fallback (Go quota exhausted) | 23:22:31–23:28:39 | 0 | not printed | PASS | $0.001 reconciled + unknown unprinted |
+
+Supervisor verification: `PYTHONPATH=src .venv/bin/python -m pytest -q`
+reported **692 passed**; Black reported **30 files unchanged**; Ruff reported
+**All checks passed** (with only its pre-existing top-level-settings warning).
+The live P0-3 acceptance command
+`PYTHONPATH=src .venv/bin/python -m lee_llm_router.doctor doctor --catalog
+--catalog-dir config/staffing` exited **3** solely because the P0-4-owned
+`config/staffing/terms.yaml` does not yet exist. This creates a plan dependency
+cycle: P0-4 depends on P0-3, but P0-3's real-file acceptance depends on P0-4.
+Recorded in `needs-lee.md`; P0-3 remains uncommitted. No worker or reviewer
+remains running.
+
+## 2026-09-10 — P0-3 close, P0-4/P0-5, and P0-7 stop
+
+Running metered total: **$0.001 reconciled from printed output; additional
+OpenRouter GLM/DeepSeek usage remains unknown because Pi printed no token/cost
+line.** No attempt reported a charge approaching the $5 ceiling.
+
+| Packet | Route | Result | Tokens/cost | Running metered total |
+|---|---|---|---|---|
+| P0-3 final review | DeepSeek Flash / Pi / OpenRouter fallback (Go quota exhausted) | PASS; commit-ready | not printed | $0.001 reconciled + unknown unprinted |
+| P0-4a terms data | GLM / Pi / OpenRouter | authored | not printed | $0.001 reconciled + unknown unprinted |
+| P0-4a review | DeepSeek Flash / Pi / OpenRouter fallback | PASS | not printed | $0.001 reconciled + unknown unprinted |
+| P0-4b terms API/tests | GLM / Pi / OpenRouter | authored; 713 passed | not printed | $0.001 reconciled + unknown unprinted |
+| P0-4b review | DeepSeek Flash / Pi / OpenRouter fallback | PASS | not printed | $0.001 reconciled + unknown unprinted |
+| P0-4 final review | DeepSeek Flash / Pi / OpenRouter fallback | PASS | not printed | $0.001 reconciled + unknown unprinted |
+| P0-5a eligibility/tests | GLM / Pi / OpenRouter | authored; 731 passed | not printed | $0.001 reconciled + unknown unprinted |
+| P0-5a review | DeepSeek Flash / Pi / OpenRouter fallback | PASS | not printed | $0.001 reconciled + unknown unprinted |
+| P0-5b catalog explain/tests | GLM / Pi / OpenRouter | authored; 753 passed | not printed | $0.001 reconciled + unknown unprinted |
+| P0-5b review | DeepSeek Flash / Pi / OpenRouter fallback | PASS | not printed | $0.001 reconciled + unknown unprinted |
+| P0-7a five-worker packet | GLM / Pi / OpenRouter | timed out after 590 s, no output/change; terminated | not printed | $0.001 reconciled + unknown unprinted |
+| P0-7a1 four Pi workers | GLM / Pi / OpenRouter | authored, additive | not printed | $0.001 reconciled + unknown unprinted |
+| P0-7a1 review | DeepSeek Flash / Pi / OpenRouter fallback | FAIL Medium: slash-id parsing concern | not printed | $0.001 reconciled + unknown unprinted |
+| P0-7a1 evidence repair | GLM / Pi / OpenRouter | no code change; Pi store/source disproved concern | not printed | $0.001 reconciled + unknown unprinted |
+| P0-7a1 rereview | DeepSeek Flash / Pi / OpenRouter fallback | PASS | not printed | $0.001 reconciled + unknown unprinted |
+| P0-7a2 Astra worker | GLM / Pi / OpenRouter | authored, additive | not printed | $0.001 reconciled + unknown unprinted |
+| P0-7a2 review | DeepSeek Flash / Pi / OpenRouter fallback | PASS | not printed | $0.001 reconciled + unknown unprinted |
+| P0-7b crew packet | GLM / Pi / OpenRouter | timed out after 590 s, no output/change; terminated | not printed | $0.001 reconciled + unknown unprinted |
+| P0-7b1 smaller crew retry | GLM / Pi / OpenRouter | authored, additive | not printed | $0.001 reconciled + unknown unprinted |
+| P0-7b1 review | DeepSeek Flash / Pi / OpenRouter fallback | PASS | not printed | $0.001 reconciled + unknown unprinted |
+| P0-7c parser tests | GLM / Pi / OpenRouter | authored; confinement FAIL (`context.md` touched) | not printed | $0.001 reconciled + unknown unprinted |
+| P0-7c repair | GLM / Pi / OpenRouter | restored context; focused 34 passed | not printed | $0.001 reconciled + unknown unprinted |
+| P0-7c review | DeepSeek Flash / Pi / OpenRouter fallback | PASS | not printed | $0.001 reconciled + unknown unprinted |
+
+Commits: P0-3 `fb607ea`; P0-4 `e239ad0`; P0-5 `48566ad`.
+Observed P0-4 real catalog: `OK catalog: config/staffing (routes 27,
+channels 7, terms 9, crews 17)`, exit 0. P0-5 supervisor suite: 753 passed;
+live explain exit 0; process-level cold elapsed 0.55 s (the under-100-ms
+target is observational, not gating). P0-7 supervisor suite: **1441 passed,
+2 skipped**. P0-7 remains uncommitted because all four Pi preflights exit 1
+at the wrapper's missing `--preflight` branch and router `doctor --crews`
+exits 1 on the two governed `pi_cli` roles. Exact blockers are in
+`needs-lee.md`. No worker or reviewer remains running.
+
+## 2026-09-10 — Round 12 repair and next P0-7 stop
+
+Running metered total: **$0.001 reconciled from printed output; additional
+OpenRouter GLM/DeepSeek usage remains unknown because Pi printed no token/cost
+line.** No attempt reported a charge approaching the $5 ceiling.
+
+| Packet | Route | Result | Tokens/cost | Running metered total |
+|---|---|---|---|---|
+| P0-7d wrapper broad attempt | GLM / Pi / OpenRouter | timed out after 590 s after partial edits; terminated | not printed | $0.001 reconciled + unknown unprinted |
+| P0-7r governed harness | GLM / Pi / OpenRouter | authored; focused 89 passed | not printed | $0.001 reconciled + unknown unprinted |
+| P0-7d2 wrapper finish | GLM / Pi / OpenRouter | completed partial work; 1465 passed, 2 skipped | not printed | $0.001 reconciled + unknown unprinted |
+| P0-7d review | DeepSeek Flash / Pi / OpenRouter fallback | PASS | not printed | $0.001 reconciled + unknown unprinted |
+| P0-7r review | DeepSeek Flash / Pi / OpenRouter fallback | PASS | not printed | $0.001 reconciled + unknown unprinted |
+
+Supervisor gates observed: all four Pi worker preflights exit **0** with one
+readiness line; Astra preflight exits **0**; router live `doctor --crews`
+reports `OK crews: 15 crews, 30/30 workers resolved, 0 role-scoped
+warning(s)`, exit **0**; Auto-Orch full suite reports **1465 passed, 2
+skipped**. Router full suite reports **752 passed, 3 failed**: one stale
+14-crew count and two P0-3 live-snapshot assumptions (missing Pi harness
+mapping; 15 live crews versus 14 catalog-governed records because the new
+example is catalog-interactive by round 10). These are outside round-12's
+narrow P0-7r scope and recorded in `needs-lee.md`. P0-7/P0-7r remain
+uncommitted. No worker or reviewer remains running.
+
+## 2026-09-10 — Round 13 integration and first-route stop
+
+Running metered total: **$0.001 reconciled from printed output; additional
+OpenRouter GLM/DeepSeek usage remains unknown because Pi printed no token/cost
+line.** No attempt reported a charge approaching the $5 ceiling.
+
+| Packet | Route | Result | Tokens/cost | Running metered total |
+|---|---|---|---|---|
+| P0-7r2 broad integration | GLM / Pi / OpenRouter | timed out after 590 s, no change; terminated | not printed | $0.001 reconciled + unknown unprinted |
+| P0-7r2a harness mapping | GLM / Pi / OpenRouter | added pi_cli -> pi; omp already present | not printed | $0.001 reconciled + unknown unprinted |
+| P0-7r2a review | DeepSeek Flash / Pi / OpenRouter fallback | PASS | not printed | $0.001 reconciled + unknown unprinted |
+| P0-7r2b governed_ref field | GLM / Pi / OpenRouter | schema/data/typed field authored | not printed | $0.001 reconciled + unknown unprinted |
+| P0-7r2b review | DeepSeek Flash / Pi / OpenRouter fallback | PASS | not printed | $0.001 reconciled + unknown unprinted |
+| P0-7r2c two-test packet | GLM / Pi / OpenRouter | timed out after 590 s, no change; terminated | not printed | $0.001 reconciled + unknown unprinted |
+| P0-7r2c1 live-count test | GLM / Pi / OpenRouter | authored; 86 focused passed | not printed | $0.001 reconciled + unknown unprinted |
+| P0-7r2c1 review | DeepSeek Flash / Pi / OpenRouter fallback | PASS | not printed | $0.001 reconciled + unknown unprinted |
+| P0-7r2c2 live invariant | GLM / Pi / OpenRouter | timed out after partial edit; terminated | not printed | $0.001 reconciled + unknown unprinted |
+| P0-7r2c2 finish | GLM / Pi / OpenRouter | 10 focused, 758 full passed, but weakened first-entry equality to membership | not printed | $0.001 reconciled + unknown unprinted |
+| P0-7r2c2 review | DeepSeek Flash / Pi / OpenRouter fallback | PASS incorrectly accepted membership | not printed | $0.001 reconciled + unknown unprinted |
+
+Supervisor inspection found that green tests do not meet round 13(c): the
+test asserts `resolved.route_id in refs`, not equality with `refs[0]`. Exact
+round-10/P0-7 values put the live OpenRouter GLM primary in `impl[1]`, while
+`impl[0]` is the OpenCode Go GLM route. The contradiction is recorded in
+`needs-lee.md`; round-13/P0-7r changes remain uncommitted. No worker or
+reviewer remains running.
+
+## 2026-09-10 — Round 15 final Astra repair
+
+Running metered total: **$0.001 reconciled from printed output; additional
+OpenRouter GLM/DeepSeek usage remains unknown because Pi printed no token/cost
+line.** No printed attempt charge approached the $5 ceiling.
+
+| Packet | Route | Start/end | Exit | Result | Tokens/cost | Running metered total |
+|---|---|---|---:|---|---|---|
+| G5a role floors | GLM / Pi / OpenRouter | 2026-09-10, completed before G5b | 0 | Initial data used archived role names as keys; review FAIL High | not printed | $0.001 reconciled + unknown unprinted |
+| G5a role-floor repair | GLM / Pi / OpenRouter | 2026-09-10, completed before G5b | 0 | Re-keyed to `impl`, `plan`, `review`, `judge`, `prose`; rereview PASS | not printed | $0.001 reconciled + unknown unprinted |
+| G5b floor disclosure | GLM / Pi / OpenRouter | 2026-09-10, completed before G5c | timeout | Timed out after `doctor.py`; exact process group terminated | not printed | $0.001 reconciled + unknown unprinted |
+| G5b continuation | GLM / Pi / OpenRouter | 2026-09-10, completed before G5c | 0 | Tests/doc completed; review PASS | not printed | $0.001 reconciled + unknown unprinted |
+| G5c independence policy | GLM / Pi / OpenRouter | 2026-09-10, completed before G5d | 0 | Two sourced policy records; review PASS | not printed | $0.001 reconciled + unknown unprinted |
+| G5d `--author-route` | GLM / Pi / OpenRouter | ended 2026-09-10 06:13:55 CDT | 0 | Implemented bounded comparison; 808 passed, Black/Ruff clean | not printed | $0.001 reconciled + unknown unprinted |
+| G5d review | DeepSeek Flash / Pi / OpenRouter fallback (Go quota exhausted) | ended 2026-09-10 06:18:03 CDT | 0 | PASS; no High/Medium, two Low | not printed | $0.001 reconciled + unknown unprinted |
+
+Round 15 moved the role-floor and reviewer-independence stop to Resolved per
+`docs/staffing/chief-answers-15.md`. Floors are populated as recorded data but
+not enforced; explain discloses that once. Review/judge independence is
+evaluated only with `--author-route`, excludes the author and same-family
+routes with reason `independence`, and records whether family came from the
+route or model-vendor-prefix fallback. The reviewed repair is router commit
+`b5ed4b5`. Reviewer fallback was required because the OpenCode Go five-hour
+channel was exhausted. No escalation to Luna occurred. No worker or reviewer
+remains running.
+
+## 2026-09-10 — Astra gate review and bounded repairs
+
+Running metered total: **$0.001 reconciled from printed output; additional
+OpenRouter GLM/DeepSeek usage remains unknown because Pi printed no token/cost
+line.** Astra used the authorized OpenAI subscription route; no metered charge
+was reported. No printed attempt charge approached the $5 ceiling.
+
+| Packet | Route | Result | Tokens/cost | Running metered total |
+|---|---|---|---|---|
+| Phase gate review attempt 1 | Astra Low / Codex / OpenAI subscription | launcher exit 1 before review: parent directory was not a trusted git repo | n/a | $0.001 reconciled + unknown unprinted |
+| Phase gate review | Astra Low / Codex / OpenAI subscription | FAIL: 5 Medium, 0 High; 2 Low | 109,316 tokens; subscription, no metered cost printed | $0.001 reconciled + unknown unprinted |
+| G1 doctor default | GLM / Pi / OpenRouter | timed out after completing edit; exact process group terminated; 90 focused passed | not printed | $0.001 reconciled + unknown unprinted |
+| G1 review | DeepSeek Flash / Pi / OpenRouter fallback | PASS, no High/Medium | not printed | $0.001 reconciled + unknown unprinted |
+| G2 per-channel badge pricing | GLM / Pi / OpenRouter | completed; 52 focused, 771 full passed | not printed | $0.001 reconciled + unknown unprinted |
+| G2 review | DeepSeek Flash / Pi / OpenRouter fallback | PASS, no High/Medium | not printed | $0.001 reconciled + unknown unprinted |
+| G3 Luna effort policy | GLM / Pi / OpenRouter | timed out after completing edit; exact process group terminated; 38 focused passed | not printed | $0.001 reconciled + unknown unprinted |
+| G3 review | DeepSeek Flash / Pi / OpenRouter fallback | PASS, no High/Medium | not printed | $0.001 reconciled + unknown unprinted |
+| G4 Pi THINKING parsing | GLM / Pi / OpenRouter | completed; 105 focused, 784 full passed | not printed | $0.001 reconciled + unknown unprinted |
+| G4 review | DeepSeek Flash / Pi / OpenRouter fallback | PASS, no High/Medium | not printed | $0.001 reconciled + unknown unprinted |
+
+Astra's five Medium findings were: literal gate doctor required a default;
+hardcoded NO DATA distorted marginal prices; Luna Max policy also excluded
+XHigh; Pi THINKING was dropped; role floors/reviewer independence were empty
+and unenforced. The first four are repaired, independently reviewed, and
+committed in router commit `2834e0d`. Supervisor verification after all four:
+**784 passed**; Black 32 files unchanged; Ruff all checks passed; literal live
+doctor exit 0; live future explain shows re-tiered terms and per-channel
+pricing. The fifth finding exposes an unsourced role-vocabulary mapping and a
+missing comparison input, recorded as the active genuine stop in
+`needs-lee.md`. Astra's two Low findings (schema cache keyed without schema
+directory; unpriced reason omits a D207 citation) are retained for later
+non-gating repair. No worker or reviewer remains running; Phase 1 was not
+started.
+
+## 2026-09-10 — Phase gate, supervisor run before Astra
+
+Running metered total: **$0.001 reconciled from printed output; additional
+OpenRouter GLM/DeepSeek usage remains unknown because Pi printed no token/cost
+line.** No printed attempt charge approached the $5 ceiling.
+
+### Gate-repair attempt ledger
+
+| Packet | Route | Result | Tokens/cost | Running metered total |
+|---|---|---|---|---|
+| P0-5c dated-terms output | GLM / Pi / OpenRouter | timed out after 590 s after completing doctor.py only; exact process group terminated; existing 22 focused passed | not printed | $0.001 reconciled + unknown unprinted |
+| P0-5d dated-terms tests | GLM / Pi / OpenRouter | completed; 26 focused passed | not printed | $0.001 reconciled + unknown unprinted |
+| P0-5cd review attempt | DeepSeek Flash / Pi / OpenRouter fallback (Go unavailable) | unusable: exit 0 but emitted no verdict/text | not printed | $0.001 reconciled + unknown unprinted |
+| P0-5cd review retry | DeepSeek Flash / Pi / OpenRouter fallback (Go unavailable) | FAIL Medium: fail-closed selected-terms branch untested | not printed | $0.001 reconciled + unknown unprinted |
+| P0-5e review repair | GLM / Pi / OpenRouter | completed; 27 focused passed | not printed | $0.001 reconciled + unknown unprinted |
+| P0-5e rereview | DeepSeek Flash / Pi / OpenRouter fallback (Go unavailable) | PASS; no High/Medium | not printed | $0.001 reconciled + unknown unprinted |
+
+### Six observed gate items
+
+1. Router live doctor, exit **0**: `OK catalog: config/staffing (routes 27,
+   channels 7, terms 9, crews 17)`; `OK crews: 15 crews, 30/30 workers
+   resolved, 0 role-scoped warning(s)`; live A8Max availability readable at
+   age 59 minutes with 12 buckets.
+2. Live `catalog explain` exits **0** for
+   `impl/deterministic/none/s/python`, lists 27 routes (11 eligible, 16
+   excluded) with channel, badge, headroom, marginal/replacement prices and
+   exclusion reasons. Current selected terms show Anthropic/Gemini $100
+   effective 2026-09-09; `--at 2026-10-01` visibly shows both at $20
+   effective 2026-09-30. Gate repair committed as `8d8580a`; final router
+   suite **763 passed**, Black 32 files unchanged, Ruff all checks passed.
+3. Agent-Orch full suite: **1872 passed, 9 skipped**. Targeted rate-table
+   suite: **20 passed**; all Phase-0/live governed route ids are priced except
+   the explicitly unsupported status-quo `opencode-go/mimo-v2.5`, which is
+   excluded from Phase-0 routes and recorded in needs-Lee. Rate commits:
+   `0dbaec6`, `d166e4d`.
+4. Auto-Orch full suite: **1465 passed, 2 skipped**. The scoped
+   `config/crews.yaml` diff is purely additive (five workers and one
+   `sol-low-glm-pi` crew); all prior lines are unchanged. P0-7 commit:
+   `052a335`. Four Pi preflights and Astra preflight exit 0 without model
+   calls (observed before commit and unchanged by the final catalog repair).
+5. Benchmark focused staffing suite: **21 passed, 63 subtests passed**; full
+   project test boundary: **268 passed, 126 subtests passed**, with only the
+   authorized environment-pin failure (OpenCode 1.18.30 installed versus
+   1.18.26 required). v5 sha256
+   `5fd26b8aa85808258f8c5e56022c07c1b8669a7b77e4d9b693a8c0c6069caaf5`;
+   v6 sha256
+   `1e879451089da317e961a61a027bc459c8a99d8549595109086d22afa54786dc`.
+   Router reader parity is 86 accepted / 4 rejected for each; router
+   `test_crew_page` plus live staffing tests: **32 passed**. P0-8 commit:
+   `51c4402`. An initial overly broad supervisor pytest invocation generated
+   29 packet/private `__pycache__` directories; only that bytecode debris was
+   removed, then the project test boundary was rerun with
+   `PYTHONDONTWRITEBYTECODE=1`.
+6. Reviewed scoped commits exist in all four repos. Router Phase-0 commits run
+   from `6a5df91` through `8d8580a`, including P0-7r `9048a5a`; agent-orch
+   `0dbaec6`/`d166e4d`; Auto-Orch `052a335`; benchmark `51c4402`.
+   `needs-lee.md` has no blocking item and retains all open human/Phase-2
+   items. Pre-existing unrelated worktree changes in router, agent-orch and
+   Auto-Orch were not staged or committed.
+
+No worker or reviewer remains running. Astra Low whole-phase review follows.
+
+## 2026-09-10 — Round 14 first-entry repair
+
+Running metered total: **$0.001 reconciled from printed output; additional
+OpenRouter GLM/DeepSeek usage remains unknown because Pi printed no token/cost
+line.** No attempt reported a charge approaching the $5 ceiling.
+
+| Packet | Route | Result | Tokens/cost | Running metered total |
+|---|---|---|---|---|
+| P0-7r3 combined round-14 repair | GLM / Pi / OpenRouter | timed out after 590 s with partial edits; exact process group terminated | not printed | $0.001 reconciled + unknown unprinted |
+| P0-7r4 catalog-only repair | GLM / Pi / OpenRouter | timed out after 590 s after completing the requested catalog edit; exact process group terminated; supervisor oracle 52 passed | not printed | $0.001 reconciled + unknown unprinted |
+| P0-7r4 catalog review | DeepSeek Flash / Pi / OpenRouter fallback (Go quota exhausted) | PASS; no High/Medium | not printed | $0.001 reconciled + unknown unprinted |
+| P0-7r5 first-entry test | GLM / Pi / OpenRouter | completed; focused 1 passed | not printed | $0.001 reconciled + unknown unprinted |
+| P0-7r5 review | DeepSeek Flash / Pi / OpenRouter fallback (Go quota exhausted) | PASS; no High/Medium | not printed | $0.001 reconciled + unknown unprinted |
+
+Chief round 14 (`docs/staffing/chief-answers-14.md`) resolves the conflict by
+putting the exactly metered OpenRouter GLM route first and the Go route second
+in the interactive catalog record and escalation ladder; the live governed
+primary remains OpenRouter. The live invariant is restored to strict
+`resolved.route_id == refs[0]`. Supervisor full router verification: **758
+passed**; Black reports 32 source files unchanged; Ruff reports all checks
+passed (one pre-existing top-level-settings deprecation warning). No worker or
+reviewer remains running.
+
+### Six observed gate items after Round 15
+
+Running metered total: **$0.001 reconciled; OpenRouter Pi attempts did not
+print token/cost lines, so their additional metered amount remains unknown.**
+
+1. Literal live doctor exited **0**: catalog **27 routes, 7 channels, 9 terms,
+   17 crews**; live Auto-Orch **15 crews, 30/30 workers resolved**; A8Max
+   availability readable at age 15 minutes with 12 buckets.
+2. Required impl explain exited **0** and listed all 27 routes with status,
+   channel, badge/headroom, marginal/replacement prices, and exclusion reasons.
+   Review explain without an author printed the exact independence disclosure
+   once; with `codex-gpt-5-6-sol-low-openai-sub`, same-family routes carried
+   reason `independence` and output recorded family `gpt` from
+   `model_vendor_prefix`. Floors disclosure appeared once. Future
+   `--at 2026-10-01` selected Anthropic/Gemini terms effective 2026-09-30 at
+   $20; effective tier is not yet displayed (recorded Phase 1 packet).
+3. Agent-Orch full suite: **1872 passed, 9 skipped**; rate-table target:
+   **20 passed**.
+4. Auto-Orch full suite: **1465 passed, 2 skipped**; commit `052a335` shows
+   only additive `config/crews.yaml` lines. All four Pi preflights and the Astra
+   preflight exited **0** without a model call.
+5. Benchmark boundary: **268 passed, 126 subtests passed**, with only the
+   authorized OpenCode environment-pin failure (installed **1.18.30**, required
+   **1.18.26**). Staffing target: **21 passed, 63 subtests passed**. v5/v6
+   hashes remain `5fd26b8aa85808258f8c5e56022c07c1b8669a7b77e4d9b693a8c0c6069caaf5`
+   and `1e879451089da317e961a61a027bc459c8a99d8549595109086d22afa54786dc`;
+   router parity is **86 accepted / 4 rejected** for each; router focused
+   reader/live-catalog tests: **38 passed**.
+6. Router full suite: **808 passed**; Black reports 32 files unchanged; Ruff
+   all checks passed. Reviewed scoped commits exist in all four repos, ending
+   with router `b5ed4b5`, agent-orch `0dbaec6`/`d166e4d`, Auto-Orch `052a335`,
+   and benchmark `51c4402`. Unrelated pre-existing worktree changes were not
+   staged. `needs-lee.md` now has no blocking item.
+
+The final Astra Low whole-phase re-review follows. No author or reviewer is
+running at this checkpoint.
+
+### Astra review and family-field repair
+
+Running metered total: **$0.001 reconciled; OpenRouter Pi attempts did not
+print token/cost lines, so their additional metered amount remains unknown.**
+
+| Packet | Route | Result | Tokens/cost | Running metered total |
+|---|---|---|---|---|
+| Final gate review 1 | Astra Low / Codex / OpenAI subscription | FAIL: 1 Medium, 2 Low, 0 High | 85,740 tokens; subscription, no metered cost | $0.001 reconciled + unknown unprinted |
+| G5e optional route family | GLM / Pi / OpenRouter | repaired Astra Medium; 814 passed, Black/Ruff clean | not printed | $0.001 reconciled + unknown unprinted |
+| G5e review | DeepSeek Flash / Pi / OpenRouter fallback (Go quota exhausted) | PASS; no High/Medium, one Low note | not printed | $0.001 reconciled + unknown unprinted |
+
+Astra found that Round 15's `route.family` precedence was implemented only for
+objects that could carry the field: the strict route schema rejected it and
+the typed loader dropped it. The repair adds an optional nonblank schema field,
+preserves it in typed `Route`, leaves live `routes.yaml` unchanged, and proves
+precedence through scratch schema/loader/CLI tests. Reviewed commit: `875487d`.
+Post-commit live doctor and review explain both exit 0. Astra's two retained
+Low findings are schema-cache keying and the terse unpriced exclusion reason;
+neither is gating. No Luna escalation occurred. Final Astra re-review follows;
+no worker or reviewer remains running.
+
+### Final Astra PASS and Phase 0 attempt totals
+
+Running metered total: **$0.001 reconciled; additional OpenRouter Pi usage is
+unknown because Pi printed no token/cost lines.** This is the final Phase 0
+metered statement; no printed charge approached the $5 ceiling.
+
+| Packet | Route | Result | Tokens/cost | Running metered total |
+|---|---|---|---|---|
+| Final gate re-review | Astra Low / Codex / OpenAI subscription | PASS; 0 High, 0 Medium, 3 Low | 69,799 tokens; subscription, no metered cost | $0.001 reconciled + unknown unprinted |
+| Close context | GLM / Pi / OpenRouter | appended bounded Phase 0 handoff only | not printed | $0.001 reconciled + unknown unprinted |
+| Close context review | DeepSeek Flash / Pi / OpenRouter fallback (Go quota exhausted) | PASS; no High/Medium, 2 informational Low | not printed | $0.001 reconciled + unknown unprinted |
+
+Normalized full-ledger totals (table attempt rows, including failed launches,
+timeouts, reviews, and repairs): **193 attempts** — GLM/Pi/OpenRouter **104**;
+DeepSeek review **83** (**40** OpenCode Go, **43** OpenRouter fallback);
+Luna XHigh/Pi/OpenAI subscription escalations **2**; Astra Low/Codex/OpenAI
+subscription **4** attempts (**3** completed reviews and one pre-review trust
+failure). Timeout rows: **17**. Reviewer fallbacks: **43**. Astra completed
+review tokens total **264,855** (109,316 + 85,740 + 69,799), subscription and
+not metered. Pi printed no usable token totals, so those totals cannot be
+invented. The only reconciled metered amount remains **$0.001**, plus unknown
+unprinted OpenRouter usage.
+
+Final Astra retained only Low findings: schema cache key omits schema directory;
+unpriced exclusion text omits its D207 attribution; the family resolver
+docstring still says typed routes lack `family`. These are non-gating follow-ups.
+No High or Medium remains. No worker or reviewer remains running.
