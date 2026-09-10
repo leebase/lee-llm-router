@@ -1383,8 +1383,59 @@ def _explain_table(rows: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
+def _selected_terms_view(
+    catalog: Any,
+    at_date: Any,
+) -> dict[str, dict[str, Any]] | None:
+    """Selected dated terms per channel via the committed ``terms_at`` lookup.
+
+    Display-only projection of :func:`lee_llm_router.staffing.terms.terms_at`
+    — no date selection is reimplemented here: each channel's selected
+    ``effective_from`` and ``fee_usd_month`` are copied verbatim, with the
+    ``"unknown"`` literal shown without coercion. Returns ``None`` when the
+    committed lookup fails closed for the requested date (e.g. no entry yet);
+    no value is ever invented. Channel order follows the committed channels
+    document, so the view is deterministic.
+    """
+    from lee_llm_router.staffing import StaffingTermsError, terms_at
+
+    try:
+        selected = terms_at(at_date, catalog)
+    except StaffingTermsError:
+        return None
+    return {
+        channel: {
+            "effective_from": entry.effective_from,
+            "fee_usd_month": entry.fee_usd_month,
+        }
+        for channel, entry in selected.items()
+    }
+
+
+def _terms_lines(
+    terms_view: dict[str, dict[str, Any]] | None,
+    at_date: Any,
+) -> list[str]:
+    """Render the compact deterministic selected-terms lines for text output."""
+    if terms_view is None:
+        return [f"selected terms: unavailable at {at_date.isoformat()}"]
+    lines = [f"selected terms at {at_date.isoformat()}"]
+    for channel, entry in terms_view.items():
+        lines.append(
+            f"  {channel}: effective_from {entry['effective_from']}, "
+            f"fee_usd_month {entry['fee_usd_month']}"
+        )
+    return lines
+
+
 def _run_catalog_explain(args: argparse.Namespace) -> int:
-    """Run ``catalog explain``: eligibility per route, ordered for display."""
+    """Run ``catalog explain``: eligibility per route, ordered for display.
+
+    The report also projects the dated terms the committed ``terms_at``
+    lookup selects for the requested date (display only, in both text and
+    ``--json`` output) so the selected ``effective_from``/``fee_usd_month``
+    terms are observable; it performs no choice, probability, or ladder.
+    """
     import json
     from datetime import date
     from pathlib import Path
@@ -1457,6 +1508,7 @@ def _run_catalog_explain(args: argparse.Namespace) -> int:
     ordered = sorted(rows, key=_explain_sort_key)
     route_views = [_explain_route_json(row) for row in ordered]
     eligible_count = sum(1 for route in route_views if route["eligible"])
+    terms_view = _selected_terms_view(catalog, at_date)
 
     if args.json:
         print(
@@ -1465,6 +1517,7 @@ def _run_catalog_explain(args: argparse.Namespace) -> int:
                     "role": role,
                     "class_key": args.class_string,
                     "at": at_date.isoformat(),
+                    "terms": terms_view,
                     "routes": route_views,
                 },
                 indent=2,
@@ -1480,6 +1533,8 @@ def _run_catalog_explain(args: argparse.Namespace) -> int:
             f"{len(route_views) - eligible_count} excluded "
             "(ordered by marginal price)"
         )
+        for line in _terms_lines(terms_view, at_date):
+            print(line)
     return 0
 
 

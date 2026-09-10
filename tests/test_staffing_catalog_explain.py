@@ -276,7 +276,13 @@ def test_explain_json_has_no_machinery_leakage(tmp_path, catalog_dir, capsys):
 
 
 def test_explain_at_date_transition(tmp_path, catalog_dir, capsys):
-    """Before the committed terms date nothing is eligible; after, routes are."""
+    """Before the committed terms date nothing is eligible; after, routes are.
+
+    The pre-first-entry run also pins the fail-closed selected-terms view
+    (Medium finding): ``terms_at`` raises, the JSON ``terms`` key is null,
+    and the text line reads ``selected terms: unavailable at ...`` — never
+    a crash or an invented terms entry.
+    """
     snapshot = _write_snapshot(tmp_path / "availability.json")
 
     code, before = _explain_json_run(capsys, catalog_dir, snapshot, at="2026-09-08")
@@ -287,12 +293,45 @@ def test_explain_at_date_transition(tmp_path, catalog_dir, capsys):
         any(r.startswith("terms unavailable at 2026-09-08") for r in route["reasons"])
         for route in before["routes"]
     )
+    # Fail-closed terms view: null JSON terms, route fields still preserved.
+    assert before["terms"] is None
+    for route in before["routes"]:
+        assert set(route) == ROUTE_JSON_KEYS
 
     code, after = _explain_json_run(capsys, catalog_dir, snapshot)
     assert code == 0
     glm = _by_route(after, GLM_OPENROUTER_ROUTE)
     assert glm["eligible"] is True
     assert glm["reasons"] == []
+
+
+def test_explain_text_terms_unavailable_before_first_entry(
+    tmp_path, catalog_dir, capsys
+):
+    """Text output at the pre-first-entry date shows the unavailable line."""
+    snapshot = _write_snapshot(tmp_path / "availability.json")
+    code, captured = _run_explain(
+        capsys,
+        "--role",
+        "impl",
+        "--class",
+        IMPL_CLASS,
+        "--at",
+        "2026-09-08",
+        "--availability-file",
+        str(snapshot),
+        "--catalog-dir",
+        str(catalog_dir),
+    )
+    assert code == 0
+
+    lines = captured.out.splitlines()
+    assert "selected terms: unavailable at 2026-09-08" in lines
+    assert "selected terms at 2026-09-08" not in lines
+    # No per-channel terms rows are rendered when the view fails closed.
+    assert not any(
+        line.startswith("  ") and "effective_from" in line for line in lines
+    )
 
 
 def test_explain_default_at_is_today(tmp_path, catalog_dir, capsys):
@@ -475,3 +514,103 @@ def test_explain_catalog_subcommand_required(capsys):
     captured = capsys.readouterr()
     assert exc_info.value.code == 3
     assert "catalog: subcommand required" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# P0-5d: selected-terms projection in text and JSON output
+# ---------------------------------------------------------------------------
+
+
+def test_explain_text_terms_before_retier_date(tmp_path, catalog_dir, capsys):
+    """Text output before the re-tier shows Anthropic/Gemini at 100 (2026-09-09)."""
+    snapshot = _write_snapshot(tmp_path / "availability.json")
+    code, captured = _run_explain(
+        capsys,
+        "--role",
+        "impl",
+        "--class",
+        IMPL_CLASS,
+        "--at",
+        "2026-09-15",
+        "--availability-file",
+        str(snapshot),
+        "--catalog-dir",
+        str(catalog_dir),
+    )
+    assert code == 0
+
+    lines = captured.out.splitlines()
+    assert "selected terms at 2026-09-15" in lines
+    assert "  anthropic-sub: effective_from 2026-09-09, fee_usd_month 100" in lines
+    assert "  gemini-sub: effective_from 2026-09-09, fee_usd_month 100" in lines
+
+
+def test_explain_text_terms_after_retier_date(tmp_path, catalog_dir, capsys):
+    """Text output at the re-tier date shows both channels dropped to 20."""
+    snapshot = _write_snapshot(tmp_path / "availability.json")
+    code, captured = _run_explain(
+        capsys,
+        "--role",
+        "impl",
+        "--class",
+        IMPL_CLASS,
+        "--at",
+        "2026-10-01",
+        "--availability-file",
+        str(snapshot),
+        "--catalog-dir",
+        str(catalog_dir),
+    )
+    assert code == 0
+
+    lines = captured.out.splitlines()
+    assert "selected terms at 2026-10-01" in lines
+    assert "  anthropic-sub: effective_from 2026-09-30, fee_usd_month 20" in lines
+    assert "  gemini-sub: effective_from 2026-09-30, fee_usd_month 20" in lines
+
+
+def test_explain_json_terms_deterministic_numerics_and_routes_fields(
+    tmp_path, catalog_dir, capsys
+):
+    """JSON ``terms`` is deterministic, numeric post-re-tier, routes intact."""
+    snapshot = _write_snapshot(tmp_path / "availability.json")
+    code, after = _explain_json_run(
+        capsys, catalog_dir, snapshot, at="2026-10-01"
+    )
+    assert code == 0
+
+    terms = after["terms"]
+    assert isinstance(terms, dict)
+    for channel in ("anthropic-sub", "gemini-sub"):
+        entry = terms[channel]
+        assert entry["effective_from"] == "2026-09-30"
+        assert isinstance(entry["fee_usd_month"], (int, float))
+        assert entry["fee_usd_month"] == 20
+        assert set(entry) == {"effective_from", "fee_usd_month"}
+
+    # Deterministic: same inputs produce byte-identical selected terms.
+    code, again = _explain_json_run(capsys, catalog_dir, snapshot, at="2026-10-01")
+    assert code == 0
+    assert again["terms"] == terms
+
+    # Existing routes fields are preserved alongside the new terms object.
+    assert after["role"] == "impl"
+    assert after["class_key"] == IMPL_CLASS
+    assert after["at"] == "2026-10-01"
+    for route in after["routes"]:
+        assert set(route) == ROUTE_JSON_KEYS
+
+
+def test_explain_json_terms_preserve_unknown_literal(tmp_path, catalog_dir, capsys):
+    """The committed 'unknown' fee literal passes through without coercion."""
+    snapshot = _write_snapshot(tmp_path / "availability.json")
+    code, payload = _explain_json_run(capsys, catalog_dir, snapshot)
+    assert code == 0
+
+    terms = payload["terms"]
+    assert terms["opencode-go"]["fee_usd_month"] == "unknown"
+    assert terms["local"]["fee_usd_month"] == "unknown"
+    assert isinstance(terms["opencode-go"]["effective_from"], str)
+    # No choice/probability/ladder keys leak into the terms view.
+    for entry in terms.values():
+        assert set(entry) == {"effective_from", "fee_usd_month"}
