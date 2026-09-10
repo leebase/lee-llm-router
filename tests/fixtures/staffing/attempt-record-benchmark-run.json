@@ -1,0 +1,96 @@
+{
+  "schema_version": 2,
+  "attempt_id": "bench-mixed-economy-0001",
+  "record_kind": "benchmark_run",
+  "captured_at": "2026-09-09T12:00:00Z",
+  "verified_success": false,
+  "class_record": {
+    "class_key": "impl/human/none/m/mixed",
+    "role": "impl",
+    "oracle_type": "human",
+    "domain_tags": [],
+    "size_band": "m",
+    "language": "mixed"
+  },
+  "verdict": "pass",
+  "failure_class": null,
+  "usage": {
+    "basis": "unavailable",
+    "unavailable_reason": "the embedded benchmark crew-run v1 payload records no token counters (evidence_status unmeasured)"
+  },
+  "cost": {
+    "basis": [
+      "unavailable"
+    ]
+  },
+  "wall_clock_ms": null,
+  "benchmark_run": {
+    "schema_version": "benchmark.crew-run/1",
+    "crew_name": "mixed-economy",
+    "crews_file_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "mission": {
+      "task_key": "scratch-task-1",
+      "role_composition": [
+        "envision",
+        "ideate",
+        "reconsider",
+        "score",
+        "author"
+      ]
+    },
+    "attempt_id": "bench-mixed-economy-0001",
+    "stages": [
+      {
+        "stage": "author",
+        "worker": {
+          "model": "scratch-model",
+          "harness": "claude_code",
+          "effort": "medium",
+          "model_family": "scratch-family"
+        },
+        "run_id": "scratch-run-1",
+        "cost_low_usd": null,
+        "cost_high_usd": null,
+        "elapsed_ms": null,
+        "acceptance": null,
+        "pricing_snapshot_ref": null,
+        "pricing_snapshot_sha256": null,
+        "evidence_status": "unmeasured"
+      }
+    ],
+    "totals": {
+      "cost_low_usd": null,
+      "cost_high_usd": null,
+      "elapsed_ms": null,
+      "stage_count": 1,
+      "priced_stage_count": 0,
+      "timed_stage_count": 0
+    },
+    "final_acceptance": "accepted",
+    "provenance": {
+      "assembled_by": "phase0-staffing-p0-9a",
+      "assembled_at": "2026-09-09T12:00:00Z",
+      "source_csv_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "notes": [
+        "scratch benchmark run; no real pricing or run data"
+      ]
+    }
+  },
+  "provenance": {
+    "source": "benchmark",
+    "recorded_by": "phase1-staffing-p1-2",
+    "source_refs": [
+      "/home/lee/projects/ai-workforce-benchmark/config/crew-run.schema.json",
+      "docs/staffing/phase1-contracts.md §Attempt record v2 placement, §Ledger, rollup, and imports",
+      "docs/staffing/phase0-contracts.md class-key grammar and D206"
+    ],
+    "notes": [
+      "Scratch example for one benchmark run; the embedded benchmark_run payload keeps the crew-run record verbatim, including its own attempt_id.",
+      "Imported benchmark row: provenance.source is 'benchmark' and source usage is preserved exactly (this crew-run v1 shape captures none).",
+      "verdict 'pass' is the canonical v2 verdict mapped from final_acceptance 'accepted'; the benchmark acceptance vocabulary remains in the embedded payload.",
+      "No route, provider, or supervisor_route is asserted: the crew-run worker records model/harness/effort/model_family only, with no channel and no supervisor route.",
+      "usage.basis is 'unavailable' with an explicit reason; cost.basis is ['unavailable'] because the v6 CSV usage_*_tokens inputs this import needs are absent here and no dated P0-4 terms price an untokenized row; no figure is estimated.",
+      "verified_success is false because the run carries a passing acceptance but lacks complete route, supervisor-route, usage, cost, oracle, and duration evidence; nothing is invented."
+    ]
+  }
+}

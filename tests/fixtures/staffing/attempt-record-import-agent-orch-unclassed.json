@@ -1,0 +1,111 @@
+{
+  "schema_version": 2,
+  "attempt_id": "a6a85c6b02c7",
+  "record_kind": "agent_orch",
+  "captured_at": "2026-09-09T12:00:00Z",
+  "verified_success": false,
+  "supervisor_route": null,
+  "class_source": "none",
+  "verdict": "pass",
+  "failure_class": null,
+  "usage": {
+    "basis": "provider_reported",
+    "source": "agent-orch usage.json/accounting_status",
+    "input_tokens": 900,
+    "output_tokens": 250,
+    "cached_input_tokens": 0,
+    "reasoning_tokens": null,
+    "total_tokens": 1150
+  },
+  "cost": {
+    "basis": [
+      "unavailable"
+    ]
+  },
+  "wall_clock_ms": null,
+  "agent_orch_observation": {
+    "schema_version": 1,
+    "idempotency_key": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "source": {
+      "mission": "scratch-mission",
+      "cycle_id": "scratch-cycle-1",
+      "run_id": "scratch-run-1",
+      "producer_step_id": "scratch-producer-step",
+      "producer_attempt": 1,
+      "review_step_id": "scratch-review-step",
+      "review_attempt": 1
+    },
+    "task": {
+      "backlog_title": "scratch backlog item",
+      "producer_role": "author",
+      "reviewer_role": "reviewer"
+    },
+    "producer": {
+      "requested": {
+        "harness": "pi_cli",
+        "model": "scratch-model",
+        "effort": "high"
+      },
+      "executed": {
+        "harness": "unknown",
+        "model": "unknown",
+        "effort": "unknown"
+      },
+      "executed_attested": false
+    },
+    "reviewer": {
+      "requested": {
+        "harness": "claude_code",
+        "model": "scratch-supervisor-model",
+        "effort": "high"
+      },
+      "executed": {
+        "harness": "unknown",
+        "model": "unknown",
+        "effort": "unknown"
+      },
+      "executed_attested": false
+    },
+    "outcome": {
+      "run_status": "COMPLETED",
+      "run_passed": true,
+      "cycle_outcome": "completed",
+      "final_completion": true
+    },
+    "review": {
+      "final_verdict": "pass",
+      "first_review_clean": true,
+      "severity_threshold": "Low",
+      "severity_counts": {
+        "Critical": 0,
+        "High": 0,
+        "Medium": 0,
+        "Low": 0
+      },
+      "finding_count": 0,
+      "blocking_finding_count": 0,
+      "review_cycles": 1,
+      "repair_cycles": 0,
+      "artifact_sha256s": [
+        "0000000000000000000000000000000000000000000000000000000000000000"
+      ]
+    }
+  },
+  "provenance": {
+    "source": "agent-orch",
+    "recorded_by": "phase1-staffing-p1-2",
+    "source_refs": [
+      "/home/lee/projects/auto-orch/src/auto_orch/performance.py OBSERVATION_SCHEMA",
+      "docs/staffing/phase1-contracts.md §Attempt record v2 placement, §Ledger, rollup, and imports, §Usage evidence taxonomy",
+      "docs/staffing/phase0-contracts.md class-key grammar and D206"
+    ],
+    "notes": [
+      "Scratch imported agent-orch row without class metadata: class_source is 'none', the only condition under which class_record/class_key may be omitted (phase1-contracts).",
+      "usage.basis is 'provider_reported' from the exact 'agent-orch usage.json/accounting_status' evidence string; the accounted artifact's usage is preserved exactly, including the unknown reasoning component as null (never zero).",
+      "An accounting_status of 'unaccounted' would instead record basis 'unavailable' with a reason — unavailable, never zero.",
+      "cost.basis is ['unavailable']: this scratch import selects no dated P0-4 terms, so no cost figure is derived; unknown terms never yield an estimate.",
+      "verdict 'pass' is mapped from review.final_verdict 'pass'; the source-specific verdict remains in the embedded payload.",
+      "verified_success is false: no route, supervisor route, class record, or duration evidence is present, and none is invented."
+    ]
+  }
+}

@@ -1,0 +1,118 @@
+{
+  "schema_version": 2,
+  "attempt_id": "a6a85c6b02c6",
+  "record_kind": "agent_orch",
+  "captured_at": "2026-09-09T12:00:00Z",
+  "verified_success": false,
+  "supervisor_route": null,
+  "class_record": {
+    "class_key": "impl/judge/authority+persistence/m/python",
+    "role": "impl",
+    "oracle_type": "judge",
+    "domain_tags": [
+      "authority",
+      "persistence"
+    ],
+    "size_band": "m",
+    "language": "python"
+  },
+  "verdict": "pass",
+  "failure_class": null,
+  "usage": {
+    "basis": "unavailable",
+    "unavailable_reason": "agent-orch observation v1 records no token counters and no usage artifact"
+  },
+  "cost": {
+    "basis": [
+      "unavailable"
+    ]
+  },
+  "wall_clock_ms": null,
+  "agent_orch_observation": {
+    "schema_version": 1,
+    "idempotency_key": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "source": {
+      "mission": "scratch-mission",
+      "cycle_id": "scratch-cycle-1",
+      "run_id": "scratch-run-1",
+      "producer_step_id": "scratch-producer-step",
+      "producer_attempt": 1,
+      "review_step_id": "scratch-review-step",
+      "review_attempt": 1
+    },
+    "task": {
+      "backlog_title": "scratch backlog item",
+      "producer_role": "author",
+      "reviewer_role": "reviewer"
+    },
+    "producer": {
+      "requested": {
+        "harness": "pi_cli",
+        "model": "scratch-model",
+        "effort": "high"
+      },
+      "executed": {
+        "harness": "unknown",
+        "model": "unknown",
+        "effort": "unknown"
+      },
+      "executed_attested": false
+    },
+    "reviewer": {
+      "requested": {
+        "harness": "claude_code",
+        "model": "scratch-supervisor-model",
+        "effort": "high"
+      },
+      "executed": {
+        "harness": "unknown",
+        "model": "unknown",
+        "effort": "unknown"
+      },
+      "executed_attested": false
+    },
+    "outcome": {
+      "run_status": "COMPLETED",
+      "run_passed": true,
+      "cycle_outcome": "completed",
+      "final_completion": true
+    },
+    "review": {
+      "final_verdict": "pass",
+      "first_review_clean": true,
+      "severity_threshold": "Low",
+      "severity_counts": {
+        "Critical": 0,
+        "High": 0,
+        "Medium": 0,
+        "Low": 0
+      },
+      "finding_count": 0,
+      "blocking_finding_count": 0,
+      "review_cycles": 1,
+      "repair_cycles": 0,
+      "artifact_sha256s": [
+        "0000000000000000000000000000000000000000000000000000000000000000"
+      ]
+    }
+  },
+  "provenance": {
+    "source": "agent-orch",
+    "recorded_by": "phase1-staffing-p1-2",
+    "source_refs": [
+      "/home/lee/projects/auto-orch/src/auto_orch/performance.py OBSERVATION_SCHEMA",
+      "docs/staffing/phase1-contracts.md §Attempt record v2 placement, §Usage evidence taxonomy",
+      "docs/staffing/phase0-contracts.md class-key grammar and D206",
+      "config/staffing/schema/classes.schema.json $defs/classBlock"
+    ],
+    "notes": [
+      "Scratch example for one real Agent-Orch attempt id (a6a85c6b02c6); no private run material is copied.",
+      "Imported agent-orch record: provenance.source is 'agent-orch' and the v1 observation payload is embedded verbatim as provenance evidence.",
+      "usage.basis is 'unavailable' with an explicit reason because the observation records no token counters; cost.basis is ['unavailable'] with no numeric figures because unknown usage produces no cost, never an estimate.",
+      "No route and no provider are asserted: the observation records requested model/harness/effort only, with no channel, so no full (model, effort, harness, channel) identity tuple exists in this source.",
+      "supervisor_route is null: the source records no executed supervisor route (executed_attested false on both participants).",
+      "verdict 'pass' is the canonical v2 verdict mapped from review.final_verdict 'pass'; the source-specific verdict remains in the embedded payload.",
+      "verified_success is false because the source records a passing outcome but lacks complete route, supervisor-route, usage, cost, oracle, and duration evidence; nothing is invented."
+    ]
+  }
+}

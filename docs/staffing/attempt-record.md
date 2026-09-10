@@ -1,76 +1,111 @@
-# Attempt record — field mapping (P0-9b)
+# Attempt record — field mapping (Phase 1 P1-2, v2)
 
-**Status:** document only. This file documents the accepted schema
-`config/staffing/schema/attempt-record.schema.json` (Phase 0, P0-9a) field by
-field. It is a mapping document, not a specification change: the schema itself
-is the authority for every constraint quoted or summarized here.
+**Status:** document only. This file documents the accepted v2 schema
+`config/staffing/schema/attempt-record.schema.json` (Phase 1, P1-2) field by
+field, under the authority of D209 ruling 2 as mapped by
+`docs/staffing/phase1-contracts.md` (D208 accepting the Phase 0 baseline). It
+is a mapping document, not a specification change: the schema itself is the
+authority for every constraint quoted or summarized here. The P1-2 deliverable
+is this document, the schema, the five fixture copies under
+`tests/fixtures/staffing/`, and the focused tests in
+`tests/test_staffing_attempt_record.py` — nothing else.
 
-**No writer exists until Phase 1.** Nothing in this repository currently
-produces a unified attempt record. `src/lee_llm_router/events.py` writes only
-its own ledger event shape (`EVENT_FIELDS` via `build_event`); no code in this
-repo or in the owner repositories assembles, validates, or writes
-attempt-record documents. The P0-9a deliverable was the schema and its
-examples; this P0-9b deliverable is this document only. Any writer is Phase 1
-work and does not exist yet. (Phase 0 execution-log records that no Phase 1
-work has begun.)
+**No writer exists yet.** The `run` command of phase1-contracts §run command,
+the attempts ledger, and the import path are later Phase 1 work and do not
+exist in this repository today: `src/lee_llm_router/events.py` writes only its
+own ledger event shape (`EVENT_FIELDS` via `build_event`), and no code here or
+in the owner repositories assembles, validates, or writes attempt-record
+documents. The P1-2 attempt-record work is schema, mapping documentation,
+fixtures, and validation tests only.
 
-Source abbreviations used in the tables below. Each names a source system and
-the source contract the field comes from:
-
-| Abbrev | Source system | Source contract |
-|---|---|---|
-| **ROUTER** | lee-llm-router (`src/lee_llm_router/events.py`) | `EVENT_FIELDS` / `build_event` contract: all 17 keys always present; `OPTIONAL_FIELDS` (`ts`, `host`, `harness`, `effort`, `authorized_by`, `snapshot_observed_at`) filled by the builder; `authorized_by` non-null only when `mode` is `bind` (`BIND_MODE`); headroom wire values from `src/lee_llm_router/availability.py` `Health` |
-| **AO** | Agent-Orch (`/home/lee/projects/auto-orch/src/auto_orch/performance.py`) | `OBSERVATION_SCHEMA` (`agent-orch:model-effort-observation:v1`), embedded verbatim with internal `$ref`s re-scoped |
-| **BENCH** | AI Workforce Benchmark (`/home/lee/projects/ai-workforce-benchmark/config/crew-run.schema.json`) | crew-run record, embedded verbatim minus its `$schema`/`$id`/`title`/`description` envelope |
-| **P0-1** | accepted Phase 0 contracts (`docs/staffing/phase0-contracts.md` §Route/§Channel/§Class key; `config/staffing/schema/routes.schema.json` `$defs/route`; `config/staffing/schema/classes.schema.json` `$defs/classBlock`) | route identity tuple, `usage_capture`, class-key grammar, D206 |
-| **P0-9** | P0-9a synthesis (this schema's own task contract) | unified-record fields introduced by `attempt-record.schema.json` that no single named source supplies |
-
-A source citation in the Source column means the field's **shape and value
-constraints** are taken from that source. It does **not** mean that unlike
-sources carry identical semantics for identically named fields; the
-"Semantics" notes below call out the deliberate non-unifications (review
-verdict vs. benchmark acceptance vs. failure class).
+`schema_version` is `2`. D209 ruling 2 is represented without duplicate
+top-level aliases: the packet, link, oracle, and verdict facts are top-level
+attempt facts, `usage` and `cost` are nested objects, and `selection` is a
+new object carrying run-command selection evidence. The v1 source-specific
+payloads remain embedded verbatim as provenance evidence; they are not
+competing locations for v2 usage, cost, selection, or verdict.
 
 ---
 
-## `verified_success` — prominent statement
+## Source-payload provenance (preserved from v1)
 
-`verified_success: true` requires **all** of the following, simultaneously and
-genuinely present in the record (enforced by the schema's `allOf` gate on
-`verified_success: true`):
+The v1 source-specific payloads remain embedded verbatim inside each record
+and are **provenance evidence, not competing locations** for v2 usage, cost,
+selection, or verdict:
 
-1. A substantive, non-null `route` — the full identity tuple
-   `(model, effort, harness, channel)` per the P0-1 route contract. A source
-   that records only requested model/harness/effort (AO), or
-   model/harness/effort/model_family with no channel (BENCH worker), does not
-   satisfy this.
-2. `supervisor_route` present (non-null). Null is the explicit "the source
-   records no supervisor route" marker.
-3. A structured `class_record` including `class_key` and `oracle_type` (all
-   six classBlock fields required).
-4. A `verdict`, restricted to `pass` or `accepted` when `verified_success` is
-   true.
+| Payload | Required when | Source system |
+|---|---|---|
+| `router_event` | `record_kind: router_run` | lee-llm-router ledger dispatch event (`src/lee_llm_router/events.py`, exactly the 17 `EVENT_FIELDS` keys in the `build_event` shape) |
+| `agent_orch_observation` | `record_kind: agent_orch` | Agent-Orch `OBSERVATION_SCHEMA` (`/home/lee/projects/auto-orch/src/auto_orch/performance.py`), embedded verbatim with internal `$ref`s re-scoped |
+| `benchmark_run` | `record_kind: benchmark_run` | AI Workforce Benchmark crew-run record (`/home/lee/projects/ai-workforce-benchmark/config/crew-run.schema.json`), embedded verbatim minus its `$schema`/`$id`/`title`/`description` envelope |
+
+Where a v1 payload carries its own usage, cost, acceptance, or review
+vocabulary (AO `review.final_verdict`, BENCH `final_acceptance`, crew-run
+stage/totals cost figures), those stay inside the payload exactly as the
+source recorded them. The canonical v2 `verdict`, nested `usage`, nested
+`cost`, and `selection` live at the top level; consumers needing
+source-specific semantics must read the embedded payloads, not reinterpret
+the v2 fields.
+
+`record_kind` drops the v1 `interactive` kind: a bare dispatch event records
+no outcome and is not an attempt. Dispatch events remain in the events ledger
+under `events.py`'s own shape, and `router_event` survives as provenance
+evidence on `router_run` records.
+
+## D206 verbatim, and class ↔ route coexistence
+
+Quoted verbatim (also embedded in the schema's top-level and `classRecord`
+descriptions):
+
+> Class metadata MUST NOT map directly to a preferred model or route. It may
+> only: 1. join production attempts to comparable benchmark evidence; and
+> 2. determine whether an unevidenced cheap trial is permitted.
+
+The schema permits `class_record` and `route` (and `supervisor_route`) to
+coexist **only as observed attempt evidence**: the class block describes the
+work; the route block describes the attempt's identity tuple. No
+class-to-model or class-to-route property exists anywhere in the schema —
+including `selection`, which carries route ids and explain reasons only — and
+none may be added (such a property fails `classes.schema.json`
+`$defs/classBlock` per D206 and is a High review finding). Route identity is
+exactly `(model, effort, harness, channel)` (P0-1 §Route); `provider` is
+separate optional observed metadata, never part of the identity tuple, never
+a replacement for `channel`, and never invented for a source that lacks one.
+
+---
+
+## `verified_success` gate (v2)
+
+`verified_success: true` requires **all** of the following, simultaneously
+and genuinely present in the record (enforced by the schema's first `allOf`
+gate):
+
+1. A substantive `route` — the full identity tuple
+   `(model, effort, harness, channel)` per the P0-1 route contract.
+2. `supervisor_route` present (non-null).
+3. A structured `class_record` including `class_key` and `oracle_type`.
+4. `verdict` exactly `"pass"` (the canonical v2 vocabulary; the v1
+   `accepted` alternative is gone).
 5. `failure_class` present and **null** (no failure recorded).
-6. `usage` with **all five token counters** (`input_tokens`,
-   `output_tokens`, `cached_input_tokens`, `reasoning_tokens`,
-   `total_tokens`) non-null integers, plus a valid `usage_capture` (one of
-   `native_json | stream_events | worker_written | none`).
-7. `cost` with non-null `amount_usd` (benchmark money-string shape) **and** a
-   non-empty `basis` citation.
+6. `usage` with a non-unavailable `basis` (`observed | provider_reported |
+   calculated`), a required `source`, and the **input/output token fields the
+   current P0-4 pricing needs**: `input_tokens` and `output_tokens` non-null
+   nonnegative integers. The optional `cached_input_tokens` and
+   `reasoning_tokens` components stay null (or absent) when the authoritative
+   harness output genuinely omits them — they are **not** required for
+   `verified_success`, and zero is never fabricated as an unknown sentinel.
+   `total_tokens` remains truthful: optional/null unless the source
+   authoritatively reports it or it is calculated from authoritatively
+   reported components — never fabricated as a sum across unknown components.
+7. `cost` with both figures `usd_list` and `usd_marginal` present as
+   nonnegative JSON numbers (i.e. `basis: ["list", "marginal"]`).
 8. `wall_clock_ms` non-null, non-negative integer.
+9. `oracle_cmd` a non-empty string.
 
 If the source's outcome passed but **any** required evidence is missing, the
-record still gets `verified_success: false`. Legacy and existing records with
-incomplete evidence remain `false` forever — missing evidence is never
-invented, estimated, or backfilled to reach `true`. A source that reports
-success (e.g. AO `review.final_verdict: "pass"` or BENCH
-`final_acceptance: "accepted"`) without the complete route, supervisor route,
-token, cost, and duration evidence yields `false`. `provider` is optional
-observed metadata and is never invented; absence of channel, provider,
-supervisor route, usage, cost, or duration is recorded as `null` or by field
-absence — never fabricated.
-
----
+record still gets `verified_success: false`. Missing evidence is never
+invented, estimated, or backfilled to reach `true`; absence is recorded as
+`null` or by field omission — never fabricated.
 
 ## Failure classes (exact list)
 
@@ -84,470 +119,368 @@ contract. No named source proves others, so none are added:
 - `unaccounted_spend`
 
 `null` means no failure recorded and is **required** to be null when
-`verified_success` is true. On `interactive` records the router event is a
-dispatch event that records no outcome, so the source event itself supplies no
-failure classification and `failure_class` may remain absent; the accepted
-schema does not, however, forbid `failure_class` on interactive records — it
-constrains only `verdict` (forbidden) and `verified_success` (forced `false`)
-there, so a synthesized failure classification remains schema-valid.
+`verified_success` is true. Unlike v1 there is no `interactive` branch, so
+the v1 interactive carve-out no longer applies.
 
----
+## Canonical v2 verdicts
 
-## D206 verbatim, and class ↔ route coexistence
+`verdict` is exactly `pass | fail | unverified` — the run-command oracle
+semantics of phase1-contracts §run command (exit 0 = pass, nonzero = fail,
+no oracle = unverified). The v1 source-specific outcome vocabularies
+(Agent-Orch review `pass`/`fail`, benchmark acceptance
+`accepted`/`not_accepted`/`unverified`) are **no longer admitted at the top
+level**; they remain inside the embedded v1 payloads as provenance evidence,
+and imports map them to the canonical value when the source provides one
+(e.g. `review.final_verdict: "pass"` → `verdict: "pass"`;
+`final_acceptance: "accepted"` → `verdict: "pass"`).
 
-Quoted verbatim from `docs/staffing/phase0-contracts.md` (§Class-metadata
-prohibition, D206):
-
-> Class metadata MUST NOT map directly to a preferred model or route. It may only:
-> 1. join production attempts to comparable benchmark evidence; and
-> 2. determine whether an unevidenced cheap trial is permitted.
-
-The schema therefore permits `class_record` and `route` (and
-`supervisor_route`) to **coexist on the same record only as observed attempt
-evidence**: both are facts about what happened in this attempt, recorded by
-its source. The class block describes the work; the route block describes the
-attempt's identity tuple and observed metadata. There is **no**
-class→preferred-route or class→preferred-model mapping anywhere in the
-schema: no such property exists and none may be added (a class-to-model or
-class-to-route property fails `classes.schema.json` `$defs/classBlock` per
-D206 and is a High review finding). The only permitted uses of class metadata
-are the two D206 jobs above. Route identity is exactly
-`(model, effort, harness, channel)` (P0-1 §Route; `routes.schema.json`
-`$defs/route`); `provider` is separate optional observed metadata — not part
-of the identity tuple, never a replacement for `channel`, and never invented
-for a source that lacks one.
+For `router_run` records the schema pairs verdict and oracle: `pass`/`fail`
+require a non-empty `oracle_cmd`; `unverified` forces `oracle_cmd` null.
 
 ---
 
 ## Top-level record fields
 
-One row per top-level property of the accepted schema.
+Exactly `schema_version`, `attempt_id`, `record_kind`, `captured_at`,
+`verified_success`, `provenance` are required on every record;
+`additionalProperties: false` closes the envelope. Everything else is
+required only under the conditional rules below.
 
-| Field | Schema constraint | Source system / source contract | Notes |
-|---|---|---|---|
-| `schema_version` | `const: 1` | **P0-9** — unified-record envelope version introduced by this schema | Not taken from any named source schema. |
-| `attempt_id` | `string`, pattern `^[A-Za-z0-9._:-]+$`, minLength 1 | **BENCH** — pattern taken verbatim from crew-run `attempt_id` | A real Agent-Orch attempt id (e.g. `a6a85c6b02c6`) matches it. Mirrors `benchmark_run.attempt_id` when present. |
-| `record_kind` | enum `agent_orch` \| `benchmark_run` \| `interactive` | **P0-9** — discriminant selecting the required embedded source payload (`allOf` bindings) | An `interactive` record is a dispatch event: no verdict may be asserted and `verified_success` is always `false`. |
-| `captured_at` | `string`, `format: date-time` | **P0-9** — record capture timestamp | Analogous to **ROUTER** `ts` and **BENCH** `provenance.assembled_at`; the analogy is positional, not a claim of identical semantics. |
-| `verified_success` | `boolean` | **P0-9** — synthesis evidence gate (see prominent section above) | True only when source-reported success *and* every required evidence field are genuinely present. |
-| `route` | `$ref: #/$defs/route` | **P0-1** — route identity tuple `(model, effort, harness, channel)` (phase0-contracts §Route; `routes.schema.json` `$defs/route`) | Observed attempt evidence only; never derived from class metadata (D206). Optional at top level; required (non-null) when `verified_success: true`. |
-| `supervisor_route` | `anyOf: [route, null]` | **P0-1** — named-crew contract: a named crew carries a supervisor route (`crews[].supervisor_route` in `docs/staffing/catalog.md`) | Present only when the source records one; null = the source records no supervisor route; never invented. Required non-null when `verified_success: true`. |
-| `class_record` | `$ref: #/$defs/classRecord` | **P0-1** — strict class vocabulary reproduced verbatim from `classes.schema.json` `$defs/classBlock` | Same six required fields, same closed value sets, same canonical `class_key` pattern. Coexists with route only as observed attempt evidence (D206). |
-| `verdict` | enum `pass` \| `fail` \| `accepted` \| `not_accepted` \| `unverified` | **AO** (`review.final_verdict`: `pass`/`fail`) and **BENCH** (`final_acceptance` enum: `accepted`/`not_accepted`/`unverified`) | Deliberately NOT unified semantically: `pass`/`fail` are Agent-Orch review words; `accepted`/`not_accepted`/`unverified` are benchmark acceptance words. They do not mean the same thing; consumers must branch on `record_kind`. Forbidden on `interactive` records (schema sets `verdict: false` there). Restricted to `pass`/`accepted` when `verified_success: true`. |
-| `failure_class` | enum of the five classes above, or `null` | **P0-9** — failure taxonomy from the P0-9a task contract | Exactly five proven values; `null` = no failure recorded; required null when `verified_success: true`. On `interactive` records the router event itself supplies no outcome or failure classification, so `failure_class` may remain absent there, but the accepted schema does not prohibit one (it constrains only `verdict` and `verified_success` on `interactive`). |
-| `usage` | `$ref: #/$defs/usage` | **P0-9** structure with **P0-1** `usage_capture` contract | See `usage` table below. |
-| `cost` | `$ref: #/$defs/cost` | **P0-9** structure with **BENCH** money-string shape and **P0-1** no-invented-price rule | See `cost` table below. |
-| `wall_clock_ms` | `integer \| null`, minimum 0 | **P0-9** synthesis; **BENCH** supplies `elapsed_ms` (stage/totals) | **ROUTER** events and **AO** observations record no duration → null. Never estimated or invented. Required non-null when `verified_success: true`. |
-| `router_event` | `$ref: #/$defs/eventRecord` | **ROUTER** — one ledger event, exactly `EVENT_FIELDS` keys, `build_event` shape | Required when `record_kind: interactive`. |
-| `agent_orch_observation` | `$ref: #/$defs/agentOrchObservation` | **AO** — `OBSERVATION_SCHEMA` embedded with internal `$ref`s re-scoped | Required when `record_kind: agent_orch`. |
-| `benchmark_run` | `$ref: #/$defs/crewRunRecord` | **BENCH** — crew-run record embedded verbatim minus envelope | Required when `record_kind: benchmark_run`. |
-| `provenance` | `$ref: #/$defs/provenance` | **P0-9** — record-level provenance added by this schema | Who recorded this unified record and which named sources it cites. Required at top level. |
-
-Additional properties are closed (`additionalProperties: false`); exactly
-`schema_version`, `attempt_id`, `record_kind`, `captured_at`,
-`verified_success`, `provenance` are required on every record.
+| Field | Schema constraint | Notes |
+|---|---|---|
+| `schema_version` | `const: 2` | v2 attempt envelope (phase1-contracts §Attempt record v2 placement). |
+| `attempt_id` | `string`, pattern `^[A-Za-z0-9._:-]+$`, minLength 1 | Caller-supplied; pattern taken verbatim from the benchmark crew-run `attempt_id`. |
+| `record_kind` | enum `agent_orch` \| `benchmark_run` \| `router_run` | Discriminant selecting the required embedded source payload and `provenance.source` pairing (see conditionals). Imports (`agent_orch`, `benchmark_run`) embed their v1 payloads verbatim; `router_run` is a live run-command attempt whose provenance payload is the router dispatch event. v2 drops `interactive`. |
+| `captured_at` | `string`, `format: date-time` | Aware UTC capture timestamp (analogous to `events.py` `ts` and crew-run `provenance.assembled_at`). |
+| `verified_success` | `boolean` | Evidence gate; see the prominent section above. |
+| `packet_id` | `string`, minLength 1 | Top-level packet fact (D209): the packet driving this attempt. Required for `router_run` records; imports predate packets and omit it. |
+| `parent_attempt_id` | `string` (same pattern) \| `null` | Link fact: parent attempt of an escalation. Nullable/optional for an initial attempt; an escalation requires both this and `escalation_reason`. |
+| `escalation_reason` | `string` minLength 1 \| `null` | Link fact: why this attempt escalates from `parent_attempt_id`. Nullable/optional for an initial attempt; an escalation requires both. |
+| `oracle_cmd` | `string` minLength 1 \| `null` | Oracle fact: the oracle command whose exit status produced the verdict. Null/absent for unverified attempts and for imports without an oracle command. |
+| `verdict` | enum `pass` \| `fail` \| `unverified` | Canonical v2 oracle verdict; see the section above. Optional on imports (mapped when the source provides an outcome); required on `router_run` records. |
+| `failure_class` | enum of the five classes, or `null` | Failure taxonomy; see above. |
+| `route` | `$ref: #/$defs/route` | Observed attempt identity tuple; never derived from class metadata (D206). Required non-null when `verified_success: true`. |
+| `supervisor_route` | `route \| null` | Present only when the source records one (named-crew contract); null is the explicit "none recorded" marker. Required non-null when `verified_success: true`. |
+| `class_record` | `$ref: #/$defs/classRecord` | Strict class block (see below). Required on `router_run` records; omitted only by unclassed imports (with `class_source: "none"`). Forbidden together with `class_source`. |
+| `class_source` | enum `none` | Marks the absence of class metadata. See the import rule below. |
+| `usage` | `$ref: #/$defs/usage` | Nested v2 usage object; see `usage` table. |
+| `cost` | `$ref: #/$defs/cost` | Nested v2 cost object; see `cost` table. |
+| `wall_clock_ms` | `integer \| null`, minimum 0 | Observed wall-clock duration in ms, or null when the source records none. Never estimated or invented. |
+| `selection` | `$ref: #/$defs/selection` | Run-command selection evidence. Required on `router_run` records; forbidden on imports. |
+| `router_event` | `$ref: #/$defs/eventRecord` | **ROUTER** dispatch event; required when `record_kind: router_run`. |
+| `agent_orch_observation` | `$ref: #/$defs/agentOrchObservation` | **AO** observation; required when `record_kind: agent_orch`. |
+| `benchmark_run` | `$ref: #/$defs/crewRunRecord` | **BENCH** crew-run record; required when `record_kind: benchmark_run`. |
+| `provenance` | `$ref: #/$defs/provenance` | Record-level provenance including the new required `source` discriminant. |
 
 ---
+
+## `$defs/usage` (nested, strict source/unavailable conditions)
+
+`usage` is a closed object with one required member, `basis`. Token counters
+are nonnegative integers when reported and null or absent when unknown; zero
+is evidence only when the source actually reports zero and is never an
+unknown sentinel. `total_tokens` stays truthful: optional/null unless the
+source authoritatively reports it or it is calculated from authoritatively
+reported components. No parser estimates tokens from text, context length,
+cost, or elapsed time.
+
+| Field | Schema constraint | Notes |
+|---|---|---|
+| `basis` | enum `observed` \| `provider_reported` \| `calculated` \| `unavailable` | The narrowest truthful basis. |
+| `source` | `string`, minLength 1; **required iff `basis` is not `unavailable`**, **forbidden when `basis` is `unavailable`** (schema-enforced both ways) | Basis-dependent pairing: for `provider_reported`, exactly one of the nine exact phase1-contracts §Usage evidence taxonomy strings: `pi --mode json events`, `codex exec --json usage`, `claude -p --output-format stream-json result event`, `agy -p usage line (agent-orch worker.py)`, `opencode run JSON usage event`, `opencode worker-written usage.json from provider output`, `omp -p --mode json events`, `benchmark v6 CSV usage_*_tokens`, `agent-orch usage.json/accounting_status`. For `observed`/`calculated`, a nonempty authoritative source description of the observer or calculation — never one of the nine `provider_reported` harness strings (those strings are never falsely paired with an observed/calculated basis). |
+| `unavailable_reason` | `string`, minLength 1 | **Required iff `basis` is `unavailable`** and forbidden otherwise (e.g. `text mode` for supervisor Pi attempts until P1-4a). The specific missing-event/output reason. |
+| `input_tokens`, `output_tokens`, `cached_input_tokens`, `reasoning_tokens`, `total_tokens` | `$defs/tokenCounter`: `integer \| null`, minimum 0 | Nonnegative integers when reported; null or absent when unknown. Zero only when the source reports zero. |
+
+The schema enforces the basis↔source/reason pairing with four inner `allOf`
+branches: `basis: "unavailable"` → `unavailable_reason` required and `source`
+forbidden; a known basis (`observed`/`provider_reported`/`calculated`) →
+`source` required and `unavailable_reason` forbidden; `provider_reported` →
+`source` must be exactly one of the nine taxonomy harness strings; and
+`observed`/`calculated` → `source` must be a descriptive authoritative source
+and must not be one of the nine harness strings. If a documented stream
+contains no authoritative usage, record `unavailable` with the specific
+reason — never an estimate.
+
+## `$defs/cost` (nested; no numeric cost without required known tokens)
+
+| Field | Schema constraint | Notes |
+|---|---|---|
+| `basis` | closed enum of exactly two arrays: `["list", "marginal"]` or `["unavailable"]` | Known cost carries both figures; unavailable cost is the sole member and carries neither figure. |
+| `usd_list` | `number`, minimum 0 (null-forced when cost is unavailable) | List-cost JSON number from list input/output/cache rates; present only with known cost. |
+| `usd_marginal` | `number`, minimum 0 (null-forced when cost is unavailable) | Marginal cost: same token quantities after the channel badge multiplier selected at the attempt timestamp. |
+| `pricing_snapshot_ref` | `string \| null`, minLength 1 | Optional dated-terms pricing snapshot citation; null/absent when no snapshot is cited. **Pre-existing accepted Phase 0 baseline field (P0-9a, accepted by D208)**, carried forward unchanged — not a D209 addition, and never a competing usage or cost fact. |
+| `pricing_snapshot_sha256` | `^[0-9a-fA-F]{64}$` or `null` | SHA-256 of the cited pricing snapshot; null/absent when none is cited. **Pre-existing accepted Phase 0 baseline field (P0-9a, accepted by D208)**, carried forward unchanged — not a D209 addition, and never a competing usage or cost fact. |
+
+Cost figures are JSON numbers derived from known tokens and the selected
+dated P0-4 terms. The schema enforces **no numeric cost without the required
+known tokens** via the top-level usage-cost conditional: when `usage` is
+absent, `usage.basis` is `unavailable`, or either of `input_tokens` /
+`output_tokens` is null or absent, `usd_list` and `usd_marginal` are forced
+to null. Conversely, known tokens with `basis: ["unavailable"]` is valid when
+the selected dated terms price nothing (unknown terms never yield an
+estimate). Harness cost estimates and subscription fees are provenance notes,
+never attempt-token cost substitutes. D207 remains the source rule where
+OpenRouter has no row. The governing dated-terms citation lives in
+`provenance` (`source_refs`/`notes`) or the pricing snapshot fields — never
+in an invented number. The two `pricing_snapshot_*` fields themselves are not
+D209 additions: they were accepted in the Phase 0 baseline (P0-9a, accepted by
+D208), where the v1 `cost` object carried them beside its free-form citation
+`basis`, and they are preserved unchanged in v2. They cite the dated-terms
+pricing snapshot only — they never carry or imply a second usage figure or
+cost figure, and no competing usage/cost fact lives in them.
+
+## `$defs/selection` (run-command evidence only)
+
+Required on `router_run` records (together with `packet_id`); **forbidden on
+imports** (`selection: false` in both import branches). Closed object with
+exactly:
+
+| Field | Schema constraint | Notes |
+|---|---|---|
+| `basis` | enum `explicit` \| `explain_cheapest_eligible` | `explicit` (`--route`) or `explain_cheapest_eligible` (role/class selection: first eligible route in `catalog explain --json` marginal-price order). |
+| `reason` | `string`, minLength 1 | Selection reason as recorded by the run command. |
+| `explain_ref` | `string`, minLength 1 | Reference to the `catalog explain --json` evidence backing the selection. |
+| `excluded` | array of closed objects, each requiring exactly `route_id` and `reason` (both non-empty strings) | All excluded-route summaries: route ids and explain reasons only. |
+
+`selection` preserves catalog explain evidence — not a new selection
+judgment — and contains no class metadata: per D206 it creates no
+class-to-model or class-to-route mapping.
+
+## Import rule: `class_source: "none"`
+
+`class_source` has exactly one permitted value, `none`, and marks the absence
+of class metadata. The schema enforces:
+
+- `class_source` and `class_record` are mutually exclusive.
+- An import (`record_kind` `agent_orch` or `benchmark_run`) that omits
+  `class_record` **must** carry `class_source: "none"` — the only condition
+  under which `class_key` (and the rest of the class block) is optional.
+- `router_run` records always carry `class_record` (so they never carry
+  `class_source`).
+
+Historical agent-orch rows without class metadata therefore use
+`class_source: "none"` (phase1-contracts §Ledger, rollup, and imports).
 
 ## `$defs/route`
 
-| Field | Schema constraint | Source system / source contract | Notes |
-|---|---|---|---|
-| `model` | `string`, minLength 1 | **P0-1** tuple member; observed from **ROUTER** `model`, **AO** participant `model`, **BENCH** worker `model` | Part of the identity tuple. |
-| `effort` | `string \| null`, minLength 1 | **P0-1** tuple member; observed from **ROUTER** `effort`, **AO** participant `effort`, **BENCH** worker `effort` | Null only where the harness has no effort dial. Part of the identity tuple. |
-| `harness` | `string`, minLength 1 | **P0-1** tuple member; observed from **ROUTER** `harness`, **AO** participant `harness`, **BENCH** worker `harness` | Part of the identity tuple. |
-| `channel` | `string`, minLength 1 | **P0-1** tuple member; observed from **ROUTER** `channel` | Must match a `channel_id` in the channel catalog (`docs/staffing/catalog.md`); the cross-catalog check is loader work. **AO** and **BENCH** record no channel, so neither source can produce a full tuple on its own. |
-| `provider` | `string \| null` (optional) | **ROUTER** `provider` | Optional observed metadata: not part of the identity tuple, never a replacement for `channel`, null/absent when the source does not observe a provider. Never invented. |
-
----
+Unchanged from v1. Required: `model`, `effort`, `harness`, `channel`;
+optional `provider` (`string \| null`) is observed metadata, never part of
+the identity tuple and never invented. `effort` is null only where the
+harness has no effort dial. `channel` must match a `channel_id` in
+`docs/staffing/catalog.md` (cross-catalog check is loader work). Observed
+attempt evidence only; never derived from class metadata (D206).
 
 ## `$defs/classRecord`
 
-Reproduces `classes.schema.json` `$defs/classBlock` verbatim: same six
-required fields, same closed value sets, same canonical `class_key` pattern.
+Reproduces `classes.schema.json` `$defs/classBlock` verbatim, as in v1: same
+six required fields (`class_key`, `role`, `oracle_type`, `domain_tags`,
+`size_band`, `language`), same closed value sets, same canonical `class_key`
+pattern (`role/oracle_type/domain_tags/size_band/language`; tags sorted
+ascending by codepoint, deduplicated, `+`-joined, empty set = literal
+`none`). Per D206 no class→model or class→route property exists.
 
-| Field | Schema constraint | Source system / source contract | Notes |
-|---|---|---|---|
-| `class_key` | `string`, pattern `^(impl\|plan\|review\|judge\|prose)/(deterministic\|judge\|human\|none)/(none\|(?:persistence\|concurrency\|security\|authority\|ui-browser\|data-schema\|infra-env)(?:\+(?:persistence\|concurrency\|security\|authority\|ui-browser\|data-schema\|infra-env))*)/(xs\|s\|m\|l)/(python\|typescript\|shell\|c\|sql\|yaml-config\|markdown\|mixed)$` | **P0-1** class-key grammar (phase0-contracts §Class key) rendered canonically by **P0-1** `classes.schema.json` `$defs/classBlock` | Canonical rendering: `role/oracle_type/domain_tags/size_band/language`; tags sorted ascending by codepoint, deduplicated, `+`-joined; empty set = literal `none`, never an empty segment. Cross-field equality with the components and sortedness/dedup beyond the pattern are loader work (`catalog.validate_class_block`). |
-| `role` | enum `impl` \| `plan` \| `review` \| `judge` \| `prose` | **P0-1** initial value set (phase0-contracts §Class key; `classes.schema.json`) | Closed. |
-| `oracle_type` | enum `deterministic` \| `judge` \| `human` \| `none` | **P0-1** initial value set (phase0-contracts §Class key; `classes.schema.json`) | Closed; feeds the deterministic don't-cheap-trial rule. |
-| `domain_tags` | array, unique items from the closed seven-tag vocabulary `persistence`, `concurrency`, `security`, `authority`, `ui-browser`, `data-schema`, `infra-env`; possibly empty | **P0-1** initial value set (phase0-contracts §Class key; `classes.schema.json`) | Authoritative component for the third key segment. |
-| `size_band` | enum `xs` \| `s` \| `m` \| `l` | **P0-1** initial value set (phase0-contracts §Class key; `classes.schema.json`) | Closed. |
-| `language` | enum `python` \| `typescript` \| `shell` \| `c` \| `sql` \| `yaml-config` \| `markdown` \| `mixed` | **P0-1** initial value set (phase0-contracts §Class key; `classes.schema.json`) | Closed. |
+## `$defs/provenance` (with the v2 `source` discriminant)
 
-Per D206, no class→model or class→route property exists here (see the D206
-section above).
+| Field | Schema constraint | Notes |
+|---|---|---|
+| `source` | closed enum `benchmark` \| `agent-orch` \| `router-run` | **Required** and paired with `record_kind` by the top-level conditionals: `agent_orch` ↔ `agent-orch`, `benchmark_run` ↔ `benchmark`, `router_run` ↔ `router-run`. `benchmark`/`agent-orch` mark imports; `router-run` marks a live run-command attempt. |
+| `recorded_by` | `string`, minLength 1 (required) | Who recorded the unified record. |
+| `source_refs` | array of non-empty strings, minItems 1 (required) | Named sources that justify this record's fields. |
+| `notes` | array of non-empty strings (optional) | Free-form notes, including dated-terms citations. |
 
----
+## `$defs/eventRecord`, `$defs/agentOrchObservation`, `$defs/crewRunRecord`
 
-## `$defs/usage` (and `tokenCounter`)
-
-| Field | Schema constraint | Source system / source contract | Notes |
-|---|---|---|---|
-| `usage_capture` | enum `native_json` \| `stream_events` \| `worker_written` \| `none` | **P0-1** — exactly the accepted P0-1 contract (`routes.schema.json` `$defs/route.usage_capture`) | `none` means the source captures no usage and every counter is then null (schema-enforced); no counter is ever estimated or invented. |
-| `input_tokens` | `tokenCounter`: `integer \| null`, minimum 0 | **P0-9** — synthesis counter; populated only when a source reports it | None of the three embedded source shapes currently records token counters. |
-| `output_tokens` | `tokenCounter` | **P0-9** — synthesis counter; populated only when a source reports it | As above. |
-| `cached_input_tokens` | `tokenCounter` | **P0-9** — synthesis counter; populated only when a source reports it | As above. |
-| `reasoning_tokens` | `tokenCounter` | **P0-9** — synthesis counter; populated only when a source reports it | As above. |
-| `total_tokens` | `tokenCounter` | **P0-9** — synthesis counter; populated only when a source reports it | As above. |
-
-All six fields are required; the counters are null where source availability
-requires. All five counters plus `usage_capture` are required non-null when
-`verified_success: true`.
-
----
-
-## `$defs/cost`
-
-| Field | Schema constraint | Source system / source contract | Notes |
-|---|---|---|---|
-| `amount_usd` | `money_or_null`: `string \| null`, pattern `^(0|[1-9][0-9]*)(\.[0-9]+)?$` | **BENCH** money-string shape; **P0-1** no-invented-price rule (phase0-contracts §Terms and prices) | Null when the source does not price the attempt. Required non-null when `verified_success: true`. |
-| `basis` | `string`, minLength 1 | **P0-1** — every price (or its absence) has a source line: pricing snapshot, crews file, contract terms entry, or an explicit statement that the source records no price | Free-form citation; no invented basis categories. Required non-empty when `verified_success: true`. |
-| `pricing_snapshot_ref` | `string \| null`, minLength 1 | **BENCH** stage `pricing_snapshot_ref` | Null/absent when no snapshot is cited. |
-| `pricing_snapshot_sha256` | `$defs/sha256` (`^[0-9a-fA-F]{64}$`) or null | **BENCH** stage `pricing_snapshot_sha256` | Null/absent when no snapshot is cited. |
-
----
-
-## `$defs/eventRecord` (router event — all 17 `EVENT_FIELDS`)
-
-Exactly the keys of `src/lee_llm_router/events.py` `EVENT_FIELDS`, in the
-shape `build_event` returns: all seventeen keys are present, with
-`OPTIONAL_FIELDS` (`ts`, `host`, `harness`, `effort`, `authorized_by`,
-`snapshot_observed_at`) filled by the builder and therefore required here,
-nullable where the builder allows `None`.
-
-| Field | Schema constraint | Source system / source contract | Notes |
-|---|---|---|---|
-| `ts` | `string`, `format: date-time` | **ROUTER** `EVENT_FIELDS`; `OPTIONAL_FIELD` filled by `build_event` (`_utc_now_iso`, aware UTC ISO, seconds precision) | Builder default: now. |
-| `host` | `string`, minLength 1 | **ROUTER** `EVENT_FIELDS`; `OPTIONAL_FIELD` defaulted to `socket.gethostname()` by `build_event` | Same value `availability.py` uses. |
-| `harness` | `string`, minLength 1 | **ROUTER** `EVENT_FIELDS`; `OPTIONAL_FIELD` defaulted to `"cli"` by `build_event` | Caller-supplied otherwise. |
-| `crew` | `string`, minLength 1 | **ROUTER** `EVENT_FIELDS` (required) | Caller-supplied. |
-| `role` | `string`, minLength 1 | **ROUTER** `EVENT_FIELDS` (required) | Caller-supplied. |
-| `mode` | enum `strict` \| `flex` \| `bind` | **ROUTER** resolution modes documented by `events.py` | `bind` is `events.BIND_MODE`, the only mode permitting non-null `authorized_by`. |
-| `worker_id` | `string`, minLength 1 | **ROUTER** `EVENT_FIELDS` (required) | Caller-supplied. |
-| `provider` | `string`, minLength 1 | **ROUTER** `EVENT_FIELDS` (required) | Observed metadata; not part of the route identity tuple. |
-| `model` | `string`, minLength 1 | **ROUTER** `EVENT_FIELDS` (required) | Route identity component. |
-| `effort` | `string \| null`, minLength 1 | **ROUTER** `EVENT_FIELDS`; `OPTIONAL_FIELD` defaulting to `None` | Route identity component. |
-| `channel` | `string`, minLength 1 | **ROUTER** `EVENT_FIELDS` (required) | Route identity component; ids cataloged in `docs/staffing/catalog.md`. |
-| `headroom` | enum `healthy` \| `degraded` \| `likely_exhausted` \| `exhausted` \| `unknown` | **ROUTER** — funding-headroom wire values from `src/lee_llm_router/availability.py` `Health` | Judgement that produced the dispatch. |
-| `reason` | `string`, minLength 1 | **ROUTER** `EVENT_FIELDS` (required) | Caller-supplied. |
-| `authorized_by` | `string \| null` | **ROUTER** `EVENT_FIELDS`; `OPTIONAL_FIELD` defaulting to `None`; non-null only when `mode` is `bind` (`build_event` raises otherwise; schema `allOf` enforces the same) | — |
-| `route_id` | `string`, minLength 1 | **ROUTER** `EVENT_FIELDS` (required) | Opaque router route id. |
-| `snapshot_observed_at` | `string` (`format: date-time`) or `null` | **ROUTER** `EVENT_FIELDS`; `OPTIONAL_FIELD` defaulting to `None` | Availability-snapshot observation time. |
-| `snapshot_stale` | `boolean` | **ROUTER** `EVENT_FIELDS` (required; `build_event` rejects non-bool) | Availability-snapshot staleness flag. |
-
----
-
-## `$defs/agentOrchObservation` (Agent-Orch observation, embedded verbatim)
-
-Embedded from **AO** `OBSERVATION_SCHEMA` (`performance.py`), verbatim except
-that its internal `$defs.provenance`/`participant`/`severityCounts` are
-re-scoped to `$defs/aoProvenance`, `$defs/aoParticipant`, and
-`$defs/aoSeverityCounts`. Required when `record_kind: agent_orch`.
-
-| Field | Schema constraint | Source system / source contract | Notes |
-|---|---|---|---|
-| `schema_version` | `const: 1` | **AO** `OBSERVATION_SCHEMA` | Verbatim. |
-| `idempotency_key` | `string`, pattern `^sha256:[0-9a-f]{64}$` | **AO** `OBSERVATION_SCHEMA` | Verbatim. |
-| `source` | object, closed; see sub-table | **AO** `OBSERVATION_SCHEMA` | Verbatim. |
-| `task` | object, closed; see sub-table | **AO** `OBSERVATION_SCHEMA` | Verbatim. |
-| `producer` | `$ref: aoParticipant` | **AO** `OBSERVATION_SCHEMA` `$defs/participant` | Verbatim (re-scoped `$ref`). |
-| `reviewer` | `$ref: aoParticipant` | **AO** `OBSERVATION_SCHEMA` `$defs/participant` | Verbatim (re-scoped `$ref`). |
-| `outcome` | object, closed; see sub-table | **AO** `OBSERVATION_SCHEMA` | Verbatim. |
-| `review` | object, closed; see sub-table | **AO** `OBSERVATION_SCHEMA` | Verbatim. |
-
-### `agent_orch_observation.source`
-
-| Field | Schema constraint | Source system / source contract | Notes |
-|---|---|---|---|
-| `mission` | `string`, minLength 1 | **AO** `OBSERVATION_SCHEMA` | Verbatim. |
-| `cycle_id` | `string`, minLength 1 | **AO** `OBSERVATION_SCHEMA` | Verbatim. |
-| `run_id` | `string`, minLength 1 | **AO** `OBSERVATION_SCHEMA` | Verbatim. |
-| `producer_step_id` | `string`, minLength 1 | **AO** `OBSERVATION_SCHEMA` | Verbatim. |
-| `producer_attempt` | `integer`, minimum 1 | **AO** `OBSERVATION_SCHEMA` | Verbatim. |
-| `review_step_id` | `string`, minLength 1 | **AO** `OBSERVATION_SCHEMA` | Verbatim. |
-| `review_attempt` | `integer`, minimum 1 | **AO** `OBSERVATION_SCHEMA` | Verbatim. |
-
-### `agent_orch_observation.task`
-
-| Field | Schema constraint | Source system / source contract | Notes |
-|---|---|---|---|
-| `backlog_title` | `string \| null` | **AO** `OBSERVATION_SCHEMA` | Nullable in the source. |
-| `producer_role` | `string \| null` | **AO** `OBSERVATION_SCHEMA` | Nullable in the source. |
-| `reviewer_role` | `string \| null` | **AO** `OBSERVATION_SCHEMA` | Nullable in the source. |
-
-### `agent_orch_observation.producer` / `.reviewer` (`$defs/aoParticipant`)
-
-| Field | Schema constraint | Source system / source contract | Notes |
-|---|---|---|---|
-| `requested` | `$ref: aoProvenance` | **AO** `OBSERVATION_SCHEMA` `$defs/participant` | Verbatim (re-scoped `$ref`). |
-| `executed` | `$ref: aoProvenance` | **AO** `OBSERVATION_SCHEMA` `$defs/participant` | Verbatim (re-scoped `$ref`). |
-| `executed_attested` | `boolean` | **AO** `OBSERVATION_SCHEMA` `$defs/participant` | Verbatim. |
-
-### `$defs/aoProvenance` (AO requested/executed block)
-
-| Field | Schema constraint | Source system / source contract | Notes |
-|---|---|---|---|
-| `harness` | `string`, minLength 1 | **AO** `_PROVENANCE_SCHEMA` (`performance.py`) | Verbatim. |
-| `model` | `string`, minLength 1 | **AO** `_PROVENANCE_SCHEMA` | Verbatim. |
-| `effort` | enum `low` \| `medium` \| `high` \| `xhigh` \| `unknown` | **AO** `_PROVENANCE_SCHEMA` (`CANONICAL_EFFORTS` + `unknown`) | Verbatim. |
-
-Requested-only provenance with `executed_attested: false` does **not**
-constitute a substantive executed route: the source records no channel, so no
-full `(model, effort, harness, channel)` identity tuple exists in this shape.
-
-### `agent_orch_observation.outcome`
-
-| Field | Schema constraint | Source system / source contract | Notes |
-|---|---|---|---|
-| `run_status` | `string`, minLength 1 | **AO** `OBSERVATION_SCHEMA` | Verbatim. |
-| `run_passed` | `boolean` | **AO** `OBSERVATION_SCHEMA` | Verbatim. Source outcome evidence; not interchangeable with `verdict`. |
-| `cycle_outcome` | `string`, minLength 1 | **AO** `OBSERVATION_SCHEMA` | Verbatim. |
-| `final_completion` | `boolean` | **AO** `OBSERVATION_SCHEMA` | Verbatim. |
-
-### `agent_orch_observation.review`
-
-| Field | Schema constraint | Source system / source contract | Notes |
-|---|---|---|---|
-| `final_verdict` | enum `pass` \| `fail` | **AO** `OBSERVATION_SCHEMA` | Source of the unified `verdict` values `pass`/`fail`. Semantics are Agent-Orch review semantics only. |
-| `first_review_clean` | `boolean` | **AO** `OBSERVATION_SCHEMA` | Verbatim. |
-| `severity_threshold` | enum `Low` \| `Medium` \| `High` \| `Critical` | **AO** `OBSERVATION_SCHEMA` (`SEVERITIES`, reversed order) | Verbatim. |
-| `severity_counts` | `$ref: aoSeverityCounts` | **AO** `_SEVERITY_COUNTS_SCHEMA` | Verbatim (re-scoped `$ref`). |
-| `finding_count` | `integer`, minimum 0 | **AO** `OBSERVATION_SCHEMA` | Verbatim. |
-| `blocking_finding_count` | `integer`, minimum 0 | **AO** `OBSERVATION_SCHEMA` | Verbatim. |
-| `review_cycles` | `integer`, minimum 1 | **AO** `OBSERVATION_SCHEMA` | Verbatim. |
-| `repair_cycles` | `integer`, minimum 0 | **AO** `OBSERVATION_SCHEMA` | Verbatim. |
-| `artifact_sha256s` | array, minItems 1, items `^[0-9a-f]{64}$` | **AO** `OBSERVATION_SCHEMA` | Verbatim. |
-
-### `$defs/aoSeverityCounts`
-
-| Field | Schema constraint | Source system / source contract | Notes |
-|---|---|---|---|
-| `Critical` | `integer`, minimum 0 | **AO** `_SEVERITY_COUNTS_SCHEMA` (`SEVERITIES`) | Verbatim. |
-| `High` | `integer`, minimum 0 | **AO** `_SEVERITY_COUNTS_SCHEMA` | Verbatim. |
-| `Medium` | `integer`, minimum 0 | **AO** `_SEVERITY_COUNTS_SCHEMA` | Verbatim. |
-| `Low` | `integer`, minimum 0 | **AO** `_SEVERITY_COUNTS_SCHEMA` | Verbatim. |
-
----
-
-## `$defs/crewRunRecord` (benchmark crew-run record, embedded verbatim)
-
-Embedded from **BENCH** (`crew-run.schema.json`) verbatim, minus its
-`$schema`/`$id`/`title`/`description` envelope. It keeps its own `attempt_id`;
-the unified top-level `attempt_id` mirrors it. Required when
-`record_kind: benchmark_run`.
-
-| Field | Schema constraint | Source system / source contract | Notes |
-|---|---|---|---|
-| `schema_version` | `const: "benchmark.crew-run/1"` | **BENCH** | Verbatim. |
-| `crew_name` | enum of 14 crew ids (`mixed-flagship` … `gemini-pro-crew`) | **BENCH** | Verbatim closed enum. |
-| `crews_file_sha256` | `$defs/sha256` | **BENCH** | Verbatim. |
-| `mission` | object, closed; see sub-table | **BENCH** | Verbatim. |
-| `attempt_id` | `string`, pattern `^[A-Za-z0-9._:-]+$`, minLength 1 | **BENCH** | The unified top-level `attempt_id` takes its pattern verbatim from here. |
-| `stages` | array of `$defs/crewStage`, minItems 1 | **BENCH** | Verbatim. |
-| `totals` | object, closed; see sub-table | **BENCH** | Verbatim. |
-| `final_acceptance` | `$defs/acceptance`: `accepted` \| `not_accepted` \| `unverified` \| `null` | **BENCH** | Source of the unified `verdict` values `accepted`/`not_accepted`/`unverified`. Benchmark acceptance semantics; not interchangeable with Agent-Orch review verdict semantics. |
-| `provenance` | object, closed; see sub-table | **BENCH** | Verbatim. |
-
-### `benchmark_run.mission`
-
-| Field | Schema constraint | Source system / source contract | Notes |
-|---|---|---|---|
-| `task_key` | `string`, minLength 1 | **BENCH** | Verbatim. |
-| `role_composition` | array of `string`, minItems 1, unique | **BENCH** | Verbatim. |
-
-### `$defs/crewStage` (benchmark_run.stages[])
-
-| Field | Schema constraint | Source system / source contract | Notes |
-|---|---|---|---|
-| `stage` | enum `envision` \| `ideate` \| `reconsider` \| `score` \| `author` | **BENCH** | Verbatim. |
-| `worker` | `$ref: crewWorker` | **BENCH** `$defs/worker` | See crewWorker table. |
-| `run_id` | `string \| null`, minLength 1 | **BENCH** | Verbatim. |
-| `cost_low_usd` | `money_or_null` | **BENCH** | Verbatim; part of the benchmark cost range. |
-| `cost_high_usd` | `money_or_null` | **BENCH** | Verbatim; part of the benchmark cost range. |
-| `elapsed_ms` | `integer \| null`, minimum 0 | **BENCH** | Verbatim; a source for unified `wall_clock_ms`. |
-| `acceptance` | `$defs/acceptance` | **BENCH** | Stage-level acceptance; distinct from `final_acceptance` and from `verdict` semantics. |
-| `pricing_snapshot_ref` | `string \| null`, minLength 1 | **BENCH** | Source for unified `cost.pricing_snapshot_ref`. |
-| `pricing_snapshot_sha256` | `string \| null`, pattern `^[0-9a-fA-F]{64}$` | **BENCH** | Source for unified `cost.pricing_snapshot_sha256`. |
-| `evidence_status` | enum `measured` \| `hand-assembled` \| `unmeasured` | **BENCH** | Verbatim. |
-
-### `$defs/crewWorker` (benchmark worker block)
-
-| Field | Schema constraint | Source system / source contract | Notes |
-|---|---|---|---|
-| `model` | `string`, minLength 1 | **BENCH** | Route identity component candidate. |
-| `harness` | `string`, minLength 1 | **BENCH** | Route identity component candidate. |
-| `effort` | `string \| null`, minLength 1 | **BENCH** | Route identity component candidate. |
-| `model_family` | `string`, minLength 1 | **BENCH** | Benchmark-only metadata; **not** part of the unified route identity tuple. |
-
-The worker records `model`/`harness`/`effort`/`model_family` only, with no
-channel and no supervisor route, so this source alone cannot produce a full
-route identity tuple; nothing beyond the source is claimed.
-
-### `benchmark_run.totals`
-
-| Field | Schema constraint | Source system / source contract | Notes |
-|---|---|---|---|
-| `cost_low_usd` | `money_or_null` | **BENCH** | Verbatim; a range bound, not a single amount. |
-| `cost_high_usd` | `money_or_null` | **BENCH** | Verbatim; a range bound, not a single amount. |
-| `elapsed_ms` | `integer \| null`, minimum 0 | **BENCH** | Verbatim; a source for unified `wall_clock_ms`. |
-| `stage_count` | `integer`, minimum 1 | **BENCH** | Verbatim. |
-| `priced_stage_count` | `integer`, minimum 0 | **BENCH** | Verbatim. |
-| `timed_stage_count` | `integer`, minimum 0 | **BENCH** | Verbatim. |
-
-### `benchmark_run.provenance` (embedded crew-run provenance)
-
-| Field | Schema constraint | Source system / source contract | Notes |
-|---|---|---|---|
-| `assembled_by` | `string`, minLength 1 | **BENCH** | Verbatim. |
-| `assembled_at` | `string`, `format: date-time` | **BENCH** | Analogous to unified `captured_at`; the analogy is positional, not identical semantics. |
-| `source_csv_sha256` | `$defs/sha256` | **BENCH** | Verbatim. |
-| `notes` | array of `string` | **BENCH** | Verbatim. |
-
----
-
-## `$defs/provenance` (unified record-level provenance)
-
-| Field | Schema constraint | Source system / source contract | Notes |
-|---|---|---|---|
-| `recorded_by` | `string`, minLength 1 | **P0-9** — record-level provenance introduced by this schema | Identifies who recorded the unified record (e.g. the P0-9a task id in the examples). |
-| `source_refs` | array of `string` (minLength 1 each), minItems 1 | **P0-9** — record-level provenance introduced by this schema | References to the named sources that justify this record's fields. |
-| `notes` | array of `string` (minLength 1 each), optional | **P0-9** — record-level provenance introduced by this schema | Free-form notes. |
-
----
+All three embedded source payloads are carried over from v1 unchanged and
+keep their v1 field semantics (see the Phase 0 history of this document in
+git for the per-field source tables; the payloads are embedded verbatim):
+`eventRecord` is exactly the 17 `EVENT_FIELDS` keys of `build_event` (all
+required; non-string `authorized_by` still forces `mode: "bind"`);
+`agentOrchObservation` is **AO** `OBSERVATION_SCHEMA` verbatim with
+`$defs/aoProvenance` / `$defs/aoParticipant` / `$defs/aoSeverityCounts`
+re-scoped; `crewRunRecord` is **BENCH** crew-run verbatim minus its envelope,
+keeping its own `attempt_id`. These payloads are provenance evidence only
+(see the source-payload provenance section).
 
 ## Shared scalar `$defs`
 
-| Def | Schema constraint | Source system / source contract | Notes |
-|---|---|---|---|
-| `$defs/sha256` | `string`, pattern `^[0-9a-fA-F]{64}$` | **BENCH** `$defs/sha256` | Same pattern reused for `cost.pricing_snapshot_sha256`, `benchmark_run.crews_file_sha256`, and `benchmark_run.provenance.source_csv_sha256`. |
-| `$defs/money_or_null` | `string \| null`, pattern `^(0|[1-9][0-9]*)(\.[0-9]+)?$` | **BENCH** `$defs/money_or_null` | Benchmark money-string shape; used by `cost.amount_usd`. |
-| `$defs/acceptance` | `string \| null`, enum `accepted` \| `not_accepted` \| `unverified` \| `null` | **BENCH** `$defs/acceptance` | Benchmark acceptance vocabulary only; distinct from the AO review verdict and from `failure_class`. |
-| `$defs/tokenCounter` | `integer \| null`, minimum 0 | **P0-9** — synthesis scalar for the five usage counters | — |
-
----
+| Def | Schema constraint |
+|---|---|
+| `$defs/sha256` | `string`, pattern `^[0-9a-fA-F]{64}$` |
+| `$defs/money_or_null` | `string \| null`, pattern `^(0|[1-9][0-9]*)(\.[0-9]+)?$` (v1 benchmark money-string shape, used inside embedded payloads) |
+| `$defs/acceptance` | `string \| null`, enum `accepted` \| `not_accepted` \| `unverified` \| `null` (benchmark vocabulary, embedded payload only — never the top-level v2 `verdict`) |
+| `$defs/tokenCounter` | `integer \| null`, minimum 0 |
 
 ## Conditional rules (`allOf`)
 
-The schema enforces four conditional families; each is a mapping of source or
-synthesis semantics, not a new field:
+The schema enforces ten conditional families:
 
 1. **`verified_success: true` gate** — requires `route`, `supervisor_route`,
    `class_record`, `verdict`, `failure_class`, `usage`, `cost`,
-   `wall_clock_ms`; forces `failure_class` null, `verdict` ∈
-   {`pass`, `accepted`}, all five usage counters non-null with a valid
-   `usage_capture`, `amount_usd` matching the money pattern with non-empty
-   `basis`, and integer `wall_clock_ms` ≥ 0. (See the prominent statement
-   above; the source column for this rule is **P0-9** — the P0-9a task
-   contract.)
-2. **`record_kind: agent_orch`** → `agent_orch_observation` required (**AO**).
-3. **`record_kind: benchmark_run`** → `benchmark_run` required (**BENCH**).
-4. **`record_kind: interactive`** → `router_event` required (**ROUTER**),
-   `verified_success` forced `false`, and `verdict` forbidden (`false`) — a
-   router event is a dispatch event that records no outcome, so no verdict may
-   be asserted for it. The interactive branch constrains nothing else: the
-   router event itself supplies no outcome or failure class, so `failure_class`
-   may remain absent, but the accepted schema does not prohibit a synthesized
-   failure classification on an interactive record.
+   `wall_clock_ms`, `oracle_cmd`; forces `failure_class` null, `verdict`
+   exactly `"pass"`, `oracle_cmd` a non-empty string, usage with a
+   non-unavailable basis and a required `source` plus **`input_tokens` and
+   `output_tokens` non-null nonnegative integers** (the fields current P0-4
+   pricing needs), and both cost figures non-null nonnegative numbers. The
+   optional `cached_input_tokens`/`reasoning_tokens` components may remain
+   genuinely unknown (null/absent) when the authoritative harness output
+   omits them, and `total_tokens` stays optional/null unless authoritatively
+   reported or calculated. (See the prominent section above.)
+2. **`record_kind: agent_orch`** → `agent_orch_observation` required,
+   `provenance.source` const `agent-orch`, `selection` forbidden.
+3. **`record_kind: benchmark_run`** → `benchmark_run` required,
+   `provenance.source` const `benchmark`, `selection` forbidden.
+4. **`record_kind: router_run`** → `router_event`, `packet_id`, `selection`,
+   `class_record`, `verdict`, `usage`, `cost` required;
+   `provenance.source` const `router-run`.
+5. **`router_run` + `verdict` `pass`/`fail`** → `oracle_cmd` required,
+   non-empty string.
+6. **`router_run` + `verdict` `unverified`** → `oracle_cmd` forced `null`.
+7. **Escalation link** — if either `parent_attempt_id` or
+   `escalation_reason` is a non-empty string, both are required (and
+   `parent_attempt_id` must match the attempt-id pattern). Initial attempts
+   may carry both as `null` or omit them.
+8. **`class_source` present** → `class_record` forbidden.
+9. **Import without `class_record`** → `class_source` required with const
+   `none`.
+10. **Usage-cost rule** — if `usage` is absent, `usage.basis` is
+    `unavailable`, or `input_tokens`/`output_tokens` is null or absent, then
+    `cost.usd_list` and `cost.usd_marginal` are forced to `null` (no numeric
+    cost without the required known tokens).
 
-Inside `$defs/usage`, `usage_capture: "none"` forces all five counters to
-null (**P0-1** contract semantics). Inside `$defs/eventRecord`,
-non-string `authorized_by` (i.e. any non-null value) forces `mode: "bind"`
-(**ROUTER** `build_event` rule).
+Inside `$defs/usage`: `basis: "unavailable"` → `unavailable_reason` required
+and `source` forbidden; a known basis → `source` required and
+`unavailable_reason` forbidden; `provider_reported` → `source` restricted to
+the exact nine taxonomy harness strings; `observed`/`calculated` → `source` a
+nonempty authoritative description that is never one of the nine harness
+strings. Inside `$defs/cost`: `["list", "marginal"]`
+→ both figures required (numbers ≥ 0); `["unavailable"]` → both figures
+forced null. Inside `$defs/eventRecord`: non-null `authorized_by` forces
+`mode: "bind"`.
 
 ---
 
-## The three schema examples and their source/absence semantics
+## The five schema examples and the fixture copies
 
-The schema ships exactly three examples, one per `record_kind`. Each is a
+The schema ships exactly five examples — one per import kind with class
+metadata, one benchmark import, two `router_run` shapes (unverified initial
+attempt and failed escalation), and one unclassed import. Each is a
 **scratch** example: no private run material, no real pricing, and no
-provider calls; every hash is a zero digest and every id a scratch id. Each
-example demonstrates the absence semantics for the fields its source does not
-record — absence is recorded as `null` (or field omission where the schema
-permits it), never invented.
+provider calls; every id is a scratch id and every counter a scratch
+demonstration value. Each example demonstrates the absence semantics for the
+fields its source does not record — absence is recorded as `null` (or field
+omission where the schema permits it), never invented.
 
-1. **`agent_orch` example (`attempt_id: a6a85c6b02c6`).** Source: **AO**
-   `OBSERVATION_SCHEMA`. The observation records *requested*
-   model/harness/effort only, with `executed_attested: false` on both
-   participants and **no channel**, so no route and no provider are asserted
-   and no full identity tuple exists in this source. `supervisor_route` is
-   null (the source records no executed supervisor route). `usage_capture` is
-   `none` with all counters null (the observation records no token counters);
-   `wall_clock_ms` is null (no duration recorded); `amount_usd` is null (the
-   observation records no cost and no price is asserted). It carries
-   `verdict: "pass"` (from `review.final_verdict`) and `failure_class: null`,
-   yet `verified_success` is **false**: the source reports a passing outcome
-   but lacks complete route, supervisor-route, token, cost, and duration
-   evidence, and nothing is invented to reach true.
+1. **`agent_orch` import example (`attempt_id: a6a85c6b02c6`).** Embedded AO
+   observation verbatim as provenance evidence; `provenance.source` is
+   `agent-orch`. The observation records requested model/harness/effort only
+   (`executed_attested: false`, no channel), so **no route and no provider
+   are asserted**; `supervisor_route` is null. `usage.basis` is
+   `unavailable` (the observation records no token counters) with an explicit
+   reason; `cost.basis` is `["unavailable"]` with no figures; no
+   `wall_clock_ms`. `verdict: "pass"` is the canonical v2 mapping of
+   `review.final_verdict`; the source-specific value remains in the payload.
+   `verified_success` is **false**: a passing outcome without complete route,
+   supervisor-route, usage, cost, oracle, and duration evidence — nothing is
+   invented.
+2. **`benchmark_run` import example (`attempt_id:
+   bench-mixed-economy-0001`).** Embedded crew-run record verbatim including
+   its own `attempt_id`; `provenance.source` is `benchmark`; source usage is
+   preserved exactly (this v1 shape captures none). No route, provider, or
+   `supervisor_route` is asserted (the worker records
+   model/harness/effort/model_family only, no channel). `usage.basis` is
+   `unavailable` (`evidence_status: unmeasured` — no token counters);
+   `cost.basis` is `["unavailable"]` because the `benchmark v6 CSV
+   usage_*_tokens` inputs this import needs are absent and no dated terms
+   price an untokenized row. `verdict: "pass"` is the canonical mapping of
+   `final_acceptance: "accepted"`; the acceptance vocabulary remains in the
+   payload. `verified_success` is **false** for the same missing-evidence
+   reason.
+3. **`router_run` unverified example (`attempt_id: pi-run-0001`).** A live
+   run-command attempt: `packet_id` present, `selection` with basis
+   `explicit`, `class_record` present, and the embedded `router_event`
+   carrying exactly the `EVENT_FIELDS` keys. `usage.basis` is `unavailable`
+   with `unavailable_reason: "text mode"` (supervisor Pi attempts until
+   P1-4a); `cost.basis` is `["unavailable"]` with no figures; `verdict` is
+   `unverified` because no `--oracle CMD` was given, so `oracle_cmd` is null.
+   `parent_attempt_id`/`escalation_reason` are both null (initial attempt).
+   `verified_success` is **false**.
+4. **`router_run` escalation example (`attempt_id: pi-run-0002`).** A linked
+   attempt: `parent_attempt_id` and `escalation_reason` are both present, as
+   phase1-contracts requires. `usage.basis` is `provider_reported` from the
+   exact `codex exec --json usage` evidence string with scratch counter
+   values (including source-reported zeros); `cost.basis` is
+   `["unavailable"]` because this scratch example selects no dated P0-4 terms
+   — figures are never estimated from tokens. `verdict: "fail"` with
+   `failure_class: "spec_rejected"` and a recorded `oracle_cmd` (nonzero
+   exit). `selection` with basis `explain_cheapest_eligible` preserves two
+   excluded-route summaries (route ids and explain reasons only).
+   `verified_success` is **false** (fail verdict, no duration).
+5. **Unclassed import example (`attempt_id: a6a85c6b02c7`).** An imported
+   agent-orch row without class metadata: `class_source: "none"` and no
+   `class_record` (the only condition under which the class block may be
+   omitted). `usage.basis` is `provider_reported` from the exact
+   `agent-orch usage.json/accounting_status` string, preserving the accounted
+   artifact's usage exactly — including the unknown reasoning component as
+   `null` (never zero); an `accounting_status: unaccounted` row would instead
+   record `unavailable` with a reason. `cost.basis` is `["unavailable"]` (no
+   dated terms selected in this scratch import). `verified_success` is
+   **false** (no route, supervisor route, class record, or duration).
 
-2. **`benchmark_run` example (`attempt_id: bench-mixed-economy-0001`).**
-   Source: **BENCH** crew-run record, embedded verbatim including its own
-   `attempt_id`, which the unified top-level `attempt_id` mirrors. No route,
-   provider, or `supervisor_route` is asserted: the crew-run worker records
-   model/harness/effort/model_family only, with no channel and no supervisor
-   route. Token usage is not captured by this source, so `usage_capture` is
-   `none` with all counters null; `wall_clock_ms` is null because
-   `totals.elapsed_ms` is null; money fields stay null because
-   `totals.cost_low_usd`/`cost_high_usd` are a range and both are null in this
-   unpriced example. It carries `verdict: "accepted"` (from
-   `final_acceptance`) and `failure_class: null`, yet `verified_success` is
-   **false** for the same missing-evidence reason; nothing is invented.
+### Fixtures
 
-3. **`interactive` example (`attempt_id: pi-interactive-0001`).** Source:
-   **ROUTER** ledger event; the embedded `router_event` payload carries
-   exactly the `EVENT_FIELDS` keys. The unified `route` is derived **only**
-   from fields the event itself records (`model`, `effort`, `harness`,
-   `channel`, `provider`); `anthropic-sub` is a channel id from
-   `docs/staffing/catalog.md`, and `provider` is optional observed metadata
-   carried by the event, not part of the identity tuple.
-   `verified_success` is **false** — structurally so: an interactive record is
-   a dispatch event that records no outcome, so `verified_success` is forced
-   `false` and no `verdict` or `supervisor_route` is asserted. In this example
-   `failure_class` is absent because the router event itself supplies no
-   failure classification; the schema does not forbid `failure_class` on
-   interactive records (it constrains only `verdict` and `verified_success`
-   there), so this absence is an example-level choice, not a schema rule. `usage_capture` is `none` with all counters null (the ledger
-   event records no usage); no `wall_clock_ms` is asserted (the event records
-   no duration); `amount_usd` is null (the channel is a subscription and no
-   price is asserted).
+The five files
+`tests/fixtures/staffing/attempt-record-{agent-orch,benchmark-run,router-run-unavailable,router-run-escalation,import-agent-orch-unclassed}.json`
+are **byte-for-byte deterministic copies** of the corresponding schema
+examples (deep-equal JSON documents), one per example above. They are
+validated by `tests/test_staffing_attempt_record.py`, which asserts each
+fixture validates under Draft 2020-12 and exactly equals its schema example,
+so the fixtures cannot drift from the schema. Note: the repository's
+`.gitignore` `*.json` rule covers `tests/fixtures/staffing/` (its negation
+exempts only `tests/fixtures/*.json` one level up), so these fixtures are
+intentionally ignored and require explicit `git add -f
+tests/fixtures/staffing/attempt-record-*.json` to commit; `.gitignore` is
+deliberately not altered.
 
 ---
 
 ## Cross-cutting notes
 
-- **Closed payloads.** Each source shape is preserved as its own closed
-  payload (`router_event`, `agent_orch_observation`, `benchmark_run`);
-  unlike meanings — Agent-Orch review verdict vs. benchmark acceptance vs.
-  P0-9 failure class — are kept distinct and are never claimed identical.
-- **Route identity.** Exactly `(model, effort, harness, channel)` per the
-  accepted P0-1 route contract (phase0-contracts §Route;
-  `routes.schema.json` `$defs/route`). `provider` is separate optional
-  observed metadata, never part of the identity tuple, never a replacement
-  for `channel`, and never invented for a source that lacks one.
-- **`usage_capture`.** Exactly the accepted P0-1 contract:
-  `native_json | stream_events | worker_written | none`.
-- **Class block.** Reproduces `classes.schema.json` `$defs/classBlock`
-  verbatim; `class_key` is the canonical rendering
-  (`role/oracle_type/domain_tags/size_band/language`, tags sorted ascending by
-  codepoint, deduplicated, `+`-joined, empty set rendered as literal `none`).
-- **No invention.** Every price, fee, capacity, date, or multiplier needs a
-  source; the schema invents none. Absent evidence is `null` or omitted.
-- **No writer until Phase 1.** Nothing yet writes records of this shape; see
-  the prominent statement at the top of this document.
+- **Closed payloads and closed records.** The record and every v2 object
+  (`route`, `usage`, `cost`, `selection`, `class_record`, `provenance`) set
+  `additionalProperties: false`; the v1 source-specific payloads keep their
+  own closed shapes. Unlike meanings (AO review verdict vs. benchmark
+  acceptance vs. the canonical v2 verdict) are kept distinct and never claimed
+  identical: source vocabularies live in the embedded payloads only.
+- **No v1 aliases.** D209 ruling 2 means no duplicate fields: `amount_usd`
+  (v1 cost alias), `usage_capture` (v1 usage field), and the v1 top-level
+  `verdict` values (`accepted`/`not_accepted`) are retired outright; v2
+  `usage`/`cost` are nested objects and the top-level `verdict` is exactly
+  `pass | fail | unverified`.
+- **Route identity.** Exactly `(model, effort, harness, channel)` per P0-1;
+  `provider` is optional observed metadata, never part of the tuple, never a
+  replacement for `channel`, never invented.
+- **No invention.** Every token count, price, fee, capacity, date, or
+  multiplier needs a source; the schema invents none. Absent evidence is
+  `null` or omitted. Zero is evidence only when a source reports zero.
+- **No writer yet.** Nothing in this repository writes records of this shape
+  yet; see the prominent statement at the top of this document.
 
 ### Referenced paths
 
 - Schema documented here: `config/staffing/schema/attempt-record.schema.json`
+  (`$id` …/attempt-record.schema.json, Draft 2020-12)
+- Fixtures: `tests/fixtures/staffing/attempt-record-*.json` (five files,
+  ignored by `*.json` — commit with `git add -f`)
+- Tests: `tests/test_staffing_attempt_record.py`
+- Contracts: `docs/staffing/phase1-contracts.md` (§Attempt record v2
+  placement, §Usage evidence taxonomy, §Cost rule, §run command, §Ledger,
+  rollup, and imports); `docs/staffing/phase0-contracts.md` (§Route, §Class
+  key, §Class-metadata prohibition (D206), §Terms and prices)
 - Router source: `src/lee_llm_router/events.py` (`EVENT_FIELDS`,
-  `OPTIONAL_FIELDS`, `build_event`, `BIND_MODE`);
-  `src/lee_llm_router/availability.py` (`Health` wire values)
+  `OPTIONAL_FIELDS`, `build_event`, `BIND_MODE`)
 - Agent-Orch source: `/home/lee/projects/auto-orch/src/auto_orch/performance.py`
-  (`OBSERVATION_SCHEMA`, `_PROVENANCE_SCHEMA`, `_SEVERITY_COUNTS_SCHEMA`)
+  (`OBSERVATION_SCHEMA`)
 - Benchmark source: `/home/lee/projects/ai-workforce-benchmark/config/crew-run.schema.json`
-- Contracts: `docs/staffing/phase0-contracts.md` (§Route, §Channel, §Class
-  key, §Class-metadata prohibition (D206), §Terms and prices, §Named crew)
-- Schemas: `config/staffing/schema/routes.schema.json` (`$defs/route`,
-  `usage_capture`), `config/staffing/schema/classes.schema.json`
-  (`$defs/classBlock`, don't-cheap-trial rule)
-- Catalog (channel ids, e.g. `anthropic-sub`;
-  `crews[].supervisor_route`): `docs/staffing/catalog.md`
+- Schemas: `config/staffing/schema/routes.schema.json`,
+  `config/staffing/schema/classes.schema.json`
+- Catalog (channel ids, supervisor routes): `docs/staffing/catalog.md`

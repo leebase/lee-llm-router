@@ -1,0 +1,98 @@
+{
+  "schema_version": 2,
+  "attempt_id": "pi-run-0002",
+  "record_kind": "router_run",
+  "packet_id": "scratch-packet-0001",
+  "parent_attempt_id": "pi-run-0001",
+  "escalation_reason": "review failed: one blocking finding on the same route",
+  "captured_at": "2026-09-09T12:30:00Z",
+  "verified_success": false,
+  "route": {
+    "model": "scratch-model-b",
+    "effort": "medium",
+    "harness": "cli",
+    "channel": "openrouter",
+    "provider": "openrouter"
+  },
+  "supervisor_route": null,
+  "class_record": {
+    "class_key": "impl/judge/authority+persistence/m/python",
+    "role": "impl",
+    "oracle_type": "judge",
+    "domain_tags": [
+      "authority",
+      "persistence"
+    ],
+    "size_band": "m",
+    "language": "python"
+  },
+  "verdict": "fail",
+  "failure_class": "spec_rejected",
+  "oracle_cmd": "scratch-oracle --check",
+  "usage": {
+    "basis": "provider_reported",
+    "source": "codex exec --json usage",
+    "input_tokens": 1200,
+    "output_tokens": 340,
+    "cached_input_tokens": 0,
+    "reasoning_tokens": 0,
+    "total_tokens": 1540
+  },
+  "cost": {
+    "basis": [
+      "unavailable"
+    ]
+  },
+  "wall_clock_ms": null,
+  "selection": {
+    "basis": "explain_cheapest_eligible",
+    "reason": "first eligible route in catalog explain --json marginal-price order",
+    "explain_ref": "catalog explain --json --role impl --class impl/judge/authority+persistence/m/python",
+    "excluded": [
+      {
+        "route_id": "route-scratch-high",
+        "reason": "headroom likely_exhausted on channel anthropic-sub"
+      },
+      {
+        "route_id": "route-scratch-fallback",
+        "reason": "terms unpriced for the dated P0-4 snapshot"
+      }
+    ]
+  },
+  "router_event": {
+    "ts": "2026-09-09T12:30:00Z",
+    "host": "scratch-host",
+    "harness": "cli",
+    "crew": "scratch-crew",
+    "role": "reviewer",
+    "mode": "strict",
+    "worker_id": "scratch-worker",
+    "provider": "openrouter",
+    "model": "scratch-model-b",
+    "effort": "medium",
+    "channel": "openrouter",
+    "headroom": "healthy",
+    "reason": "first eligible worker for impl in marginal-price order",
+    "authorized_by": null,
+    "route_id": "openrouter/scratch-model-b/medium",
+    "snapshot_observed_at": "2026-09-09T12:25:00Z",
+    "snapshot_stale": false
+  },
+  "provenance": {
+    "source": "router-run",
+    "recorded_by": "phase1-staffing-p1-2",
+    "source_refs": [
+      "src/lee_llm_router/events.py EVENT_FIELDS and build_event contract",
+      "docs/staffing/phase1-contracts.md §Attempt record v2 placement, §run command, §Cost rule, §Usage evidence taxonomy",
+      "docs/staffing/phase0-contracts.md class-key grammar and D206"
+    ],
+    "notes": [
+      "Scratch escalation example: parent_attempt_id and escalation_reason are both present, as phase1-contracts requires for a linked attempt.",
+      "usage.basis is 'provider_reported' from the exact 'codex exec --json usage' evidence string; the counters (including the zero cached/reasoning components the source reports) are scratch demonstration values for one hypothetical dispatch, never estimates.",
+      "cost.basis is ['unavailable'] because this scratch example selects no dated P0-4 terms; cost figures are never estimated from tokens, and any harness cost estimate would be a provenance note, not a substitute.",
+      "verdict 'fail' with failure_class 'spec_rejected': the recorded oracle command exited nonzero.",
+      "selection preserves route ids and explain reasons only — no new selection judgment — and no class-to-route mapping exists (D206).",
+      "verified_success is false: verdict fail, plus no wall_clock_ms is asserted because this scratch dispatch records none."
+    ]
+  }
+}

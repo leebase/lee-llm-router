@@ -1,0 +1,82 @@
+{
+  "schema_version": 2,
+  "attempt_id": "pi-run-0001",
+  "record_kind": "router_run",
+  "packet_id": "scratch-packet-0001",
+  "parent_attempt_id": null,
+  "escalation_reason": null,
+  "captured_at": "2026-09-09T12:00:00Z",
+  "verified_success": false,
+  "route": {
+    "model": "scratch-model",
+    "effort": "high",
+    "harness": "cli",
+    "channel": "anthropic-sub",
+    "provider": "anthropic"
+  },
+  "supervisor_route": null,
+  "class_record": {
+    "class_key": "review/judge/none/xs/markdown",
+    "role": "review",
+    "oracle_type": "judge",
+    "domain_tags": [],
+    "size_band": "xs",
+    "language": "markdown"
+  },
+  "verdict": "unverified",
+  "failure_class": null,
+  "oracle_cmd": null,
+  "usage": {
+    "basis": "unavailable",
+    "unavailable_reason": "text mode"
+  },
+  "cost": {
+    "basis": [
+      "unavailable"
+    ]
+  },
+  "wall_clock_ms": null,
+  "selection": {
+    "basis": "explicit",
+    "reason": "explicitly requested route is eligible",
+    "explain_ref": "catalog explain --json route-scratch-high",
+    "excluded": []
+  },
+  "router_event": {
+    "ts": "2026-09-09T12:00:00Z",
+    "host": "scratch-host",
+    "harness": "cli",
+    "crew": "scratch-crew",
+    "role": "reviewer",
+    "mode": "strict",
+    "worker_id": "scratch-worker",
+    "provider": "anthropic",
+    "model": "scratch-model",
+    "effort": "high",
+    "channel": "anthropic-sub",
+    "headroom": "healthy",
+    "reason": "top eligible worker for reviewer",
+    "authorized_by": null,
+    "route_id": "anthropic/scratch-model/high",
+    "snapshot_observed_at": "2026-09-09T11:55:00Z",
+    "snapshot_stale": false
+  },
+  "provenance": {
+    "source": "router-run",
+    "recorded_by": "phase1-staffing-p1-2",
+    "source_refs": [
+      "src/lee_llm_router/events.py EVENT_FIELDS and build_event contract",
+      "docs/staffing/phase1-contracts.md §Attempt record v2 placement, §run command, §Usage evidence taxonomy",
+      "docs/staffing/catalog.md channel ids (anthropic-sub)",
+      "docs/staffing/phase0-contracts.md class-key canonical example review/judge/none/xs/markdown"
+    ],
+    "notes": [
+      "Scratch example for one live run-command attempt; the embedded router_event payload carries exactly the EVENT_FIELDS keys as provenance evidence.",
+      "usage.basis is 'unavailable' with unavailable_reason 'text mode': until P1-4a is accepted, supervisor Pi attempts record no authoritative usage (phase1-contracts §Usage evidence taxonomy).",
+      "cost.basis is ['unavailable'] with no numeric figures: unknown usage produces no cost, never an estimate.",
+      "verdict is 'unverified' because no --oracle CMD was given; oracle_cmd is null accordingly.",
+      "selection preserves the explicit-route explain evidence; excluded is empty because no eligible route was excluded.",
+      "verified_success is false: unverified verdict with no usage, cost, or duration evidence; nothing is invented."
+    ]
+  }
+}
