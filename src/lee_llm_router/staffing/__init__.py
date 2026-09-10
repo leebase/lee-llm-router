@@ -11,6 +11,13 @@ P0-4b adds the dated-terms/marginal-price API (``staffing.terms``):
 closed to 1.0), ``replacement_token_prices`` over the sha256-verified pinned
 OpenRouter snapshot with agent-orch rate-table fallback (D207 Zen/Go proxy
 rows), and ``route_price`` marginal = replacement × multiplier.
+
+P0-5a adds the pure eligibility evaluation (``staffing.eligibility``):
+``evaluate_eligibility`` returns one deterministic row per catalog route
+(route status, harness lock, never-automatic, D188 role scoping,
+subscription headroom veto, dated terms, badge-priced marginal) in catalog
+order. Class metadata never maps to a preferred model or route (D206); no
+probability, ladder, model choice, or ranking lives here.
 """
 
 from __future__ import annotations
@@ -45,6 +52,12 @@ from lee_llm_router.staffing.catalog import (
     load_staffing_catalog,
     load_staffing_document,
     validate_class_block,
+)
+from lee_llm_router.staffing.eligibility import (
+    EligibilityPrice,
+    EligibilityRow,
+    StaffingEligibilityError,
+    evaluate_eligibility,
 )
 from lee_llm_router.staffing.terms import (
     DEFAULT_OPENROUTER_SNAPSHOT_PATH,
@@ -103,4 +116,8 @@ __all__ = [
     "replacement_token_prices",
     "route_price",
     "terms_at",
+    "EligibilityPrice",
+    "EligibilityRow",
+    "StaffingEligibilityError",
+    "evaluate_eligibility",
 ]

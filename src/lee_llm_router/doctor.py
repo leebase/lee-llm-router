@@ -22,6 +22,9 @@ Commands:
     lee-llm-router shims install (--dry-run | --apply) [--force] [--harness <tag>]
                                  [--project <path>]
     lee-llm-router shims diff [--harness <tag>] [--project <path>]
+    lee-llm-router catalog explain --role ROLE --class CLASS
+                                  [--at DATE] [--availability-file PATH]
+                                  [--catalog-dir PATH] [--json]
     lee-llm-router template
     lee-llm-router trace --last N
     lee-llm-router export-source --dest <path> [--force]
@@ -1232,6 +1235,258 @@ def _run_shims_no_subcommand(_args: argparse.Namespace) -> int:
     return 3
 
 
+# ---------------------------------------------------------------------------
+# catalog explain (P0-5b): per-route eligibility report over the catalog
+# ---------------------------------------------------------------------------
+
+#: Pricing badge for the ``catalog explain`` report. The committed command
+#: surface has no badge flag (P0-5b), so the marginal multiplier uses the
+#: fail-closed badge (unknown badges price at 1.0 x replacement): marginal
+#: equals replacement unless a committed multiplier says otherwise.
+EXPLAIN_PRICING_BADGE = "NO DATA"
+
+
+def _parse_class_string(
+    class_string: str,
+) -> tuple[str, str, tuple[str, ...], str, str]:
+    """Parse the canonical five-segment class string into its fields.
+
+    Grammar: ``role/oracle_type/domain_tags/size_band/language``; the
+    domain-tags segment is ``+``-joined tags with the empty set written as
+    the literal ``none``. Raises ``ValueError`` with a user-facing message
+    for any non-canonical shape; committed enumerations and canonical-key
+    equality are enforced by the eligibility API itself.
+    """
+    segments = class_string.split("/")
+    if len(segments) != 5 or any(segment == "" for segment in segments):
+        raise ValueError(
+            "--class must be the canonical five-segment string "
+            "role/oracle_type/domain_tags/size_band/language (e.g. "
+            "impl/deterministic/none/s/python)"
+        )
+    role, oracle_type, tags_segment, size_band, language = segments
+    if tags_segment == "none":
+        domain_tags: tuple[str, ...] = ()
+    else:
+        domain_tags = tuple(tags_segment.split("+"))
+        if any(not tag for tag in domain_tags):
+            raise ValueError(
+                "--class domain_tags segment is not a canonical '+ '-joined "
+                "tag list or the literal 'none'"
+            )
+    return role, oracle_type, domain_tags, size_band, language
+
+
+def _explain_sort_key(row: Any) -> tuple[int, float, float, str]:
+    """Display order: marginal price ascending, unpriced last, id tie-break.
+
+    Display-only ordering (allowed by the P0-5b packet); eligibility itself
+    is never ranked, chosen, or filtered by this ordering.
+    """
+    pricing = row.pricing
+    if pricing is None:
+        return (1, 0.0, 0.0, row.route_id)
+    return (
+        0,
+        pricing.marginal_input_usd_per_token,
+        pricing.marginal_output_usd_per_token,
+        row.route_id,
+    )
+
+
+def _explain_route_json(row: Any) -> dict[str, Any]:
+    """JSON view of one eligibility row: committed fields only.
+
+    Deliberately excludes the row's model, effort, harness, status_reason,
+    and pricing-source machinery — the route id is the only route label.
+    """
+    pricing = row.pricing
+    return {
+        "route_id": row.route_id,
+        "eligible": row.eligible,
+        "channel": row.channel,
+        "badge": row.availability_badge,
+        "headroom": row.availability_headroom,
+        "health": row.availability_health,
+        "marginal_input_usd_per_token": (
+            pricing.marginal_input_usd_per_token if pricing else None
+        ),
+        "marginal_output_usd_per_token": (
+            pricing.marginal_output_usd_per_token if pricing else None
+        ),
+        "replacement_input_usd_per_token": (
+            pricing.replacement_input_usd_per_token if pricing else None
+        ),
+        "replacement_output_usd_per_token": (
+            pricing.replacement_output_usd_per_token if pricing else None
+        ),
+        "reasons": list(row.reasons),
+    }
+
+
+def _explain_table(rows: list[dict[str, Any]]) -> list[str]:
+    """Render the aligned human-readable table for ordered route dicts."""
+
+    def price(value: Any) -> str:
+        return "-" if value is None else f"{value:.8g}"
+
+    def headroom(value: Any) -> str:
+        return "-" if value is None else f"{value * 100:.0f}%"
+
+    headers = (
+        "ROUTE ID",
+        "STATUS",
+        "CHANNEL",
+        "BADGE",
+        "HEADROOM",
+        "HEALTH",
+        "MARG IN $/TOK",
+        "MARG OUT $/TOK",
+        "REPL IN $/TOK",
+        "REPL OUT $/TOK",
+        "REASONS",
+    )
+    table_rows: list[tuple[str, ...]] = []
+    for route in rows:
+        table_rows.append(
+            (
+                route["route_id"],
+                "eligible" if route["eligible"] else "excluded",
+                route["channel"],
+                route["badge"] or "-",
+                headroom(route["headroom"]),
+                route["health"],
+                price(route["marginal_input_usd_per_token"]),
+                price(route["marginal_output_usd_per_token"]),
+                price(route["replacement_input_usd_per_token"]),
+                price(route["replacement_output_usd_per_token"]),
+                "; ".join(route["reasons"]) if route["reasons"] else "-",
+            )
+        )
+    widths = [
+        (
+            max(len(headers[i]), *(len(r[i]) for r in table_rows))
+            if table_rows
+            else len(headers[i])
+        )
+        for i in range(len(headers))
+    ]
+    lines = [
+        "  ".join(h.ljust(w) for h, w in zip(headers, widths)).rstrip(),
+        "  ".join("-" * w for w in widths),
+    ]
+    for table_row in table_rows:
+        lines.append(
+            "  ".join(cell.ljust(w) for cell, w in zip(table_row, widths)).rstrip()
+        )
+    return lines
+
+
+def _run_catalog_explain(args: argparse.Namespace) -> int:
+    """Run ``catalog explain``: eligibility per route, ordered for display."""
+    import json
+    from datetime import date
+    from pathlib import Path
+
+    from lee_llm_router.availability import load_availability
+    from lee_llm_router.staffing import (
+        StaffingCatalogError,
+        StaffingEligibilityError,
+        evaluate_eligibility,
+        load_staffing_catalog,
+    )
+
+    def fail(message: str) -> int:
+        print(f"catalog explain: {message}", file=sys.stderr)
+        return 3
+
+    try:
+        role, oracle_type, domain_tags, size_band, language = _parse_class_string(
+            args.class_string
+        )
+    except ValueError as exc:
+        return fail(str(exc))
+    if role != args.role:
+        return fail(
+            f"--role {args.role!r} does not equal the --class role segment " f"{role!r}"
+        )
+
+    if args.at is not None:
+        try:
+            at_date = date.fromisoformat(args.at)
+        except ValueError:
+            return fail(f"--at: not an ISO date (YYYY-MM-DD): {args.at!r}")
+    else:
+        at_date = date.today()
+
+    catalog_dir = (
+        Path(args.catalog_dir)
+        if args.catalog_dir is not None
+        else Path(__file__).resolve().parents[2] / "config" / "staffing"
+    )
+    try:
+        catalog = load_staffing_catalog(catalog_dir)
+    except StaffingCatalogError as exc:
+        return fail(f"catalog invalid: {exc}")
+    except Exception as exc:  # no traceback on unexpected catalog problems
+        return fail(f"catalog invalid: {exc}")
+
+    availability = load_availability(args.availability_file)
+    if args.availability_file is not None and availability.problem is not None:
+        return fail(f"availability snapshot unusable: {availability.problem}")
+
+    try:
+        rows = evaluate_eligibility(
+            catalog,
+            role=role,
+            oracle_type=oracle_type,
+            size_band=size_band,
+            language=language,
+            domain_tags=domain_tags,
+            class_key=args.class_string,
+            availability=availability,
+            at_date=at_date,
+            badge=EXPLAIN_PRICING_BADGE,
+        )
+    except StaffingEligibilityError as exc:
+        return fail(str(exc))
+    except Exception as exc:  # no traceback on unexpected evaluation errors
+        return fail(f"evaluation failed: {exc}")
+
+    ordered = sorted(rows, key=_explain_sort_key)
+    route_views = [_explain_route_json(row) for row in ordered]
+    eligible_count = sum(1 for route in route_views if route["eligible"])
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "role": role,
+                    "class_key": args.class_string,
+                    "at": at_date.isoformat(),
+                    "routes": route_views,
+                },
+                indent=2,
+            )
+        )
+    else:
+        print(f"catalog explain — class {args.class_string} at {at_date.isoformat()}")
+        print()
+        for line in _explain_table(route_views):
+            print(line)
+        print(
+            f"\n{len(route_views)} routes: {eligible_count} eligible, "
+            f"{len(route_views) - eligible_count} excluded "
+            "(ordered by marginal price)"
+        )
+    return 0
+
+
+def _run_catalog_no_subcommand(_args: argparse.Namespace) -> int:
+    print("catalog: subcommand required (explain)", file=sys.stderr)
+    return 3
+
+
 class _FastResolveArgs:
     """Fast-path argument namespace for resolve."""
 
@@ -1781,6 +2036,65 @@ def main(argv: list[str] | None = None) -> None:
         help="Project directory for omp shim (default: cwd)",
     )
     shims_diff_parser.set_defaults(func=_run_shims_diff)
+
+    catalog_parser = subparsers.add_parser(
+        "catalog",
+        help="Inspect the staffing catalog",
+    )
+    catalog_sub = catalog_parser.add_subparsers(
+        dest="catalog_command", metavar="SUBCOMMAND"
+    )
+    catalog_sub.required = False
+    catalog_parser.set_defaults(func=_run_catalog_no_subcommand)
+
+    catalog_explain_parser = catalog_sub.add_parser(
+        "explain",
+        help="Report every route's eligibility for a class, ordered by marginal price",
+    )
+    catalog_explain_parser.add_argument(
+        "--role",
+        required=True,
+        metavar="ROLE",
+        help="Class role (impl, plan, review, judge, prose)",
+    )
+    catalog_explain_parser.add_argument(
+        "--class",
+        required=True,
+        dest="class_string",
+        metavar="CLASS",
+        help=(
+            "Canonical five-segment class string "
+            "role/oracle_type/domain_tags/size_band/language "
+            "(e.g. impl/deterministic/none/s/python)"
+        ),
+    )
+    catalog_explain_parser.add_argument(
+        "--at",
+        default=None,
+        metavar="DATE",
+        help="ISO date (YYYY-MM-DD) for dated terms (default: today)",
+    )
+    catalog_explain_parser.add_argument(
+        "--availability-file",
+        metavar="PATH",
+        default=None,
+        help="Path to the availability snapshot (default: per-host default)",
+    )
+    catalog_explain_parser.add_argument(
+        "--catalog-dir",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Directory holding the six staffing catalog YAML documents "
+            "(default: the repo config/staffing directory)"
+        ),
+    )
+    catalog_explain_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a JSON object instead of a plain-text table",
+    )
+    catalog_explain_parser.set_defaults(func=_run_catalog_explain)
 
     template_parser = subparsers.add_parser(
         "template",

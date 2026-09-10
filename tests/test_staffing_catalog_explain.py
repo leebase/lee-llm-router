@@ -1,0 +1,477 @@
+"""Tests for the P0-5b ``catalog explain`` CLI (doctor.py).
+
+The catalog under test is a scratch copy of the committed ``config/staffing``
+documents (copied read-only into ``tmp_path``; schema and pinned pricing
+sources are read in place, never modified), and the availability snapshot is
+a scratch JSON file written by the test. No provider call, no prompt, no
+probability, no ladder, no model choice — display ordering by marginal
+price only, as the P0-5b packet expressly allows.
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import pytest
+
+from lee_llm_router.staffing import load_staffing_catalog
+
+REPO_CONFIG_DIR = Path(__file__).resolve().parents[1] / "config" / "staffing"
+
+FABLE_ROUTE = "claude-claude-fable-5-1-high-anthropic-sub"
+GLM_OPENROUTER_ROUTE = "pi-z-ai-glm-5-3-flash-openrouter"
+MIMO_ROUTE = "opencode-opencode-go-mimo-v2-5-opencode-go"
+
+IMPL_CLASS = "impl/deterministic/none/s/python"
+
+#: Exact per-route JSON field set (no model/harness/provider/machinery keys).
+ROUTE_JSON_KEYS = {
+    "route_id",
+    "eligible",
+    "channel",
+    "badge",
+    "headroom",
+    "health",
+    "marginal_input_usd_per_token",
+    "marginal_output_usd_per_token",
+    "replacement_input_usd_per_token",
+    "replacement_output_usd_per_token",
+    "reasons",
+}
+
+MACHINERY_MARKERS = (
+    "dispatch_template",
+    "usage_capture",
+    "openrouter-snapshot",
+    "rate_table",
+    "schema",
+    "worker",
+    '"model"',
+    '"harness"',
+    '"effort"',
+    '"source"',
+    '"status_reason"',
+    "Traceback",
+)
+
+
+@pytest.fixture
+def catalog_dir(tmp_path: Path) -> Path:
+    """Scratch catalog: the committed six documents, nothing else."""
+    dest = tmp_path / "catalog"
+    shutil.copytree(
+        REPO_CONFIG_DIR,
+        dest,
+        ignore=shutil.ignore_patterns("schema", "pricing", "__pycache__"),
+    )
+    return dest
+
+
+def _write_snapshot(
+    path: Path,
+    *,
+    codex: tuple[str, int] | None = ("ON TRACK", 80),
+    anthropic: tuple[str, int] | None = ("COLD", 90),
+    gemini: tuple[str, int] | None = ("ON TRACK", 60),
+    opencode: tuple[str, int] | None = ("ON TRACK", 50),
+) -> Path:
+    """Write a fresh scratch availability snapshot file and return its path."""
+    subscriptions = []
+    for provider, bucket, value in (
+        ("OpenAI/Codex", "Weekly limit", codex),
+        ("Anthropic/Claude", "Current session", anthropic),
+        ("Gemini/agy", "Gemini models", gemini),
+        ("OpenCode/Go", "Weekly", opencode),
+    ):
+        if value is not None:
+            subscriptions.append(
+                {
+                    "provider": provider,
+                    "bucket": bucket,
+                    "status": value[0],
+                    "remaining_pct": value[1],
+                }
+            )
+    observed_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    payload = {
+        "host": "explain-test",
+        "observed_at": observed_at.isoformat(),
+        "subscriptions": subscriptions,
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def _run_explain(capsys: pytest.CaptureFixture[str], *argv: str):
+    from lee_llm_router.doctor import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["catalog", "explain", *argv])
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.out
+    assert "Traceback" not in captured.err
+    return exc_info.value.code, captured
+
+
+def _explain_json_run(
+    capsys: pytest.CaptureFixture[str],
+    catalog_dir: Path,
+    snapshot: Path,
+    at: str | None = "2026-09-15",
+    *extra: str,
+) -> tuple[int, dict]:
+    argv = ["--role", "impl", "--class", IMPL_CLASS]
+    if at is not None:
+        argv += ["--at", at]
+    code, captured = _run_explain(
+        capsys,
+        *argv,
+        "--availability-file",
+        str(snapshot),
+        "--catalog-dir",
+        str(catalog_dir),
+        "--json",
+        *extra,
+    )
+    return code, json.loads(captured.out)
+
+
+def _by_route(payload: dict, route_id: str) -> dict:
+    return next(r for r in payload["routes"] if r["route_id"] == route_id)
+
+
+# ---------------------------------------------------------------------------
+# P0-5 acceptance reproduced through the CLI: exhausted Anthropic channel
+# ---------------------------------------------------------------------------
+
+
+def test_explain_reproduces_p0_5_acceptance(tmp_path, catalog_dir, capsys):
+    """Canonical impl class; Anthropic exhausted -> Fable's combined reason."""
+    snapshot = _write_snapshot(tmp_path / "availability.json", anthropic=("HOT", 0))
+    code, payload = _explain_json_run(capsys, catalog_dir, snapshot)
+    assert code == 0
+    assert payload["role"] == "impl"
+    assert payload["class_key"] == IMPL_CLASS
+    assert payload["at"] == "2026-09-15"
+
+    routes = payload["routes"]
+    assert len(routes) == len(load_staffing_catalog(catalog_dir).routes.routes)
+    for route in routes:
+        assert set(route) == ROUTE_JSON_KEYS
+
+    fable = _by_route(payload, FABLE_ROUTE)
+    assert fable["eligible"] is False
+    assert fable["reasons"] == ["never_automatic", "channel exhausted"]
+    assert "; ".join(fable["reasons"]) == "never_automatic; channel exhausted"
+    assert fable["channel"] == "anthropic-sub"
+    assert fable["badge"] == "HOT"
+    assert fable["health"] == "exhausted"
+    assert fable["headroom"] == 0.0
+    assert fable["marginal_input_usd_per_token"] is not None
+
+
+def test_explain_display_sorted_by_marginal_price(tmp_path, catalog_dir, capsys):
+    """Priced rows ascend by marginal price; unpriced rows trail, id-broken."""
+    snapshot = _write_snapshot(tmp_path / "availability.json", anthropic=("HOT", 0))
+    code, payload = _explain_json_run(capsys, catalog_dir, snapshot)
+    assert code == 0
+
+    routes = payload["routes"]
+    priced = [r for r in routes if r["marginal_input_usd_per_token"] is not None]
+    unpriced = [r for r in routes if r["marginal_input_usd_per_token"] is None]
+    assert unpriced == routes[len(priced) :]  # unpriced strictly last
+    keys = [
+        (
+            r["marginal_input_usd_per_token"],
+            r["marginal_output_usd_per_token"],
+            r["route_id"],
+        )
+        for r in priced
+    ]
+    assert keys == sorted(keys)
+
+
+def test_explain_excluded_and_unpriced_routes_stay_visible(
+    tmp_path, catalog_dir, capsys
+):
+    """Every catalog route appears, including the unpriced exact id."""
+    snapshot = _write_snapshot(tmp_path / "availability.json")
+    code, payload = _explain_json_run(capsys, catalog_dir, snapshot)
+    assert code == 0
+
+    routes = payload["routes"]
+    mimo = _by_route(payload, MIMO_ROUTE)
+    assert mimo["eligible"] is False
+    assert "route status unpriced" in mimo["reasons"]
+    assert "pricing unavailable" in mimo["reasons"]
+    assert mimo["marginal_input_usd_per_token"] is None
+    assert mimo["replacement_output_usd_per_token"] is None
+    assert routes[-1]["route_id"] == MIMO_ROUTE
+
+
+def test_explain_table_lists_required_columns_and_fable_reason(
+    tmp_path, catalog_dir, capsys
+):
+    """Human table carries every committed field; no machinery labels."""
+    snapshot = _write_snapshot(tmp_path / "availability.json", anthropic=("HOT", 0))
+    code, captured = _run_explain(
+        capsys,
+        "--role",
+        "impl",
+        "--class",
+        IMPL_CLASS,
+        "--at",
+        "2026-09-15",
+        "--availability-file",
+        str(snapshot),
+        "--catalog-dir",
+        str(catalog_dir),
+    )
+    assert code == 0
+
+    out = captured.out
+    for header in (
+        "ROUTE ID",
+        "STATUS",
+        "CHANNEL",
+        "BADGE",
+        "HEADROOM",
+        "HEALTH",
+        "MARG IN $/TOK",
+        "MARG OUT $/TOK",
+        "REPL IN $/TOK",
+        "REPL OUT $/TOK",
+        "REASONS",
+    ):
+        assert header in out
+
+    fable_line = next(line for line in out.splitlines() if FABLE_ROUTE in line)
+    assert "excluded" in fable_line
+    assert "anthropic-sub" in fable_line
+    assert "HOT" in fable_line
+    assert "0%" in fable_line
+    assert "exhausted" in fable_line
+    assert "never_automatic; channel exhausted" in fable_line
+
+    for marker in MACHINERY_MARKERS:
+        assert marker not in out
+
+
+def test_explain_json_has_no_machinery_leakage(tmp_path, catalog_dir, capsys):
+    """JSON exposes no model/harness/provider/machinery labels."""
+    snapshot = _write_snapshot(tmp_path / "availability.json", anthropic=("HOT", 0))
+    code, payload = _explain_json_run(capsys, catalog_dir, snapshot)
+    assert code == 0
+    text = json.dumps(payload)
+    for marker in MACHINERY_MARKERS:
+        assert marker not in text
+
+
+# ---------------------------------------------------------------------------
+# --at date transition
+# ---------------------------------------------------------------------------
+
+
+def test_explain_at_date_transition(tmp_path, catalog_dir, capsys):
+    """Before the committed terms date nothing is eligible; after, routes are."""
+    snapshot = _write_snapshot(tmp_path / "availability.json")
+
+    code, before = _explain_json_run(capsys, catalog_dir, snapshot, at="2026-09-08")
+    assert code == 0
+    assert before["at"] == "2026-09-08"
+    assert all(route["eligible"] is False for route in before["routes"])
+    assert all(
+        any(r.startswith("terms unavailable at 2026-09-08") for r in route["reasons"])
+        for route in before["routes"]
+    )
+
+    code, after = _explain_json_run(capsys, catalog_dir, snapshot)
+    assert code == 0
+    glm = _by_route(after, GLM_OPENROUTER_ROUTE)
+    assert glm["eligible"] is True
+    assert glm["reasons"] == []
+
+
+def test_explain_default_at_is_today(tmp_path, catalog_dir, capsys):
+    """Without --at the report is dated today."""
+    from datetime import date
+
+    snapshot = _write_snapshot(tmp_path / "availability.json")
+    code, payload = _explain_json_run(capsys, catalog_dir, snapshot, at=None)
+    assert code == 0
+    assert payload["at"] == date.today().isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Invalid inputs: clear nonzero exit, no traceback
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "role, class_string",
+    [
+        # Not five segments.
+        ("impl", "impl/deterministic/none/s"),
+        # Empty segment (empty tag set must be the literal 'none').
+        ("impl", "impl/deterministic//s/python"),
+        # Role segment does not equal --role.
+        ("plan", "impl/deterministic/none/s/python"),
+        # Role outside the committed value set.
+        ("lead", "lead/deterministic/none/s/python"),
+        # oracle_type outside the committed value set.
+        ("impl", "impl/oracle/none/s/python"),
+        # size_band outside the committed value set.
+        ("impl", "impl/deterministic/none/xl/python"),
+        # language outside the committed value set.
+        ("impl", "impl/deterministic/none/s/rust"),
+        # domain tag outside the committed value set.
+        ("impl", "impl/deterministic/quantum/s/python"),
+        # Non-canonical tag order (must be ascending by codepoint).
+        ("impl", "impl/judge/security+persistence/m/python"),
+    ],
+)
+def test_explain_invalid_class_exits_nonzero_without_traceback(
+    tmp_path, catalog_dir, capsys, role, class_string
+):
+    snapshot = _write_snapshot(tmp_path / "availability.json")
+    code, captured = _run_explain(
+        capsys,
+        "--role",
+        role,
+        "--class",
+        class_string,
+        "--at",
+        "2026-09-15",
+        "--availability-file",
+        str(snapshot),
+        "--catalog-dir",
+        str(catalog_dir),
+    )
+    assert code != 0
+    assert captured.err.startswith("catalog explain:")
+    assert captured.out == ""
+
+
+def test_explain_invalid_at_date_exits_nonzero(tmp_path, catalog_dir, capsys):
+    snapshot = _write_snapshot(tmp_path / "availability.json")
+    code, captured = _run_explain(
+        capsys,
+        "--role",
+        "impl",
+        "--class",
+        IMPL_CLASS,
+        "--at",
+        "not-a-date",
+        "--availability-file",
+        str(snapshot),
+        "--catalog-dir",
+        str(catalog_dir),
+    )
+    assert code == 3
+    assert "--at" in captured.err
+    assert captured.out == ""
+
+
+def test_explain_invalid_catalog_exits_nonzero(tmp_path, catalog_dir, capsys):
+    (catalog_dir / "channels.yaml").unlink()
+    snapshot = _write_snapshot(tmp_path / "availability.json")
+    code, captured = _run_explain(
+        capsys,
+        "--role",
+        "impl",
+        "--class",
+        IMPL_CLASS,
+        "--at",
+        "2026-09-15",
+        "--availability-file",
+        str(snapshot),
+        "--catalog-dir",
+        str(catalog_dir),
+    )
+    assert code == 3
+    assert "catalog invalid" in captured.err
+    assert "channels" in captured.err
+    assert captured.out == ""
+
+
+def test_explain_missing_availability_file_exits_nonzero(tmp_path, catalog_dir, capsys):
+    code, captured = _run_explain(
+        capsys,
+        "--role",
+        "impl",
+        "--class",
+        IMPL_CLASS,
+        "--at",
+        "2026-09-15",
+        "--availability-file",
+        str(tmp_path / "nope.json"),
+        "--catalog-dir",
+        str(catalog_dir),
+    )
+    assert code == 3
+    assert "availability snapshot unusable" in captured.err
+    assert captured.out == ""
+
+
+def test_explain_malformed_availability_file_exits_nonzero(
+    tmp_path, catalog_dir, capsys
+):
+    snapshot = tmp_path / "availability.json"
+    snapshot.write_text("{not json", encoding="utf-8")
+    code, captured = _run_explain(
+        capsys,
+        "--role",
+        "impl",
+        "--class",
+        IMPL_CLASS,
+        "--at",
+        "2026-09-15",
+        "--availability-file",
+        str(snapshot),
+        "--catalog-dir",
+        str(catalog_dir),
+    )
+    assert code == 3
+    assert "availability snapshot unusable" in captured.err
+    assert captured.out == ""
+
+
+# ---------------------------------------------------------------------------
+# Defaults: repo config/staffing catalog dir and load_availability behavior
+# ---------------------------------------------------------------------------
+
+
+def test_explain_defaults_to_repo_catalog_and_load_availability(capsys):
+    """No --catalog-dir and no --availability-file: committed defaults apply."""
+    code, captured = _run_explain(
+        capsys,
+        "--role",
+        "impl",
+        "--class",
+        IMPL_CLASS,
+        "--at",
+        "2026-09-15",
+        "--json",
+    )
+    assert code == 0
+    payload = json.loads(captured.out)
+    assert len(payload["routes"]) == len(
+        load_staffing_catalog(REPO_CONFIG_DIR).routes.routes
+    )
+    # Default availability resolves through load_availability; whatever it
+    # reports, every route still gets a row with the committed field set.
+    for route in payload["routes"]:
+        assert set(route) == ROUTE_JSON_KEYS
+
+
+def test_explain_catalog_subcommand_required(capsys):
+    from lee_llm_router.doctor import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["catalog"])
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 3
+    assert "catalog: subcommand required" in captured.err
