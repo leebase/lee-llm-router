@@ -191,3 +191,20 @@ result helpers later. Future: explicit-null supervisor route and minimum
 nonzero duration are consumer choices, not P1 blockers. Phase 1 OpenRouter
 metered total is $0.319781798 plus unknown pre-P1-4a text-mode attempts; Luna
 subscription execution totals a separate $0.151873350 list/marginal estimate.
+
+## P1-6 — Rollup escalation and acceptance
+
+| Packet | Role | Explain / selection | Excluded summary | Route | Start / end | Exit | Usage / cost | Result |
+|---|---|---|---|---|---|---:|---|---|
+| P1-6 Luna escalation | impl | `catalog explain --role impl --class impl/deterministic/none/s/python --json`; after two GLM no-change rounds, Luna XHigh eligible; `parent_attempt_id: p1-6-attempt-2-20260910`; `escalation_reason: non_convergence` | Gemini reserved; Go likely-exhausted; never-automatic/policy exclusions; GLM parent exhausted | `pi-gpt-5-6-luna-xhigh-openai-sub` | about 16:12 / about 16:22 | supervisor watchdog termination while full suite was near completion | `provider_reported`, `pi --mode json events`; input 252045, output 21779, cached 5564416, reasoning 12417, total 5838240; subscription list/marginal execution estimate $0.057407850 | complete scoped rollup, CLI, and 4 focused tests; no prior partial retained because GLM left none; supervisor read every file and reproduced 4 focused and 1059 full passes/1 skip, Black/Ruff clean |
+| P1-6 review | review | `catalog explain --role review --class review/judge/none/s/python --author-route pi-gpt-5-6-luna-xhigh-openai-sub --json`; Go excluded; independent DeepSeek eligible | Luna/GPT family independence; Go TOO FAST/likely-exhausted; never-automatic/policy exclusions; Gemini reserved | `pi-deepseek-deepseek-v4-flash-openrouter` | about 16:24 / about 16:28 | 0 | `provider_reported`, `pi --mode json events`; input 97269, output 11773, cached 550656, reasoning 6309, total 659698; list/marginal $0.010148460 | PASS; 0 blocking; 5 hardening, 2 future concerns |
+
+P1-6 accepted after three author attempts total (two GLM no-change timeouts and
+one Luna implementation) and one review, about 54 minutes including the prior
+rounds. Rollup now emits deterministic per-route/class counts, truthful token
+and wall-clock aggregates, usage-known counts, and the exact five-attempt gate,
+with no routing judgment. Hardening gaps are tests for mixed verdicts, imported
+null keys, and CLI wiring; behavior itself was reviewed as correct. Phase 1
+OpenRouter metered total is $0.329930258 plus unknown pre-P1-4a text-mode
+attempts; Luna subscription execution totals a separate $0.209281200
+list/marginal estimate.

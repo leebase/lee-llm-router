@@ -33,6 +33,7 @@ Commands:
                        [--catalog-dir PATH] [--json]
     lee-llm-router template
     lee-llm-router trace --last N
+    lee-llm-router evidence rollup
     lee-llm-router export-source --dest <path> [--force]
 """
 
@@ -1185,6 +1186,22 @@ def _run_trace(args: argparse.Namespace) -> int:
         except Exception as exc:
             print(f"  [could not parse {trace_file}: {exc}]", file=sys.stderr)
 
+    return 0
+
+
+def _run_evidence_rollup(_args: argparse.Namespace) -> int:
+    """Read the configured validated attempt ledger and print its rollup."""
+    from lee_llm_router.staffing.ledger import AttemptLedgerError
+    from lee_llm_router.staffing.rollup import render_rollup, rollup_ledger
+
+    try:
+        summary = rollup_ledger()
+    except (AttemptLedgerError, OSError, UnicodeError) as exc:
+        message = " ".join(str(exc).split())
+        print(f"evidence rollup: {message}", file=sys.stderr)
+        return 3
+
+    print(render_rollup(summary))
     return 0
 
 
@@ -2628,6 +2645,20 @@ def main(argv: list[str] | None = None) -> None:
         help="Emit a JSON summary object instead of plain text",
     )
     run_parser.set_defaults(func=_run_run)
+
+    evidence_parser = subparsers.add_parser(
+        "evidence",
+        help="Inspect staffing evidence",
+    )
+    evidence_sub = evidence_parser.add_subparsers(
+        dest="evidence_command", metavar="SUBCOMMAND"
+    )
+    evidence_sub.required = True
+    evidence_rollup_parser = evidence_sub.add_parser(
+        "rollup",
+        help="Aggregate validated attempt records by route and class",
+    )
+    evidence_rollup_parser.set_defaults(func=_run_evidence_rollup)
 
     template_parser = subparsers.add_parser(
         "template",
