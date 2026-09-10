@@ -36,6 +36,8 @@ escalation-reason arguments are parsed upstream and deliberately unused.
 
 from __future__ import annotations
 
+import os
+import shlex
 import subprocess
 import time
 from dataclasses import dataclass
@@ -75,6 +77,7 @@ __all__ = [
     "DEFAULT_POLL_SECONDS",
     "DEFAULT_RUN_TIMEOUT_SECONDS",
     "DispatchOutcome",
+    "OracleOutcome",
     "RunDispatchError",
     "RunSelectionError",
     "SELECTION_BASIS_EXPLAIN_CHEAPEST_ELIGIBLE",
@@ -83,7 +86,10 @@ __all__ = [
     "SelectionOutcome",
     "build_dispatch_command",
     "dispatch_route",
+    "oracle_timeout_seconds",
+    "parse_oracle_command",
     "run_json_record",
+    "run_oracle",
     "run_summary_lines",
     "select_route",
     "selection_record",
@@ -108,6 +114,9 @@ DEFAULT_POLL_SECONDS = 0.5
 
 _TIMEOUT_EXIT_CODE = 124
 """Exit code the dispatch boundary reports for a ceiling timeout."""
+
+DEFAULT_ORACLE_TIMEOUT_SECONDS = DEFAULT_MAX_MINUTES * 60.0
+"""Standard wall-clock bound for an oracle when ``--timeout`` is absent."""
 
 # Injected boundaries default to the real subprocess and clock so the CLI
 # path is real; tests monkeypatch these module names for fake subprocesses.
@@ -227,6 +236,25 @@ class DispatchOutcome:
     duration_seconds: float
     timed_out: bool
     usage: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class OracleOutcome:
+    """Captured result of one optional verification-oracle invocation.
+
+    A missing oracle is represented by ``None`` at the result-building
+    boundary, not by this class.  An oracle that cannot be launched has a
+    ``None`` exit code and a deterministic ``error``; an oracle killed at its
+    wall-clock bound has exit code ``124`` and ``timed_out=True``.
+    """
+
+    argv: tuple[str, ...]
+    exit_code: int | None
+    stdout: str
+    stderr: str
+    duration_seconds: float
+    timed_out: bool
+    error: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -609,18 +637,19 @@ def dispatch_route(
             )
         max_minutes = float(timeout_seconds) / 60.0
 
-    popen_fn = popen if popen is not None else _DEFAULT_POPEN
+    base_popen = popen if popen is not None else _DEFAULT_POPEN
     clock_fn = clock if clock is not None else _DEFAULT_CLOCK
     sleep_fn = sleep if sleep is not None else _DEFAULT_SLEEP
+    cwd = str(Path(workdir)) if workdir is not None else None
 
-    if workdir is not None:
-        base_popen = popen_fn
-        cwd = str(Path(workdir))
+    def safe_popen(child_argv: list[str], **kwargs: Any) -> Any:
+        """Keep the worker boundary explicitly argv-only and non-shell."""
+        kwargs["shell"] = False
+        if cwd is not None:
+            kwargs["cwd"] = cwd
+        return base_popen(child_argv, **kwargs)
 
-        def popen_with_cwd(child_argv: list[str], **kwargs: Any) -> Any:
-            return base_popen(child_argv, cwd=cwd, **kwargs)
-
-        popen_fn = popen_with_cwd
+    popen_fn: Callable[..., Any] = safe_popen
 
     resolution = _dispatch_resolution(route, argv)
     stdout_buf = bytearray()
@@ -654,18 +683,253 @@ def dispatch_route(
     )
 
 
-def run_json_record(
-    outcome: SelectionOutcome, dispatch: DispatchOutcome
-) -> dict[str, Any]:
-    """The ``run --json`` summary object for one selection-plus-dispatch.
+def parse_oracle_command(command: str) -> list[str]:
+    """Parse one oracle command into argv without invoking a shell.
 
-    P1-5a scope boundary: this is the dispatch-and-selection summary, not
-    the final ledger attempt record. It carries the attempt-record v2
-    ``route`` identity, the ``selection`` evidence, the schema-valid v2
-    ``usage`` mapping captured from the harness, and the wall-clock and
-    captured-stream dispatch facts. Later phases add ``attempt_id``,
-    oracle verdict, cost, provenance, validation, and the single ledger
-    append; nothing here touches the ledger or invents a verdict.
+    Args:
+        command: The command supplied by ``--oracle``.
+
+    Returns:
+        The non-empty argv produced by :func:`shlex.split`.
+
+    Raises:
+        RunDispatchError: If the command is empty or has malformed shell
+            quoting.  The command is only parsed; shell operators are never
+            interpreted.
+    """
+    if not isinstance(command, str) or not command.strip():
+        raise RunDispatchError("oracle command must not be empty")
+    try:
+        argv = shlex.split(command, posix=True)
+    except ValueError as exc:
+        raise RunDispatchError(
+            f"oracle command is malformed: {exc}", cause=exc
+        ) from exc
+    if not argv:
+        raise RunDispatchError("oracle command must not be empty")
+    return argv
+
+
+def oracle_timeout_seconds(
+    declared_timeout_seconds: float | None,
+    worker_duration_seconds: float,
+) -> float:
+    """Return the oracle's remaining wall-clock budget.
+
+    A declared ``--timeout`` is a shared worker-plus-oracle budget.  Without
+    one, the dispatch boundary's standard ceiling is used as the total
+    bounded budget.  An exhausted worker budget becomes an immediate oracle
+    timeout rather than an unbounded subprocess.
+    """
+    total = (
+        DEFAULT_ORACLE_TIMEOUT_SECONDS
+        if declared_timeout_seconds is None
+        else float(declared_timeout_seconds)
+    )
+    return max(0.0, total - max(0.0, float(worker_duration_seconds)))
+
+
+def _set_nonblocking(stream: Any) -> None:
+    """Best-effort nonblocking setup for a captured subprocess stream."""
+    try:
+        os.set_blocking(stream.fileno(), False)
+    except (AttributeError, OSError, ValueError):
+        # Small fakes often expose only ``read``; their read method is already
+        # nonblocking from the test boundary's perspective.
+        pass
+
+
+def _drain_stream(stream: Any) -> bytes:
+    """Drain currently available bytes from a real or fake pipe."""
+    if stream is None:
+        return b""
+    chunks: list[bytes] = []
+    while True:
+        try:
+            chunk = stream.read(65536)
+        except (BlockingIOError, OSError):
+            break
+        if not chunk:
+            break
+        if isinstance(chunk, str):
+            chunk = chunk.encode("utf-8", errors="replace")
+        if not isinstance(chunk, bytes):
+            chunk = bytes(chunk)
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def run_oracle(
+    argv: list[str] | tuple[str, ...] | str,
+    *,
+    workdir: str | Path | None = None,
+    timeout_seconds: float | None = DEFAULT_ORACLE_TIMEOUT_SECONDS,
+    popen: Callable[..., Any] | None = None,
+    clock: Callable[[], float] | None = None,
+    sleep: Callable[[float], None] | None = None,
+    poll_seconds: float = DEFAULT_POLL_SECONDS,
+) -> OracleOutcome:
+    """Run one parsed oracle command through the safe subprocess boundary.
+
+    The command is always passed as an argv sequence with ``shell=False``.
+    stdout and stderr are drained without waiting on either pipe, and the
+    process is killed with exit code ``124`` at the injected wall-clock
+    deadline. Launch failures are returned as failed oracle evidence instead
+    of being retried or promoted to a worker failure.
+
+    Args:
+        argv: Parsed oracle argv, or a command string parsed here for direct
+            callers.
+        workdir: Child working directory, when supplied.
+        timeout_seconds: Remaining wall-clock budget. ``None`` selects the
+            standard bounded default; zero is an immediate timeout budget.
+        popen: Injectable process spawner.
+        clock: Injectable monotonic clock.
+        sleep: Injectable polling sleep.
+        poll_seconds: Maximum polling interval.
+
+    Returns:
+        One :class:`OracleOutcome` containing all oracle evidence.
+
+    Raises:
+        RunDispatchError: If ``workdir`` is not a directory or the argv is
+            empty. A child launch error itself is represented in the result.
+    """
+    oracle_argv = parse_oracle_command(argv) if isinstance(argv, str) else list(argv)
+    if not oracle_argv:
+        raise RunDispatchError("oracle command must not be empty")
+    if workdir is not None and not Path(workdir).is_dir():
+        raise RunDispatchError(f"workdir is not a directory: {Path(workdir)}")
+
+    popen_fn = popen if popen is not None else _DEFAULT_POPEN
+    clock_fn = clock if clock is not None else _DEFAULT_CLOCK
+    sleep_fn = sleep if sleep is not None else _DEFAULT_SLEEP
+    if timeout_seconds is None:
+        budget = DEFAULT_ORACLE_TIMEOUT_SECONDS
+    else:
+        budget = max(0.0, float(timeout_seconds))
+    cwd = str(Path(workdir)) if workdir is not None else None
+    started = clock_fn()
+
+    try:
+        kwargs: dict[str, Any] = {
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "shell": False,
+        }
+        if cwd is not None:
+            kwargs["cwd"] = cwd
+        process = popen_fn(oracle_argv, **kwargs)
+    except Exception as exc:
+        duration = max(0.0, clock_fn() - started)
+        return OracleOutcome(
+            argv=tuple(oracle_argv),
+            exit_code=None,
+            stdout="",
+            stderr="",
+            duration_seconds=duration,
+            timed_out=False,
+            error=f"launch failure: {type(exc).__name__}: {exc}",
+        )
+
+    _set_nonblocking(getattr(process, "stdout", None))
+    _set_nonblocking(getattr(process, "stderr", None))
+    stdout_buf = bytearray()
+    stderr_buf = bytearray()
+    poll_delay = max(0.001, float(poll_seconds))
+
+    while True:
+        stdout_buf.extend(_drain_stream(getattr(process, "stdout", None)))
+        stderr_buf.extend(_drain_stream(getattr(process, "stderr", None)))
+        exit_code = process.poll()
+        if exit_code is not None:
+            # Capture bytes emitted at the exact exit boundary.
+            stdout_buf.extend(_drain_stream(getattr(process, "stdout", None)))
+            stderr_buf.extend(_drain_stream(getattr(process, "stderr", None)))
+            duration = max(0.0, clock_fn() - started)
+            return OracleOutcome(
+                argv=tuple(oracle_argv),
+                exit_code=exit_code,
+                stdout=bytes(stdout_buf).decode("utf-8", errors="replace"),
+                stderr=bytes(stderr_buf).decode("utf-8", errors="replace"),
+                duration_seconds=duration,
+                timed_out=False,
+            )
+
+        elapsed = max(0.0, clock_fn() - started)
+        if elapsed >= budget:
+            try:
+                process.kill()
+            except Exception:
+                pass
+            try:
+                process.wait(poll_delay)
+            except (TypeError, OSError):
+                try:
+                    process.wait()
+                except Exception:
+                    pass
+            stdout_buf.extend(_drain_stream(getattr(process, "stdout", None)))
+            stderr_buf.extend(_drain_stream(getattr(process, "stderr", None)))
+            duration = max(0.0, clock_fn() - started)
+            return OracleOutcome(
+                argv=tuple(oracle_argv),
+                exit_code=_TIMEOUT_EXIT_CODE,
+                stdout=bytes(stdout_buf).decode("utf-8", errors="replace"),
+                stderr=bytes(stderr_buf).decode("utf-8", errors="replace"),
+                duration_seconds=duration,
+                timed_out=True,
+            )
+
+        sleep_for = min(poll_delay, budget - elapsed)
+        sleep_fn(max(0.0, sleep_for))
+
+
+def _oracle_verdict(oracle: OracleOutcome | None) -> str:
+    """Map optional oracle evidence to the canonical verification verdict."""
+    if oracle is None:
+        return "unverified"
+    if oracle.exit_code == 0 and not oracle.timed_out and oracle.error is None:
+        return "pass"
+    return "fail"
+
+
+def verification_record(oracle: OracleOutcome | None) -> dict[str, Any]:
+    """Build only the verification evidence added to the P1-5a result."""
+    verdict = _oracle_verdict(oracle)
+    if oracle is None:
+        return {
+            "oracle_type": "none",
+            "verdict": verdict,
+            "oracle": None,
+        }
+    return {
+        "oracle_type": "command",
+        "verdict": verdict,
+        "oracle": {
+            "argv": list(oracle.argv),
+            "exit_code": oracle.exit_code,
+            "stdout": oracle.stdout,
+            "stderr": oracle.stderr,
+            "duration_seconds": oracle.duration_seconds,
+            "timed_out": oracle.timed_out,
+            "error": oracle.error,
+        },
+    }
+
+
+def run_json_record(
+    outcome: SelectionOutcome,
+    dispatch: DispatchOutcome,
+    oracle: OracleOutcome | None = None,
+) -> dict[str, Any]:
+    """The ``run --json`` result with selection, dispatch, and verification.
+
+    This remains a P1-5a result rather than an attempt record: P1-5b1 adds
+    only the optional oracle evidence and canonical verdict. Cost, attempt
+    identifiers, provenance, validation, and ledger writes remain outside
+    this packet.
     """
     return {
         "schema_version": 2,
@@ -678,6 +942,7 @@ def run_json_record(
         },
         "selection": selection_record(outcome),
         "usage": dispatch.usage,
+        "verification": verification_record(oracle),
         "wall_clock_ms": max(0, round(dispatch.duration_seconds * 1000.0)),
         "dispatch": {
             "argv": list(dispatch.argv),
@@ -691,14 +956,16 @@ def run_json_record(
 
 
 def run_summary_lines(
-    outcome: SelectionOutcome, dispatch: DispatchOutcome
+    outcome: SelectionOutcome,
+    dispatch: DispatchOutcome,
+    oracle: OracleOutcome | None = None,
 ) -> list[str]:
     """The compact plain-text ``run`` summary (one fact per line).
 
     Mirrors the ``--json`` summary object: selected route and basis, the
-    dispatch exit and wall clock, and the authoritative usage basis with
-    its reported counters (``-`` when unknown). Never prints the packet
-    prompt or the full captured stdout/stderr.
+    dispatch exit and wall clock, the authoritative usage basis with its
+    reported counters (``-`` when unknown), and the oracle verdict. Never
+    prints the packet prompt or the full captured stdout/stderr.
     """
     route = outcome.route
     model = route.model if route.effort is None else f"{route.model}/{route.effort}"
@@ -724,4 +991,14 @@ def run_summary_lines(
             )
         )
         lines.append(f"usage: {usage.get('basis')} ({usage.get('source')}) {counters}")
+
+    verdict = _oracle_verdict(oracle)
+    if oracle is None:
+        lines.append("verification: unverified (no oracle)")
+    elif oracle.error is not None:
+        lines.append(f"verification: {verdict} ({oracle.error})")
+    elif oracle.timed_out:
+        lines.append("verification: fail (oracle ceiling timeout)")
+    else:
+        lines.append(f"verification: {verdict} (oracle exit {oracle.exit_code})")
     return lines

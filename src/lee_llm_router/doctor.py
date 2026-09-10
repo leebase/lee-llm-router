@@ -27,7 +27,7 @@ Commands:
                                   [--catalog-dir PATH]
                                   [--author-route ROUTE_ID] [--json]
     lee-llm-router run --role ROLE --class CLASS --packet FILE
-                       [--route ROUTE_ID] [--workdir DIR]
+                       [--route ROUTE_ID] [--oracle CMD] [--workdir DIR]
                        [--parent ATTEMPT_ID --escalation-reason R]
                        [--timeout S] [--at DATE] [--availability-file PATH]
                        [--catalog-dir PATH] [--json]
@@ -47,8 +47,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 MANIFEST_NAME = ".lee_llm_router_export.json"
-DEFAULT_STALL_MINUTES = 10
-DEFAULT_MAX_MINUTES = 120
 
 
 def check_config(
@@ -1678,9 +1676,13 @@ def _run_run(args: argparse.Namespace) -> int:
     ``json_flag: --json``, and Claude reuses the committed governed
     stream-json capture so authoritative usage is captured; no oracle
     runs, no cost is computed, and no ledger record is appended here.
-    ``run`` never escalates: ``--parent`` and ``--escalation-reason``
-    must be supplied together and are deliberately unused downstream of
-    that pairing check (a supervisor creates the linked attempt).
+    P1-5b1 adds one optional, parsed-with-shlex oracle after the worker.
+    The oracle is argv-only, uses the workdir, and receives only the remaining
+    timeout budget. Its result is verification evidence; it never retries or
+    escalates. ``run`` never escalates: ``--parent`` and
+    ``--escalation-reason`` must be supplied together and are deliberately
+    unused downstream of that pairing check (a supervisor creates the linked
+    attempt).
 
     Exit codes: 0 when the child exited 0; the child's exit code otherwise
     (124 on a ceiling timeout); 3 for every refusal before or around the
@@ -1698,9 +1700,13 @@ def _run_run(args: argparse.Namespace) -> int:
         load_staffing_catalog,
     )
     from lee_llm_router.staffing.run import (
+        RunDispatchError,
         RunSelectionError,
         dispatch_route,
+        oracle_timeout_seconds,
+        parse_oracle_command,
         run_json_record,
+        run_oracle,
         run_summary_lines,
         select_route,
     )
@@ -1795,6 +1801,15 @@ def _run_run(args: argparse.Namespace) -> int:
     except RunSelectionError as exc:
         return fail(str(exc), as_json=as_json, exit_code=exc.exit_code)
 
+    # Parse and validate before the worker boundary. This is deliberately
+    # after selection (so it cannot alter routing) but before any launch.
+    oracle_argv = None
+    if getattr(args, "oracle", None) is not None:
+        try:
+            oracle_argv = parse_oracle_command(args.oracle)
+        except LLMRouterError as exc:
+            return fail(f"oracle command invalid: {exc}", as_json=as_json)
+
     try:
         dispatch = dispatch_route(
             outcome.route,
@@ -1805,10 +1820,25 @@ def _run_run(args: argparse.Namespace) -> int:
     except LLMRouterError as exc:
         return fail(f"dispatch failed: {exc}", as_json=as_json)
 
+    oracle = None
+    if oracle_argv is not None:
+        try:
+            oracle = run_oracle(
+                oracle_argv,
+                workdir=args.workdir,
+                timeout_seconds=oracle_timeout_seconds(
+                    args.timeout, dispatch.duration_seconds
+                ),
+            )
+        except RunDispatchError as exc:
+            # The worker has completed, so a governed oracle setup failure is
+            # a deterministic run refusal rather than an unhandled traceback.
+            return fail(f"oracle failed: {exc}", as_json=as_json)
+
     if as_json:
-        print(json.dumps(run_json_record(outcome, dispatch), indent=2))
+        print(json.dumps(run_json_record(outcome, dispatch, oracle), indent=2))
     else:
-        for line in run_summary_lines(outcome, dispatch):
+        for line in run_summary_lines(outcome, dispatch, oracle):
             print(line)
     return dispatch.exit_code
 
@@ -1978,6 +2008,8 @@ def main(argv: list[str] | None = None) -> None:
             sys.exit(_run_resolve(fast_args))
 
     import argparse
+
+    from lee_llm_router.watchdog import DEFAULT_MAX_MINUTES, DEFAULT_STALL_MINUTES
 
     parser = argparse.ArgumentParser(
         prog="lee-llm-router",
@@ -2475,10 +2507,19 @@ def main(argv: list[str] | None = None) -> None:
         ),
     )
     run_parser.add_argument(
+        "--oracle",
+        default=None,
+        metavar="CMD",
+        help=(
+            "Optional verification command; parsed with shlex and run once "
+            "without a shell after the worker"
+        ),
+    )
+    run_parser.add_argument(
         "--workdir",
         default=None,
         metavar="DIR",
-        help="Child process working directory (must exist; default: inherit)",
+        help="Child and oracle working directory (must exist; default: inherit)",
     )
     run_parser.add_argument(
         "--parent",

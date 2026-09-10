@@ -36,6 +36,7 @@ IMPL_ROLE = "impl"
 
 #: Explicit-route fixtures: each is eligible under the healthy snapshot.
 CODEX_ROUTE = "codex-gpt-5-6-sol-low-openai-sub"
+LUNA_ROUTE = "pi-gpt-5-6-luna-xhigh-openai-sub"
 PI_ROUTE = "pi-z-ai-glm-5-3-flash-openrouter"
 CLAUDE_ROUTE = "claude-claude-sonnet-5-high-anthropic-sub"
 #: Explicit-route fixture that is always excluded (never_automatic + exhausted).
@@ -307,6 +308,24 @@ class LaunchRecorder:
         return proc
 
 
+class SequencedLaunchRecorder:
+    """Fake Popen with a distinct worker and oracle outcome."""
+
+    def __init__(self, specs: Sequence[dict[str, Any] | Exception]) -> None:
+        self.specs = list(specs)
+        self.processes: list[FakeProcess] = []
+        self.calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def __call__(self, argv: list[str], **kwargs: Any) -> FakeProcess:
+        self.calls.append((list(argv), dict(kwargs)))
+        spec = self.specs[len(self.processes)]
+        if isinstance(spec, Exception):
+            raise spec
+        proc = FakeProcess(argv, **spec, **kwargs)
+        self.processes.append(proc)
+        return proc
+
+
 class AdvancingClock:
     """Monotonic clock that jumps forward on every read (ceiling tests)."""
 
@@ -339,8 +358,9 @@ def _run_cli(
     escalation_reason: str | None = None,
     timeout: float | None = None,
     extra: Sequence[str] = (),
-    launcher: LaunchRecorder | None = None,
+    launcher: LaunchRecorder | SequencedLaunchRecorder | None = None,
     clock: AdvancingClock | None = None,
+    json_output: bool = True,
 ) -> tuple[int | None, Any]:
     """Invoke ``doctor.main(["run", ...])`` with fakes and capture output.
 
@@ -385,7 +405,8 @@ def _run_cli(
     if timeout is not None:
         argv += ["--timeout", str(timeout)]
     argv += list(extra)
-    argv.append("--json")
+    if json_output:
+        argv.append("--json")
 
     with pytest.raises(SystemExit) as exc_info:
         cli_main(argv)
@@ -1042,3 +1063,325 @@ def test_run_output_carries_streams_and_wallclock(
     assert isinstance(dispatch["duration_seconds"], (int, float))
     assert isinstance(payload["wall_clock_ms"], int)
     assert set(payload["usage"]) == PROVIDER_REPORTED_KEYS
+
+
+# ---------------------------------------------------------------------------
+# 10. P1-5b1 oracle and verdict
+# ---------------------------------------------------------------------------
+
+
+def _worker_spec(*, exit_code: int = 0) -> dict[str, Any]:
+    """Return a fake worker spec with valid Pi usage evidence."""
+    return {
+        "chunks": [(PI_EVENT_STDOUT + "\n").encode("utf-8")],
+        "exit_code": exit_code,
+    }
+
+
+class WorkdirDeletingProcess(FakeProcess):
+    """Fake worker that removes its cwd when it reports completion."""
+
+    def __init__(self, workdir: Path, argv: list[str], **kwargs: Any) -> None:
+        self.workdir = workdir
+        self._workdir_deleted = False
+        super().__init__(argv, **kwargs)
+
+    def poll(self) -> int | None:
+        exit_code = super().poll()
+        if exit_code is not None and not self._workdir_deleted:
+            shutil.rmtree(self.workdir)
+            self._workdir_deleted = True
+        return exit_code
+
+
+class WorkdirDeletingLaunchRecorder(SequencedLaunchRecorder):
+    """Fake boundary that deletes the workdir after the worker completes."""
+
+    def __init__(self, workdir: Path) -> None:
+        super().__init__([_worker_spec()])
+        self.workdir = workdir
+
+    def __call__(self, argv: list[str], **kwargs: Any) -> FakeProcess:
+        if self.processes:
+            raise AssertionError("oracle must not launch after workdir deletion")
+        self.calls.append((list(argv), dict(kwargs)))
+        spec = self.specs[len(self.processes)]
+        if isinstance(spec, Exception):
+            raise spec
+        process = WorkdirDeletingProcess(self.workdir, argv, **spec, **kwargs)
+        self.processes.append(process)
+        return process
+
+
+def test_run_without_oracle_is_unverified_and_launches_only_worker(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """A worker success cannot infer a verified success without an oracle."""
+    launcher = SequencedLaunchRecorder([_worker_spec()])
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=LUNA_ROUTE,
+        launcher=launcher,
+    )
+
+    assert code == 0
+    payload = json.loads(captured.out)
+    verification = payload["verification"]
+    assert set(verification) == {"oracle_type", "verdict", "oracle"}
+    assert verification["oracle_type"] == "none"
+    assert verification["verdict"] == "unverified"
+    assert verification["oracle"] is None
+    assert len(launcher.calls) == 1
+
+
+def test_run_oracle_pass_uses_shlex_argv_workdir_and_no_shell(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, tmp_path, scratch_state
+):
+    """A zero-exit oracle passes with exact argv and the requested cwd."""
+    workdir = tmp_path / "oracle-cwd"
+    workdir.mkdir()
+    launcher = SequencedLaunchRecorder(
+        [
+            _worker_spec(),
+            {"chunks": [b"oracle says okay\n"], "exit_code": 0},
+        ]
+    )
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=LUNA_ROUTE,
+        workdir=workdir,
+        launcher=launcher,
+        extra=("--oracle", "oracle --label 'hello world'"),
+    )
+
+    assert code == 0
+    payload = json.loads(captured.out)
+    verification = payload["verification"]
+    assert set(verification) == {"oracle_type", "verdict", "oracle"}
+    assert verification["oracle_type"] == "command"
+    assert verification["verdict"] == "pass"
+    evidence = verification["oracle"]
+    assert evidence["argv"] == ["oracle", "--label", "hello world"]
+    assert evidence["exit_code"] == 0
+    assert evidence["stdout"] == "oracle says okay\n"
+    assert evidence["stderr"] == ""
+    assert evidence["timed_out"] is False
+    assert evidence["error"] is None
+    assert isinstance(evidence["duration_seconds"], (int, float))
+    assert len(launcher.calls) == 2
+    assert launcher.calls[0][1]["cwd"] == str(workdir)
+    assert launcher.calls[1][1]["cwd"] == str(workdir)
+    assert launcher.calls[0][1]["shell"] is False
+    assert launcher.calls[1][1]["shell"] is False
+    assert launcher.calls[1][0] == ["oracle", "--label", "hello world"]
+
+
+def test_run_nonzero_oracle_is_fail_with_captured_evidence(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """A nonzero oracle is a deterministic failed verification."""
+    launcher = SequencedLaunchRecorder(
+        [
+            _worker_spec(),
+            {
+                "chunks": [b"oracle output\n"],
+                "stderr_chunks": [b"oracle rejected\n"],
+                "exit_code": 9,
+            },
+        ]
+    )
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=LUNA_ROUTE,
+        launcher=launcher,
+        extra=("--oracle", "oracle --check"),
+    )
+
+    assert code == 0
+    payload = json.loads(captured.out)
+    oracle = payload["verification"]
+    assert oracle["verdict"] == "fail"
+    assert oracle["oracle"]["exit_code"] == 9
+    assert oracle["oracle"]["stdout"] == "oracle output\n"
+    assert oracle["oracle"]["stderr"] == "oracle rejected\n"
+    assert oracle["oracle"]["timed_out"] is False
+    assert oracle["oracle"]["error"] is None
+    assert len(launcher.calls) == 2
+
+
+def test_run_worker_failure_still_runs_oracle_once(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """Worker failure does not suppress the separately governed oracle."""
+    launcher = SequencedLaunchRecorder([_worker_spec(exit_code=7), {"exit_code": 0}])
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=LUNA_ROUTE,
+        launcher=launcher,
+        extra=("--oracle", "oracle"),
+    )
+
+    assert code == 7
+    payload = json.loads(captured.out)
+    assert payload["dispatch"]["exit_code"] == 7
+    assert payload["verification"]["verdict"] == "pass"
+    assert len(launcher.calls) == 2
+
+
+def test_run_oracle_timeout_is_fail_and_not_retried(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """An oracle that exceeds the remaining budget is killed exactly once."""
+    launcher = SequencedLaunchRecorder([_worker_spec(), {"never_exits": True}])
+    clock = AdvancingClock(step=60.0)
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=LUNA_ROUTE,
+        timeout=300,
+        launcher=launcher,
+        clock=clock,
+        extra=("--oracle", "oracle --check"),
+    )
+
+    assert code == 0
+    verification = json.loads(captured.out)["verification"]
+    assert verification["verdict"] == "fail"
+    assert verification["oracle"]["exit_code"] == 124
+    assert verification["oracle"]["timed_out"] is True
+    assert verification["oracle"]["error"] is None
+    assert len(launcher.calls) == 2
+    assert launcher.processes[1].killed is True
+
+
+def test_run_deleted_workdir_after_worker_is_exit_3_without_oracle_launch(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, tmp_path, scratch_state
+):
+    """A workdir race after the worker is governed as a clear exit-3 failure."""
+    workdir = tmp_path / "deleted-after-worker"
+    workdir.mkdir()
+    launcher = WorkdirDeletingLaunchRecorder(workdir)
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=LUNA_ROUTE,
+        workdir=workdir,
+        launcher=launcher,
+        extra=("--oracle", "oracle --check"),
+    )
+
+    assert code == 3
+    assert "run: oracle failed: workdir is not a directory" in captured.err
+    assert str(workdir) in captured.err
+    assert len(launcher.calls) == 1
+    assert json.loads(captured.out) == {
+        "error": f"oracle failed: workdir is not a directory: {workdir}",
+        "exit_code": 3,
+    }
+
+
+def test_run_oracle_launch_failure_is_fail_with_stable_error(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """An oracle launch error becomes failed evidence and receives no retry."""
+    launcher = SequencedLaunchRecorder(
+        [_worker_spec(), FileNotFoundError("oracle missing")]
+    )
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=LUNA_ROUTE,
+        launcher=launcher,
+        extra=("--oracle", "missing-oracle"),
+    )
+
+    assert code == 0
+    verification = json.loads(captured.out)["verification"]
+    assert verification["verdict"] == "fail"
+    assert verification["oracle"]["exit_code"] is None
+    assert verification["oracle"]["timed_out"] is False
+    assert verification["oracle"]["error"] == (
+        "launch failure: FileNotFoundError: oracle missing"
+    )
+    assert len(launcher.calls) == 2
+
+
+def test_run_malformed_or_empty_oracle_refuses_before_worker(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """Both shlex refusal forms launch neither a worker nor an oracle."""
+    for command in ("'unterminated", "   "):
+        launcher = SequencedLaunchRecorder([])
+        code, captured = _run_cli(
+            monkeypatch,
+            capsys,
+            catalog_dir=catalog_dir,
+            snapshot_path=snapshot,
+            packet_path=packet,
+            route=LUNA_ROUTE,
+            launcher=launcher,
+            extra=("--oracle", command),
+        )
+        assert code == 3
+        assert "oracle command invalid" in captured.err
+        assert launcher.calls == []
+
+
+def test_oracle_default_budget_uses_the_watchdog_default():
+    """The oracle default derives from the watchdog's authoritative ceiling."""
+    from lee_llm_router.staffing.run import (
+        DEFAULT_ORACLE_TIMEOUT_SECONDS,
+        oracle_timeout_seconds,
+    )
+    from lee_llm_router.watchdog import DEFAULT_MAX_MINUTES
+
+    assert DEFAULT_ORACLE_TIMEOUT_SECONDS == DEFAULT_MAX_MINUTES * 60.0
+    assert oracle_timeout_seconds(None, 0.0) == DEFAULT_MAX_MINUTES * 60.0
+
+
+def test_run_plain_summary_includes_verification(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """The plain result exposes the same verdict without captured streams."""
+    launcher = SequencedLaunchRecorder([_worker_spec(), {"exit_code": 0}])
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=LUNA_ROUTE,
+        launcher=launcher,
+        json_output=False,
+        extra=("--oracle", "oracle"),
+    )
+
+    assert code == 0
+    assert "verification: pass (oracle exit 0)" in captured.out
+    assert "oracle output" not in captured.out
+    assert len(launcher.calls) == 2

@@ -152,3 +152,25 @@ pre-P1-4a text-mode attempts.
 P1-6 stopped at two-round non-convergence with no implementation. Phase 1
 OpenRouter metered total is $0.272804882 plus unknown pre-P1-4a text-mode
 attempts.
+
+## P1-5b1 — Oracle and verdict split
+
+Chief answer 2 resolved the P1-5b non-convergence as an implementation-ladder
+escalation. Rule B was applied once, splitting oracle/verdict from cost/record.
+
+| Packet | Role | Explain / selection | Excluded summary | Route | Start / end | Exit | Usage / cost | Result |
+|---|---|---|---|---|---|---:|---|---|
+| P1-5b1 escalated author | impl | `catalog explain --role impl --class impl/deterministic/none/m/python --json`; GLM parent had failed two rounds; D209 ladder's Luna XHigh rung eligible; `parent_attempt_id: p1-5b-attempt-2-20260910`; `escalation_reason: non_convergence` | Gemini eligible but reserved for one agy live proof; Go likely-exhausted; never-automatic/policy exclusions; cheaper GLM parent exhausted | `pi-gpt-5-6-luna-xhigh-openai-sub` | about 15:09 / 15:19 | supervisor watchdog termination at 590 seconds before final narrative | `provider_reported`, `pi --mode json events`; input 166912, output 28200, cached 3656192, reasoning 13042, total 3851304; subscription list/marginal execution estimate $0.050416800 | left scoped oracle/verdict implementation and fake tests; supervisor read full diff and independently observed 29 focused and 1047 full passes/1 skip; candidate sent to review as a tested handoff fact |
+| P1-5b1 review 1 | review | `catalog explain --role review --class review/judge/none/m/python --author-route pi-gpt-5-6-luna-xhigh-openai-sub --json`; Go excluded; governed independent fallback eligible | Luna/GPT family excluded by independence; Go TOO FAST/likely-exhausted; never-automatic/policy exclusions; Gemini reserved | `pi-deepseek-deepseek-v4-flash-openrouter` | 15:19 / about 15:28 | 0 | `provider_reported`, `pi --mode json events`; input 237166, output 27724, cached 1219584, reasoning 22360, total 1484474; list/marginal $0.024579576 | FAIL; blocking: workdir deletion between worker completion and oracle launch raised uncaught `RunDispatchError`; timeout-default coupling and redundant `status` classified by supervisor as hardening/scope cleanup; other future concerns logged |
+| P1-5b1 repair 1 | impl | fresh implementation explain; same Luna XHigh route remained eligible; one same-route repair with review finding quoted | same implementation exclusions/reservations as escalated author | `pi-gpt-5-6-luna-xhigh-openai-sub` | about 15:28 / about 15:38 | 0 | `provider_reported`, `pi --mode json events`; input 139060, output 19738, cached 2846208, reasoning unavailable, total 3005006; subscription list/marginal execution estimate $0.038623200 | caught governed post-worker oracle setup refusal, added fake race reproducer, removed redundant status, consolidated watchdog defaults; retained tested inherited oracle implementation and discarded only duplicate fields/constants; 31 focused, 1049 full passed/1 skip; Black/Ruff clean |
+| P1-5b1 re-review | review | fresh same independent review explain; DeepSeek fallback eligible | same review exclusions/reservation | `pi-deepseek-deepseek-v4-flash-openrouter` | about 15:38 / about 15:42 | 0 | `provider_reported`, `pi --mode json events`; input 98558, output 15999, cached 764928, reasoning 11478, total 879485; list/marginal $0.010966704 | PASS; prior reproducer fixed; 0 blocking, 2 hardening, 3 future concerns |
+
+P1-5b1 accepted after one split escalation, one review repair, and two reviews,
+about 33 minutes wall clock. Supervisor read every owned diff, confirmed no
+out-of-scope file change, reproduced 31 focused tests plus Black/Ruff clean,
+and had independently completed the full suite before review. Non-blocking:
+the CLI catch could be widened if future oracle errors gain other subclasses.
+Future P1-5b2 must create the canonical top-level attempt-record placement.
+Phase 1 OpenRouter metered total is $0.308351162 plus unknown pre-P1-4a
+text-mode attempts; Luna subscription execution has a separate $0.089040000
+list/marginal estimate and is not a metered API charge.
