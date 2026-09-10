@@ -17,6 +17,18 @@ PROMPT_PLACEHOLDER = "{prompt}"
 # ruling 2 via docs/staffing/phase1-contracts.md §Usage evidence taxonomy.
 CODEX_USAGE_SOURCE = "codex exec --json usage"
 
+# Exact usage.source string required for Claude Code result-event receipts
+# by docs/staffing/phase1-contracts.md §Usage evidence taxonomy (closed
+# enum in the attempt-record v2 ``$defs/usage`` subschema). The governed
+# argv behind it is ``claude -p --output-format stream-json``.
+CLAUDE_USAGE_SOURCE = "claude -p --output-format stream-json result event"
+
+# Governed capture config for ``run`` (counterpart of the Codex
+# ``json_flag`` note): forces ``claude -p`` to emit the stream-json
+# result event that :func:`capture_claude_usage` parses. The provider
+# default stays null so legacy Claude argv contracts are untouched.
+CLAUDE_GOVERNED_CONFIG: dict[str, str] = {"output_format": "stream-json"}
+
 # ``codex exec --json`` emits JSONL events; the successful
 # ``turn.completed`` receipt is the only accounting boundary. Interim
 # events (``thread.started``, ``item.completed``, ``token_count``, …)
@@ -339,6 +351,61 @@ class ClaudeCodeCLIProvider(CodexCLIProvider):
     default_model_flag = "--model"
     default_output_flag = None
     default_prompt_flag = "-p"
+    # Governed capture (``run``) sets ``output_format: "stream-json"
+    # (see :data:`CLAUDE_GOVERNED_CONFIG`) so ``claude -p`` emits the
+    # stream-json result event that :func:`capture_claude_usage` parses.
+    # The default stays null so legacy argv contracts are untouched.
+    default_output_format: str | None = None
+
+    def _resolve_output_format(self, config: dict[str, Any]) -> str | None:
+        return self._resolve_config_string_flag(
+            config,
+            "output_format",
+            self.default_output_format,
+        )
+
+    def validate_config(self, config: dict[str, Any]) -> None:
+        super().validate_config(config)
+        self._resolve_output_format(config)
+
+    def build_command(
+        self,
+        config: dict[str, Any],
+        model: str | None = None,
+        effort: str | None = None,
+    ) -> list[str]:
+        """Return the Claude CLI dispatch command template as an argv list.
+
+        Mirrors the Codex builder, with one governed-capture addition:
+        when ``config['output_format']`` is set (governed capture passes
+        ``"stream-json"`` via :data:`CLAUDE_GOVERNED_CONFIG`), the pair
+        ``["--output-format", value]`` is inserted immediately before the
+        trailing ``{prompt}`` placeholder so the argv reads
+        ``claude -p --output-format stream-json {prompt}`` — the exact
+        command behind the :data:`CLAUDE_USAGE_SOURCE` taxonomy string.
+        The default stays null so legacy argv contracts are untouched.
+
+        Args:
+            config: Provider configuration mapping.
+            model: Optional model override; falls back to ``config['model']``.
+            effort: Optional reasoning-effort override; falls back to
+                ``config['effort']``.
+
+        Returns:
+            The argv list for the CLI invocation.
+
+        Raises:
+            LLMRouterError: If the config is invalid.
+        """
+        output_format = self._resolve_output_format(config)
+        cmd = list(super().build_command(config, model=model, effort=effort))
+        if output_format:
+            if cmd and cmd[-1] == PROMPT_PLACEHOLDER:
+                cmd.insert(len(cmd) - 1, "--output-format")
+                cmd.insert(len(cmd) - 1, output_format)
+            else:
+                cmd.extend(["--output-format", output_format])
+        return cmd
 
     def _effort_args(self, effort: str) -> list[str]:
         """Return the Claude CLI's effort fragment.
@@ -686,6 +753,370 @@ def capture_usage(output: str) -> dict[str, Any]:
         "reasoning_tokens": reasoning_value,
         "total_tokens": counters.total_tokens,
     }
+
+
+# Claude-specific usage key families (``claude -p --output-format
+# stream-json`` result events use camelCase; snake aliases are accepted
+# for parity with the benchmark capture reader).
+_CLAUDE_RESULT_EVENT_TYPE = "result"
+_CLAUDE_INPUT_KEYS = ("input_tokens", "inputTokens")
+_CLAUDE_OUTPUT_KEYS = ("output_tokens", "outputTokens")
+_CLAUDE_CACHED_KEYS = (
+    "cache_read_input_tokens",
+    "cacheReadInputTokens",
+    "cached_input_tokens",
+)
+_CLAUDE_CACHE_WRITE_KEYS = (
+    "cache_creation_input_tokens",
+    "cacheCreationInputTokens",
+    "cache_write_input_tokens",
+)
+
+
+def _claude_unavailable_usage(reason: str) -> dict[str, Any]:
+    """Return the schema-valid unavailable v2 usage mapping with null counters."""
+    return _codex_unavailable_usage(reason)
+
+
+def _consistent_claude_usage_value(
+    mappings: tuple[dict[str, Any], ...], keys: tuple[str, ...]
+) -> Any:
+    """Return the single consistent value for a Claude usage key family.
+
+    Same reconciliation rules as the Codex receipt parser: every alias
+    key of the family is looked up across the given mappings, and alias
+    keys that disagree in value or type fail closed instead of picking
+    one silently.
+
+    Args:
+        mappings: Mappings to read, in precedence order.
+        keys: Alias key names for one counter family.
+
+    Returns:
+        The single present value, or ``None`` when the family is absent.
+
+    Raises:
+        LLMRouterError: With ``FailureType.CONTRACT_VIOLATION`` when two
+            present members of the family disagree.
+    """
+    values: list[tuple[str, Any]] = []
+    for mapping in mappings:
+        for key in keys:
+            if key in mapping:
+                values.append((key, mapping[key]))
+    if not values:
+        return None
+    first_key, first_value = values[0]
+    for key, value in values[1:]:
+        if value != first_value or type(value) is not type(first_value):
+            raise LLMRouterError(
+                "Claude result usage contains conflicting values for "
+                f"{first_key!r} and {key!r}",
+                failure_type=FailureType.CONTRACT_VIOLATION,
+            )
+    return first_value
+
+
+def _parse_claude_events(output: str) -> tuple[list[dict[str, Any]], str | None]:
+    """Parse ``claude -p --output-format stream-json`` output leniently.
+
+    A whole-text JSON object is a single event; otherwise every non-blank
+    line must parse as a JSON object. Unlike the Codex receipt parser,
+    unusable output does not raise: the governed Claude capture fails
+    closed as ``unavailable`` with a specific reason.
+
+    Args:
+        output: Captured stdout of a governed ``claude -p`` run.
+
+    Returns:
+        ``(events, None)`` with every parsed JSON object event in order,
+        or ``([], reason)`` when the output is empty, is a whole-text
+        non-object, or contains a malformed or non-object line.
+    """
+    if not isinstance(output, str) or not output.strip():
+        return [], "Claude stream-json output was empty"
+    try:
+        whole = json.loads(output)
+    except JSONDecodeError:
+        whole = None
+    if whole is not None:
+        if not isinstance(whole, dict):
+            return [], "Claude stream-json output was a JSON value, not an object"
+        return [whole], None
+    events: list[dict[str, Any]] = []
+    for line_number, line in enumerate(output.splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except JSONDecodeError:
+            return [], (
+                f"Claude stream-json output had malformed JSON on line "
+                f"{line_number}"
+            )
+        if not isinstance(event, dict):
+            return [], (
+                "Claude stream-json output had a non-object JSON event on "
+                f"line {line_number}"
+            )
+        events.append(event)
+    return events, None
+
+
+def _claude_cache_counters(
+    mapping: dict[str, Any],
+    *,
+    subject: str,
+) -> tuple[int, bool]:
+    """Validate the cache-read evidence of one Claude usage mapping.
+
+    Cache reads map to ``cached_input_tokens``. Cache-creation figures
+    are validated but never surfaced: the attempt-record v2 usage schema
+    has no such field, so they are omitted entirely.
+
+    Args:
+        mapping: The ``modelUsage`` row or top-level ``usage`` mapping.
+        subject: Human-readable evidence description for error messages.
+
+    Returns:
+        ``(cache_read_total, cache_read_reported)``.
+
+    Raises:
+        LLMRouterError: With ``FailureType.CONTRACT_VIOLATION`` when a
+            present cache counter is not a nonnegative integer.
+    """
+    cached_value = _consistent_claude_usage_value((mapping,), _CLAUDE_CACHED_KEYS)
+    cache_write_value = _consistent_claude_usage_value(
+        (mapping,), _CLAUDE_CACHE_WRITE_KEYS
+    )
+    for name, value in (
+        ("cacheReadInputTokens", cached_value),
+        ("cacheCreationInputTokens", cache_write_value),
+    ):
+        if value is not None and not _nonnegative_int(value):
+            raise LLMRouterError(
+                f"Claude result {subject} field {name!r} must be a "
+                "nonnegative integer",
+                failure_type=FailureType.CONTRACT_VIOLATION,
+            )
+    if cached_value is None:
+        return 0, False
+    return cached_value, True
+
+
+def _usage_from_claude_model_usage(model_usage: dict[str, Any]) -> dict[str, Any]:
+    """Sum Claude ``modelUsage`` model rows once into aggregate counters.
+
+    Each row must report valid nonnegative integer ``inputTokens`` and
+    ``outputTokens`` (snake aliases accepted). A row missing either
+    fails closed as ``unavailable`` evidence; a row reporting an invalid
+    value (bool, negative, fractional) raises. Cache reads map to
+    ``cached_input_tokens`` and cache creation is omitted. The top-level
+    result ``usage`` object is never added on top of ``modelUsage``.
+
+    Args:
+        model_usage: The result event's ``modelUsage`` mapping.
+
+    Returns:
+        A schema-valid v2 usage mapping: ``provider_reported`` with the
+        summed rows, or ``unavailable`` with a specific reason when a
+        row lacks required input/output counts.
+
+    Raises:
+        LLMRouterError: With ``FailureType.CONTRACT_VIOLATION`` when a
+            row is not an object, a required counter is present but
+            invalid, an optional cache counter is present but invalid,
+            or alias keys conflict.
+    """
+    input_tokens = 0
+    output_tokens = 0
+    cached_tokens = 0
+    cached_reported = False
+    for model_id, row in model_usage.items():
+        if not isinstance(row, dict):
+            raise LLMRouterError(
+                f"Claude result modelUsage row for model {model_id!r} "
+                "must be an object",
+                failure_type=FailureType.CONTRACT_VIOLATION,
+            )
+        input_value = _consistent_claude_usage_value((row,), _CLAUDE_INPUT_KEYS)
+        output_value = _consistent_claude_usage_value((row,), _CLAUDE_OUTPUT_KEYS)
+        if input_value is None or output_value is None:
+            return _claude_unavailable_usage(
+                f"Claude result modelUsage row for model {model_id!r} "
+                "lacked valid inputTokens/outputTokens"
+            )
+        if not _nonnegative_int(input_value) or not _nonnegative_int(output_value):
+            raise LLMRouterError(
+                f"Claude result modelUsage row for model {model_id!r} "
+                "must report nonnegative integer inputTokens/outputTokens",
+                failure_type=FailureType.CONTRACT_VIOLATION,
+            )
+        row_cached, row_cached_reported = _claude_cache_counters(
+            row,
+            subject=f"modelUsage row for model {model_id!r}",
+        )
+        input_tokens += input_value
+        output_tokens += output_value
+        cached_tokens += row_cached
+        cached_reported = cached_reported or row_cached_reported
+    return {
+        "basis": "provider_reported",
+        "source": CLAUDE_USAGE_SOURCE,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cached_input_tokens": cached_tokens if cached_reported else None,
+        "reasoning_tokens": None,
+        "total_tokens": input_tokens + output_tokens + cached_tokens,
+    }
+
+
+def _usage_from_claude_result_usage(usage: dict[str, Any]) -> dict[str, Any]:
+    """Read the top-level Claude result ``usage`` object as v2 usage.
+
+    Fallback path used only when ``modelUsage`` is absent. Snake/camel
+    aliases are reconciled; missing input or output counts fail closed
+    as ``unavailable`` while present-but-invalid values raise.
+
+    Args:
+        usage: The result event's ``usage`` mapping.
+
+    Returns:
+        A schema-valid v2 usage mapping.
+
+    Raises:
+        LLMRouterError: With ``FailureType.CONTRACT_VIOLATION`` when a
+            present counter is not a nonnegative integer or alias keys
+            conflict.
+    """
+    input_value = _consistent_claude_usage_value((usage,), _CLAUDE_INPUT_KEYS)
+    output_value = _consistent_claude_usage_value((usage,), _CLAUDE_OUTPUT_KEYS)
+    if input_value is None or output_value is None:
+        return _claude_unavailable_usage(
+            "Claude result usage lacked valid input/output token counts"
+        )
+    if not _nonnegative_int(input_value) or not _nonnegative_int(output_value):
+        raise LLMRouterError(
+            "Claude result usage must report nonnegative integer "
+            "input/output token counts",
+            failure_type=FailureType.CONTRACT_VIOLATION,
+        )
+    cached_tokens, cached_reported = _claude_cache_counters(
+        usage,
+        subject="usage",
+    )
+    return {
+        "basis": "provider_reported",
+        "source": CLAUDE_USAGE_SOURCE,
+        "input_tokens": input_value,
+        "output_tokens": output_value,
+        "cached_input_tokens": cached_tokens if cached_reported else None,
+        "reasoning_tokens": None,
+        "total_tokens": input_value + output_value + cached_tokens,
+    }
+
+
+def capture_claude_usage(output: str) -> dict[str, Any]:
+    """Parse authoritative Claude Code usage from captured stream output.
+
+    Implements the P1-4c usage parser against the governed argv
+    ``claude -p --output-format stream-json`` (source string
+    :data:`CLAUDE_USAGE_SOURCE`). Only the last terminal event with
+    ``type: result`` is read — it is the session summary, and its
+    counters are never added to anything else. When the result event
+    carries ``modelUsage``, the per-model rows are the sole aggregate
+    token source: each row is summed exactly once and the top-level
+    result ``usage`` object is not added on top; a present-but-empty
+    ``modelUsage`` is therefore unusable evidence and fails closed as
+    ``unavailable`` rather than falling through. Only when the
+    ``modelUsage`` key is absent entirely does a top-level ``usage``
+    object with snake/camel aliases become the fallback. Cache reads
+    map to ``cached_input_tokens``; cache creation
+    is validated but omitted because the v2 usage schema has no such
+    field. ``total_tokens`` is the observed-component sum (input +
+    output + reported cache reads). Contradictory terminal evidence
+    fails closed; missing, malformed, or unrelated output fails closed
+    as ``unavailable`` with a specific reason. No token figure is ever
+    estimated from text, context length, cost, or elapsed time.
+
+    Args:
+        output: Captured stdout of a governed ``claude -p`` run — one
+            JSON object or JSON lines.
+
+    Returns:
+        A usage mapping that is directly schema-valid against the
+        attempt-record v2 ``$defs/usage`` subschema (P1-5): ``basis``,
+        ``source`` or ``unavailable_reason``, and the token counters
+        ``input_tokens``, ``output_tokens``, ``cached_input_tokens``,
+        ``reasoning_tokens``, ``total_tokens`` — nothing else. With
+        valid terminal evidence, ``basis`` is ``provider_reported``
+        with the exact source :data:`CLAUDE_USAGE_SOURCE`;
+        ``reasoning_tokens`` stays ``null`` (Claude result events do
+        not report a separate reasoning figure), and
+        ``cached_input_tokens`` stays ``null`` when no model row or the
+        top-level usage reports one. A genuine source-reported zero
+        stays zero and is never confused with unknown. When usage is
+        missing or required counters are absent, ``basis`` is
+        ``unavailable`` with a specific ``unavailable_reason`` and
+        ``None`` counters — never default zeros.
+
+    Raises:
+        LLMRouterError: With ``FailureType.CONTRACT_VIOLATION`` when the
+            result event's ``modelUsage`` or ``usage`` field is not an
+            object, a ``modelUsage`` row is not an object, a present
+            token counter is not a nonnegative integer (bool, negative,
+            or fractional), or alias keys for one counter family
+            conflict.
+    """
+    events, unusable_reason = _parse_claude_events(output)
+    result_event = next(
+        (
+            event
+            for event in reversed(events)
+            if event.get("type") == _CLAUDE_RESULT_EVENT_TYPE
+        ),
+        None,
+    )
+    if result_event is None:
+        if unusable_reason is not None:
+            return _claude_unavailable_usage(unusable_reason)
+        if not events:
+            return _claude_unavailable_usage(
+                "Claude stream-json output contained no parseable JSON events"
+            )
+        return _claude_unavailable_usage(
+            "Claude stream-json output contained no terminal result event"
+        )
+
+    model_usage = result_event.get("modelUsage")
+    if model_usage is not None and not isinstance(model_usage, dict):
+        raise LLMRouterError(
+            "Claude result modelUsage field must be an object",
+            failure_type=FailureType.CONTRACT_VIOLATION,
+        )
+    if isinstance(model_usage, dict):
+        # modelUsage is the sole aggregate token source when present: an
+        # empty mapping is unusable evidence, not a signal to fall
+        # through to the top-level usage object, and the summed rows are
+        # never added on top of it.
+        if not model_usage:
+            return _claude_unavailable_usage(
+                "Claude result event modelUsage was present but empty"
+            )
+        return _usage_from_claude_model_usage(model_usage)
+
+    raw_usage = result_event.get("usage")
+    if raw_usage is not None and not isinstance(raw_usage, dict):
+        raise LLMRouterError(
+            "Claude result usage field must be an object",
+            failure_type=FailureType.CONTRACT_VIOLATION,
+        )
+    if isinstance(raw_usage, dict):
+        return _usage_from_claude_result_usage(raw_usage)
+
+    return _claude_unavailable_usage(
+        "Claude result event carried no modelUsage or usage token evidence"
+    )
 
 
 def _snippet(text: str, limit: int = 200) -> str:

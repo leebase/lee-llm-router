@@ -93,3 +93,32 @@ one helper name is terse, and parser assembly is indirect. Future: P1-5 must
 set `json_flag: --json` and call the standalone capture path deliberately.
 Phase 1 provider-reported metered total is $0.074307454 plus unknown pre-P1-4a
 text-mode attempts.
+
+## P1-4c — Claude Code usage capture
+
+| Packet | Role | Explain / selection | Excluded summary | Route | Start / end | Exit | Usage / cost | Result |
+|---|---|---|---|---|---|---:|---|---|
+| P1-4c attempt 1 | impl | `catalog explain --role impl --class impl/deterministic/none/s/python --json`; governed first rung eligible | channel likely-exhausted 7; never-automatic 4; Gemini Pro role-scoped 1; unpriced/pricing unavailable 1 (overlap) | `pi-z-ai-glm-5-3-flash-openrouter` | 13:13 / 13:23 | watchdog timeout; process group terminated | `provider_reported`, `pi --mode json events`; input 27023, output 590, cached 9792, reasoning 193, total 37405; list/marginal $0.002174225 | stalled during broad evidence search; no owned-file change; not accepted |
+| P1-4c attempt 2 | impl | fresh same implementation explain; governed first rung remained eligible | same implementation exclusions as attempt 1 | `pi-z-ai-glm-5-3-flash-openrouter` | 13:24 / 13:34 | 0 | `provider_reported`, `pi --mode json events`; input 143297, output 43182, cached 1236480, reasoning 24199, total 1422959; list/marginal $0.021542775 | Claude governed stream-json command + result usage parser; 36 focused, 1016 full passed/1 skipped reported; supervisor reproduced 184 relevant passes, Black/Ruff clean |
+| P1-4c review 1 | review | `catalog explain --role review --class review/judge/none/s/python --author-route pi-z-ai-glm-5-3-flash-openrouter --json`; author excluded for independence, Go excluded, governed fallback eligible | author independence; Go likely-exhausted; never-automatic and remaining policy exclusions | `pi-deepseek-deepseek-v4-flash-openrouter` | 13:36 / 13:42 | 0 | `provider_reported`, `pi --mode json events`; input 120729, output 22154, cached 529152, reasoning 17892, total 672035; list/marginal $0.013863108 | reviewer PASS with 2 hardening/1 future; supervisor rejects: trailing malformed JSON is ignored after a valid result (violates malformed fail-closed), and present empty `modelUsage` incorrectly falls back despite absent-only fallback contract |
+| P1-4c repair 1 | impl | fresh same implementation explain; governed first rung remained eligible | same implementation exclusions | `pi-z-ai-glm-5-3-flash-openrouter` | 13:43 / 13:45 | 0 | `provider_reported`, `pi --mode json events`; input 57469, output 4786, cached 172800, reasoning 2236, total 235055; list/marginal $0.005506675 | both quoted reproducers now unavailable with specific reasons; 38 focused/1018 full passed, 1 skipped; supervisor reproduced 186 relevant, Black/Ruff clean |
+| P1-4c re-review | review | same independent review explain; DeepSeek fallback eligible | same review exclusions | `pi-deepseek-deepseek-v4-flash-openrouter` | 13:46 / 13:48 | 0 | `provider_reported`, `pi --mode json events`; input 44279, output 12107, cached 457216, reasoning 8171, total 513602; list/marginal $0.005753412 | PASS; both supervisor reproducers fixed; 0 blocking, 0 hardening, 0 future concerns |
+
+P1-4c accepted after three author attempts (one no-change timeout, one bounded
+implementation, one review repair) and two reviews, about 35 minutes wall
+clock. Supervisor read the complete owned-file diff, reproduced 186 relevant
+passes and the 1018-pass full suite (1 skip), and confirmed Black/Ruff clean.
+Phase 1 provider-reported metered total is $0.166390499 plus unknown pre-P1-4a
+text-mode attempts.
+
+## P1-5a — Selection and dispatch foundation
+
+| Packet | Role | Explain / selection | Excluded summary | Route | Start / end | Exit | Usage / cost | Result |
+|---|---|---|---|---|---|---:|---|---|
+| P1-5a attempt 1 | impl | `catalog explain --role impl --class impl/deterministic/none/m/python --json`; governed first rung eligible | channel likely-exhausted 7; never-automatic 4; Gemini Pro role-scoped 1; unpriced/pricing unavailable 1 (overlap) | `pi-z-ai-glm-5-3-flash-openrouter` | 12:51 / 13:01 | watchdog timeout; process group terminated | `provider_reported`, `pi --mode json events`; input 117453, output 48043, cached 2506368, reasoning 36787, total 2671864; list/marginal $0.020819725 | partial `staffing/run.py` only, truncated at `run_json_record`; no CLI or tests; not accepted |
+| P1-5a attempt 2 | impl | fresh same implementation explain; governed first rung remained eligible | same implementation exclusions as attempt 1 | `pi-z-ai-glm-5-3-flash-openrouter` | 13:02 / 13:12 | watchdog timeout; process group terminated | `provider_reported`, `pi --mode json events`; input 229175, output 20940, cached 2232576, reasoning 15434, total 2482691; list/marginal $0.022423125 | completed syntactically valid `run.py` and modified `doctor.py`, but added no tests; author spent material time on the explicit-route/class-context ambiguity; not accepted |
+
+P1-5a stopped at the two-round non-convergence threshold. Its unaccepted
+changes remain uncommitted pending the design question in `needs-lee.md`.
+Phase 1 provider-reported metered total is $0.117550304 plus unknown pre-P1-4a
+text-mode attempts.
