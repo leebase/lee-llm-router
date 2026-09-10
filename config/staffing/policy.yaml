@@ -17,9 +17,13 @@
 # committed in src/lee_llm_router/crews.py (NEVER_AUTOMATIC_MODELS,
 # ROLE_SCOPED_MODELS) and docs/staffing/catalog.md (policy-constant home
 # table): Fable 5.1 -> claude-fable-5-1, Opus 5 -> claude-opus-5, Luna Max ->
-# gpt-5.6-luna, Gemini 3.1 Pro -> gemini-3.1-pro. All rules are model-level;
-# the schema's optional per-effort `effort` narrowing is omitted because no
-# cited decision scopes any of these rules to an effort level.
+# gpt-5.6-luna, Gemini 3.1 Pro -> gemini-3.1-pro. The Fable and Opus rules
+# are model-level; the Luna rule carries the schema's optional per-effort
+# `effort` narrowing (`max`) because chief round 10 explicitly places
+# `gpt-5.6-luna | pi | xhigh | openai-sub` as an automatic escalation rung
+# in both interactive crews, so the never-automatic Luna rule is scoped to
+# effort `max` and Luna XHigh stays eligible subject to the other rules.
+# No other cited decision scopes any of these rules to an effort level.
 #
 # role_floors, reviewer_independence, and spend_caps are empty arrays: the
 # contracts (phase0-contracts.md §Policy) assign role floors and
@@ -52,13 +56,22 @@ never_automatic:
       D187 (D152-D158 ladder rules bind the crew-aware resolver); D204 item 2
       (never-automatic set unchanged: Fable 5.1, Opus 5, Luna Max)
   - model_ref: gpt-5.6-luna
+    effort: max
     decision: >-
-      Luna Max must never be used in an automatic selection: a resolver may
-      reach it only when a crew names the model explicitly (never automatic).
+      Luna at effort max must never be used in an automatic selection: a
+      resolver may reach it only when a crew names the model explicitly
+      (never automatic). The rule is narrowed to effort max, not model-level:
+      chief round 10 explicitly places `gpt-5.6-luna | pi | xhigh |
+      openai-sub` as an automatic escalation rung in both interactive crews,
+      so Luna XHigh is not covered by this rule and remains eligible subject
+      to the other rules and headroom.
     source: >-
       decisions.md D152 (model-routing ladder for the escalation cascade);
       D187 (D152-D158 ladder rules bind the crew-aware resolver); D204 item 2
-      (never-automatic set unchanged: Fable 5.1, Opus 5, Luna Max)
+      (never-automatic set unchanged: Fable 5.1, Opus 5, Luna Max); chief
+      round 10 (chief-answers-10.md: the interactive crews' escalation ladders
+      name `gpt-5.6-luna | pi | xhigh | openai-sub` as an automatic rung,
+      disambiguating the Luna rule to effort max)
 
 role_scoped:
   - model_ref: gemini-3.1-pro

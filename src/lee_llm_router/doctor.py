@@ -2,7 +2,7 @@
 
 Commands:
     lee-llm-router doctor --config <path> [--role <role>] [--crews]
-                          [--availability] [--catalog --catalog-dir <dir>]
+                          [--availability] [--catalog [--catalog-dir <dir>]]
     lee-llm-router crews list [--crews-file <path>] [--json]
     lee-llm-router crews page --out <path> [--crews-file <path>]
                           [--availability-file <path>] [--benchmark-file <path>]
@@ -1019,6 +1019,13 @@ def check_catalog(
     return [], [], details
 
 
+def _default_catalog_dir() -> Path:
+    """Return the repository's bundled ``config/staffing`` catalog directory."""
+    from pathlib import Path
+
+    return Path(__file__).resolve().parents[2] / "config" / "staffing"
+
+
 def _run_doctor(args: argparse.Namespace) -> int:
     config_path = args.config
     role = getattr(args, "role", None)
@@ -1026,8 +1033,7 @@ def _run_doctor(args: argparse.Namespace) -> int:
     if getattr(args, "catalog", False):
         catalog_dir = getattr(args, "catalog_dir", None)
         if catalog_dir is None:
-            print("doctor --catalog requires --catalog-dir PATH", file=sys.stderr)
-            return 3
+            catalog_dir = _default_catalog_dir()
         catalog_errors, catalog_warnings, catalog_details = check_catalog(catalog_dir)
         for warning in catalog_warnings:
             print(f"  !  {warning}")
@@ -1239,12 +1245,6 @@ def _run_shims_no_subcommand(_args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 # catalog explain (P0-5b): per-route eligibility report over the catalog
 # ---------------------------------------------------------------------------
-
-#: Pricing badge for the ``catalog explain`` report. The committed command
-#: surface has no badge flag (P0-5b), so the marginal multiplier uses the
-#: fail-closed badge (unknown badges price at 1.0 x replacement): marginal
-#: equals replacement unless a committed multiplier says otherwise.
-EXPLAIN_PRICING_BADGE = "NO DATA"
 
 
 def _parse_class_string(
@@ -1474,7 +1474,7 @@ def _run_catalog_explain(args: argparse.Namespace) -> int:
     catalog_dir = (
         Path(args.catalog_dir)
         if args.catalog_dir is not None
-        else Path(__file__).resolve().parents[2] / "config" / "staffing"
+        else _default_catalog_dir()
     )
     try:
         catalog = load_staffing_catalog(catalog_dir)
@@ -1498,7 +1498,6 @@ def _run_catalog_explain(args: argparse.Namespace) -> int:
             class_key=args.class_string,
             availability=availability,
             at_date=at_date,
-            badge=EXPLAIN_PRICING_BADGE,
         )
     except StaffingEligibilityError as exc:
         return fail(str(exc))
@@ -1767,7 +1766,8 @@ def main(argv: list[str] | None = None) -> None:
         default=None,
         help=(
             "Directory holding routes.yaml, channels.yaml, terms.yaml, "
-            "policy.yaml, classes.yaml, crews.yaml (required with --catalog)"
+            "policy.yaml, classes.yaml, crews.yaml "
+            "(default: the repo config/staffing directory)"
         ),
     )
     doctor_parser.set_defaults(func=_run_doctor)

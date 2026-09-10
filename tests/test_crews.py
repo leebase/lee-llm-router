@@ -712,6 +712,87 @@ def test_channel_for_derived_provider_without_env_fails_open() -> None:
     assert channel_for("some_omp_worker", "omp_cli") == UNKNOWN_CHANNEL
 
 
+# --- Pi stage-worker THINKING dial is the effort signal --------------------
+# The live Pi wrapper records its reasoning dial as
+# ``<PREFIX>_STAGE_WORKER_THINKING`` (forwarded as ``--thinking``), the exact
+# command shape of the live ``pi_luna_xhigh`` worker.
+
+PI_LUNA_XHIGH_COMMAND = (
+    "/usr/bin/env PI_STAGE_WORKER_BINARY=/home/lee/.npm-global/bin/pi "
+    "PI_STAGE_WORKER_PROVIDER=openai-codex "
+    "PI_STAGE_WORKER_MODEL=gpt-5.6-luna "
+    "PI_STAGE_WORKER_THINKING=xhigh "
+    "python3 /home/lee/projects/auto-orch/scripts/pi_stage_worker.py {stage}"
+)
+
+
+def test_resolve_worker_pi_thinking_dial_sets_effort() -> None:
+    """A real Pi worker command's ``_STAGE_WORKER_THINKING`` dial resolves
+    as the worker's effort, verbatim, with provider/model/channel intact."""
+    resolved = resolve_worker(_worker("pi_luna_xhigh", PI_LUNA_XHIGH_COMMAND))
+
+    assert resolved.provider == "pi_cli"
+    assert resolved.model == "gpt-5.6-luna"
+    assert resolved.effort == "xhigh"
+    assert resolved.harness_binary == "/home/lee/.npm-global/bin/pi"
+    assert resolved.channel == "openai-sub"
+
+
+@pytest.mark.parametrize("prefix", ["PI", "OMP"])
+def test_resolve_worker_thinking_dial_on_derived_prefixes(prefix: str) -> None:
+    command = (
+        f"/usr/bin/env {prefix}_STAGE_WORKER_BINARY=/x/bin/{prefix.lower()} "
+        f"{prefix}_STAGE_WORKER_PROVIDER=openrouter "
+        f"{prefix}_STAGE_WORKER_MODEL=gemini-3.8-flash-high "
+        f"{prefix}_STAGE_WORKER_THINKING=high "
+        f"python3 /x/{prefix.lower()}_stage_worker.py {{stage}}"
+    )
+
+    resolved = resolve_worker(_worker(f"{prefix.lower()}_flash_thinking", command))
+
+    assert resolved.effort == "high"
+    assert resolved.channel == "openrouter"
+
+
+def test_worker_without_thinking_dial_keeps_effort_none() -> None:
+    """An absent dial stays ``effort=None`` — never inferred or defaulted."""
+    resolved = resolve_worker(
+        _worker("pi_glm_flash", _derived_command("PI", "openrouter"))
+    )
+
+    assert resolved.provider == "pi_cli"
+    assert resolved.model == "gemini-3.8-flash-high"
+    assert resolved.effort is None
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        ("REASONING_EFFORT", "THINKING"),
+        ("EFFORT", "THINKING"),
+        ("THINKING", "REASONING_EFFORT"),
+        ("THINKING", "EFFORT"),
+    ],
+)
+def test_conflicting_effort_signals_first_declared_wins(
+    first: str, second: str
+) -> None:
+    """A worker declaring both the effort and THINKING spellings keeps the
+    first-declared value (same setdefault convention as REASONING_EFFORT vs
+    EFFORT); the conflict never raises."""
+    command = (
+        "/usr/bin/env CODEX_STAGE_WORKER_BINARY=/x/bin/codex "
+        "CODEX_STAGE_WORKER_MODEL=gpt-5.6-sol "
+        f"CODEX_STAGE_WORKER_{first}=low "
+        f"CODEX_STAGE_WORKER_{second}=high "
+        "python3 /x/codex_stage_worker.py {stage}"
+    )
+
+    resolved = resolve_worker(_worker(f"codex_conflict_{first}_{second}", command))
+
+    assert resolved.effort == "low"
+
+
 def test_channel_for_derived_provider_unknown_env_fails_open() -> None:
     """D86/D87: an unrecognized provider id maps to ``unknown`` too."""
     from lee_llm_router.crews import UNKNOWN_CHANNEL, channel_for

@@ -28,6 +28,10 @@ from lee_llm_router.staffing.catalog import (
 REPO_CONFIG_DIR = Path(__file__).resolve().parents[1] / "config" / "staffing"
 
 FABLE_ROUTE = "claude-claude-fable-5-1-high-anthropic-sub"
+OPUS_ROUTE = "claude-claude-opus-5-high-anthropic-sub"
+LUNA_MAX_ROUTE = "codex-gpt-5-6-luna-max-openai-sub"
+LUNA_XHIGH_CODEX_ROUTE = "codex-gpt-5-6-luna-xhigh-openai-sub"
+LUNA_XHIGH_PI_ROUTE = "pi-gpt-5-6-luna-xhigh-openai-sub"
 MIMO_ROUTE = "opencode-opencode-go-mimo-v2-5-opencode-go"
 GLM_OPENROUTER_ROUTE = "pi-z-ai-glm-5-3-flash-openrouter"
 GEMINI_PRO_ROUTE = "agy-gemini-3-1-pro-gemini-sub"
@@ -89,7 +93,6 @@ def _evaluate(catalog, snapshot, **kwargs) -> tuple[EligibilityRow, ...]:
         language="python",
         domain_tags=(),
         at_date="2026-09-15",
-        badge="ON TRACK",
     )
     params.update(kwargs)
     # Canonical key derived from the structured fields (record of truth).
@@ -136,6 +139,62 @@ def test_healthy_anthropic_keeps_fable_excluded_for_never_automatic_only(
     row = _by_route(_evaluate(catalog, healthy_snapshot), FABLE_ROUTE)
     assert row.eligible is False
     assert row.reasons == ("never_automatic",)
+
+
+# ---------------------------------------------------------------------------
+# Luna never_automatic is narrowed to effort max (chief round 10):
+# Luna Max is excluded, Luna XHigh (both harnesses) is not excluded for
+# that reason, and Fable/Opus model-level rules are unchanged.
+# ---------------------------------------------------------------------------
+
+
+def test_luna_max_excluded_with_never_automatic_reason(catalog, healthy_snapshot) -> None:
+    """The effort-max Luna rule (D152/D187/D204, round 10 narrowing) still
+    excludes the Luna Max route under a healthy snapshot."""
+    row = _by_route(_evaluate(catalog, healthy_snapshot), LUNA_MAX_ROUTE)
+    assert row.eligible is False
+    assert row.reasons == ("never_automatic",)
+    assert row.model == "gpt-5.6-luna"
+    assert row.effort == "max"
+
+
+def test_luna_xhigh_codex_not_excluded_for_never_automatic(
+    catalog, healthy_snapshot
+) -> None:
+    """Chief round 10 makes Luna XHigh an automatic escalation rung, so the
+    effort-max rule must not exclude the codex XHigh route for that reason."""
+    row = _by_route(_evaluate(catalog, healthy_snapshot), LUNA_XHIGH_CODEX_ROUTE)
+    assert row.model == "gpt-5.6-luna"
+    assert row.effort == "xhigh"
+    assert "never_automatic" not in row.reasons
+    assert row.eligible is True
+    assert row.reasons == ()
+
+
+def test_luna_xhigh_pi_not_excluded_for_never_automatic(
+    catalog, healthy_snapshot
+) -> None:
+    """The round-10 escalation route `gpt-5.6-luna | pi | xhigh | openai-sub`
+    itself must not carry a never_automatic reason."""
+    row = _by_route(_evaluate(catalog, healthy_snapshot), LUNA_XHIGH_PI_ROUTE)
+    assert row.model == "gpt-5.6-luna"
+    assert row.effort == "xhigh"
+    assert row.harness == "pi"
+    assert "never_automatic" not in row.reasons
+    assert row.eligible is True
+    assert row.reasons == ()
+
+
+def test_fable_and_opus_model_level_rules_unchanged_by_luna_narrowing(
+    catalog, healthy_snapshot
+) -> None:
+    """The Luna effort narrowing touches only the Luna rule: Fable 5.1 and
+    Opus 5 stay model-level never-automatic exclusions."""
+    rows = _evaluate(catalog, healthy_snapshot)
+    for route_id in (FABLE_ROUTE, OPUS_ROUTE):
+        row = _by_route(rows, route_id)
+        assert row.eligible is False
+        assert row.reasons == ("never_automatic",)
 
 
 # ---------------------------------------------------------------------------
@@ -300,11 +359,17 @@ def test_rows_preserve_catalog_order_and_cover_every_route(
     ]
 
 
-def test_marginal_price_applies_badge_multiplier(catalog, healthy_snapshot) -> None:
-    row = _by_route(
-        _evaluate(catalog, healthy_snapshot, badge="ON TRACK"), SOL_LOW_ROUTE
-    )
+# ---------------------------------------------------------------------------
+# Per-channel marginal pricing: each route is priced at the badge derived
+# from its own channel's availability record (committed multipliers only).
+# ---------------------------------------------------------------------------
+
+
+def test_on_track_channel_prices_at_0_25(catalog, healthy_snapshot) -> None:
+    row = _by_route(_evaluate(catalog, healthy_snapshot), SOL_LOW_ROUTE)
+    assert row.availability_badge == "ON TRACK"
     assert row.pricing is not None
+    assert row.pricing.badge == "ON TRACK"
     assert row.pricing.multiplier == 0.25
     assert row.pricing.marginal_input_usd_per_token == pytest.approx(
         0.25 * row.pricing.replacement_input_usd_per_token
@@ -313,12 +378,139 @@ def test_marginal_price_applies_badge_multiplier(catalog, healthy_snapshot) -> N
     assert row.pricing.replacement_input_usd_per_token == pytest.approx(4.00 / 1e6)
 
 
-def test_unknown_badge_fails_closed_to_replacement(catalog, healthy_snapshot) -> None:
-    row = _by_route(
-        _evaluate(catalog, healthy_snapshot, badge="WHENEVER"), SOL_LOW_ROUTE
+def test_hot_channel_prices_at_0_75(catalog) -> None:
+    # HOT with headroom is degraded (not vetoed): still priced, at 0.75x.
+    snapshot = _snapshot(
+        {
+            "provider": "OpenAI/Codex",
+            "bucket": "Weekly limit",
+            "status": "HOT",
+            "remaining_pct": 80,
+        },
     )
+    row = _by_route(_evaluate(catalog, snapshot), SOL_LOW_ROUTE)
+    assert row.availability_badge == "HOT"
     assert row.pricing is not None
+    assert row.pricing.badge == "HOT"
+    assert row.pricing.multiplier == 0.75
+    assert row.pricing.marginal_input_usd_per_token == pytest.approx(
+        0.75 * row.pricing.replacement_input_usd_per_token
+    )
+    assert row.pricing.marginal_output_usd_per_token == pytest.approx(
+        0.75 * row.pricing.replacement_output_usd_per_token
+    )
+
+
+def test_cold_channel_prices_at_zero(catalog) -> None:
+    snapshot = _snapshot(
+        {
+            "provider": "Anthropic/Claude",
+            "bucket": "Current session",
+            "status": "COLD",
+            "remaining_pct": 90,
+        },
+    )
+    row = _by_route(_evaluate(catalog, snapshot), FABLE_ROUTE)
+    assert row.availability_badge == "COLD"
+    assert row.pricing is not None
+    assert row.pricing.badge == "COLD"
+    assert row.pricing.multiplier == 0.0
+    assert row.pricing.marginal_input_usd_per_token == 0.0
+    assert row.pricing.marginal_output_usd_per_token == 0.0
+    # Replacement price is preserved even at a zero multiplier.
+    assert row.pricing.replacement_input_usd_per_token > 0.0
+
+
+def test_use_it_channel_prices_at_zero(catalog) -> None:
+    snapshot = _snapshot(
+        {
+            "provider": "OpenAI/Codex",
+            "bucket": "Weekly limit",
+            "status": "USE IT",
+            "remaining_pct": 80,
+        },
+    )
+    row = _by_route(_evaluate(catalog, snapshot), SOL_LOW_ROUTE)
+    assert row.availability_badge == "USE IT"
+    assert row.pricing is not None
+    assert row.pricing.badge == "USE IT"
+    assert row.pricing.multiplier == 0.0
+    assert row.pricing.marginal_input_usd_per_token == 0.0
+
+
+def test_channel_without_record_fails_closed_to_no_data_multiplier(catalog) -> None:
+    # The openrouter channel is metered: no quota record, no badge — it
+    # must price at the committed NO DATA multiplier (1.0), never at a
+    # neighbour channel's badge.
+    snapshot = _snapshot(
+        {
+            "provider": "OpenAI/Codex",
+            "bucket": "Weekly limit",
+            "status": "ON TRACK",
+            "remaining_pct": 80,
+        },
+    )
+    row = _by_route(_evaluate(catalog, snapshot), GLM_OPENROUTER_ROUTE)
+    assert row.availability_badge is None
+    assert row.pricing is not None
+    assert row.pricing.badge == "NO DATA"
     assert row.pricing.multiplier == 1.0
+    assert row.pricing.marginal_input_usd_per_token == pytest.approx(
+        row.pricing.replacement_input_usd_per_token
+    )
+
+
+def test_unknown_badge_fails_closed_to_replacement(catalog) -> None:
+    # "UNAVAILABLE" is a snapshot failure status, not a pricing badge: the
+    # catalog has no configured multiplier for it, so pricing fails closed
+    # to full replacement (1.0) while the row still records the raw badge.
+    snapshot = _snapshot(
+        {
+            "provider": "OpenAI/Codex",
+            "bucket": "Weekly limit",
+            "status": "UNAVAILABLE",
+            "remaining_pct": 80,
+        },
+    )
+    row = _by_route(_evaluate(catalog, snapshot), SOL_LOW_ROUTE)
+    assert row.availability_badge == "UNAVAILABLE"
+    assert row.pricing is not None
+    assert row.pricing.badge == "UNAVAILABLE"
+    assert row.pricing.multiplier == 1.0
+    assert row.pricing.marginal_input_usd_per_token == pytest.approx(
+        row.pricing.replacement_input_usd_per_token
+    )
+
+
+def test_channels_in_one_evaluation_price_at_their_own_badges(catalog) -> None:
+    # One call, two channels, two different committed multipliers: codex is
+    # ON TRACK (0.25) while anthropic is HOT (0.75). Replacement prices are
+    # untouched and exclusion reasons are unaffected by the pricing seam.
+    snapshot = _snapshot(
+        {
+            "provider": "OpenAI/Codex",
+            "bucket": "Weekly limit",
+            "status": "ON TRACK",
+            "remaining_pct": 80,
+        },
+        {
+            "provider": "Anthropic/Claude",
+            "bucket": "Current session",
+            "status": "HOT",
+            "remaining_pct": 80,
+        },
+    )
+    rows = _evaluate(catalog, snapshot)
+    on_track = _by_route(rows, SOL_LOW_ROUTE)
+    hot = _by_route(rows, FABLE_ROUTE)
+    assert on_track.pricing is not None and hot.pricing is not None
+    assert on_track.pricing.badge == "ON TRACK"
+    assert on_track.pricing.multiplier == 0.25
+    assert hot.pricing.badge == "HOT"
+    assert hot.pricing.multiplier == 0.75
+    # Exclusion reasons are preserved verbatim alongside per-route pricing.
+    assert hot.reasons == ("never_automatic",)
+    assert on_track.reasons == ()
 
 
 def test_harness_lock_excludes_route(catalog, healthy_snapshot) -> None:

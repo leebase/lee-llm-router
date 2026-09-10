@@ -2099,14 +2099,55 @@ def test_doctor_catalog_unexpected_field_exits_3_names_document_and_field(
     assert "$.unexpected_field" in captured.err
 
 
-def test_doctor_catalog_requires_catalog_dir_exits_3(capsys):
-    """--catalog without --catalog-dir is a usage error at exit 3."""
-    from lee_llm_router.doctor import main
+def test_doctor_catalog_defaults_to_repo_config_staffing_exits_0(capsys):
+    """--catalog without --catalog-dir validates the repo config/staffing dir."""
+    from pathlib import Path
+
+    from lee_llm_router.doctor import _default_catalog_dir, main
+
+    default_dir = _default_catalog_dir()
+    assert default_dir == Path(__file__).resolve().parents[1] / "config" / "staffing"
+    for name in DOCUMENT_ORDER:
+        assert (default_dir / f"{name}.yaml").is_file(), name
 
     with pytest.raises(SystemExit) as exc_info:
         main(["doctor", "--catalog"])
-    assert exc_info.value.code == 3
-    assert "--catalog-dir" in capsys.readouterr().err
+    assert exc_info.value.code == 0
+
+    out = capsys.readouterr().out
+    assert f"OK catalog: {default_dir}" in out
+
+
+def test_doctor_catalog_gate1_command_without_catalog_dir_exits_0(
+    tmp_path, capsys, monkeypatch
+):
+    """The gate-1 command `doctor --catalog --crews --availability` exits 0
+    with no --catalog-dir, defaulting to the repo config/staffing directory."""
+    from lee_llm_router.doctor import _default_catalog_dir, main
+
+    monkeypatch.setenv("LEE_LLM_ROUTER_CREWS_FILE", str(CREWS_FIXTURE))
+    snapshot = _write_snapshot(tmp_path)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "doctor",
+                "--catalog",
+                "--crews",
+                "--availability",
+                "--crews-file",
+                str(CREWS_FIXTURE),
+                "--availability-file",
+                str(snapshot),
+            ]
+        )
+    assert exc_info.value.code == 0
+
+    out = capsys.readouterr().out
+    default_dir = _default_catalog_dir()
+    assert f"OK catalog: {default_dir}" in out
+    assert "OK crews:" in out
+    assert "OK availability:" in out
 
 
 def test_doctor_catalog_missing_document_exits_3_names_document(tmp_path, capsys):

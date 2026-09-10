@@ -732,7 +732,7 @@ def channel_for(
 
 _WORKER_ENV_PATTERN: str = (
     r"(?P<prefix>[A-Z]+)_STAGE_WORKER_"
-    r"(?P<key>REASONING_EFFORT|EFFORT|BINARY|MODEL|PROVIDER)="
+    r"(?P<key>REASONING_EFFORT|EFFORT|THINKING|BINARY|MODEL|PROVIDER)="
     r"(?P<value>\S+)"
 )
 _worker_env_re_cached: Any = None
@@ -839,7 +839,14 @@ def _parse_worker_command(
                 f"{prefix!r} and {found!r} in its command"
             )
         key = match.group("key")
-        fields.setdefault("EFFORT" if key.endswith("EFFORT") else key, match["value"])
+        # ``REASONING_EFFORT``, ``EFFORT``, and Pi/OMP's ``THINKING`` dial are
+        # all effort signals. The first one declared in the command wins
+        # (setdefault), and conflicting spellings never raise — the same
+        # first-wins, fail-open convention as every other env key.
+        if key.endswith("EFFORT") or key == "THINKING":
+            fields.setdefault("EFFORT", match["value"])
+        else:
+            fields.setdefault(key, match["value"])
     if prefix is None:
         raise CrewsConfigError(
             f"worker {worker.id!r} command declares no "
@@ -870,10 +877,10 @@ def resolve_worker(worker: Worker) -> ResolvedWorker:
 
     The mapping is derived from the worker's command template, which sets
     ``<PREFIX>_STAGE_WORKER_BINARY``/``_MODEL``/``_EFFORT`` (or
-    ``_REASONING_EFFORT``) — and, for the Pi/OMP harnesses, the
-    ``_PROVIDER`` id that selects the backend — before invoking the
-    stage-worker script. An entry in :data:`WORKER_PROVIDER_OVERRIDES` wins
-    over that parse.
+    ``_REASONING_EFFORT``, or the Pi/OMP ``_THINKING`` dial) — and, for the
+    Pi/OMP harnesses, the ``_PROVIDER`` id that selects the backend — before
+    invoking the stage-worker script. An entry in
+    :data:`WORKER_PROVIDER_OVERRIDES` wins over that parse.
 
     Args:
         worker: The worker to resolve.

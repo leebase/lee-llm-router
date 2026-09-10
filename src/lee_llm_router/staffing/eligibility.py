@@ -24,7 +24,12 @@ checks, each with a named reason string:
   ``unknown`` vetoes its routes. Metered and local channels carry no
   committed quota records and are never vetoed for their absence;
 * dated terms at the requested date and the badge marginal multiplier —
-  a pricing failure excludes the route with a named reason.
+  each route is priced at the badge derived from its own channel's record
+  in the availability snapshot (the limiting bucket's raw status badge);
+  a channel with no recorded badge (missing record, metered/local, or a
+  snapshot failure status) fails closed to the committed ``NO DATA``
+  badge, whose configured multiplier is 1.0. A pricing failure excludes
+  the route with a named reason.
 
 D206 (verbatim, phase0-contracts.md §Class-metadata prohibition):
 "Class metadata MUST NOT map directly to a preferred model or route. It
@@ -75,6 +80,14 @@ _SUBSCRIPTION_VETO_HEALTH: frozenset[Health] = frozenset(
     {Health.EXHAUSTED, Health.LIKELY_EXHAUSTED, Health.UNKNOWN}
 )
 """Subscription-channel headroom states that veto a route (fail closed)."""
+
+_NO_DATA_BADGE = "NO DATA"
+"""Committed badge used when a route's channel records no status badge.
+
+A committed terms.yaml badge whose configured multiplier is 1.0, so a
+missing/unknown badge fails closed to full replacement price — no number
+is invented here; the multiplier comes from the catalog.
+"""
 
 #: Class role -> governance class, solely for D188 role-scoped eligibility.
 #: This is a role-to-class mapping (D188/D189 direction); it is never a
@@ -316,7 +329,6 @@ def evaluate_eligibility(
     class_key: str | None = None,
     availability: AvailabilitySnapshot,
     at_date: date | str,
-    badge: str,
     openrouter_snapshot_path: str | Path | None = None,
     rate_table_path: str | Path | None = None,
 ) -> tuple[EligibilityRow, ...]:
@@ -343,8 +355,6 @@ def evaluate_eligibility(
             never vetoed for missing quota records.
         at_date: Requested date (ISO string or :class:`datetime.date`) for
             the dated-terms check.
-        badge: Raw ai-subs status badge whose configured marginal multiplier
-            prices each route (unknown badges fail closed to 1.0).
         openrouter_snapshot_path: Injectable pinned OpenRouter snapshot path
             (defaults to the committed pinned file).
         rate_table_path: Injectable agent-orch rate-table path (defaults to
@@ -352,6 +362,12 @@ def evaluate_eligibility(
 
     Returns:
         One :class:`EligibilityRow` per catalog route, in catalog order.
+        Each route's marginal price is its replacement price times the
+        configured multiplier of the badge recorded for *its own channel*
+        in ``availability`` (the limiting bucket's raw status badge); a
+        channel with no recorded badge — missing record, metered/local
+        channel, or a snapshot failure status — fails closed to the
+        committed ``NO DATA`` badge (multiplier 1.0).
         ``eligible`` is exactly ``not reasons``; no ranking, sorting,
         probability, or choice is applied.
 
@@ -423,6 +439,13 @@ def evaluate_eligibility(
                 )
 
         pricing: EligibilityPrice | None = None
+        # Per-route pricing seam: the badge is the one derived for this
+        # route's own channel from the snapshot (availability_badge above,
+        # None when the channel is missing from the catalog or carries no
+        # limiting-bucket status), never a report-wide constant.
+        pricing_badge = (
+            availability_badge if availability_badge is not None else _NO_DATA_BADGE
+        )
         try:
             replacement = replacement_token_prices(
                 route.model,
@@ -433,9 +456,9 @@ def evaluate_eligibility(
         except StaffingTermsError:
             reasons.append("pricing unavailable")
         else:
-            multiplier = badge_multiplier(badge, catalog.terms)
+            multiplier = badge_multiplier(pricing_badge, catalog.terms)
             pricing = EligibilityPrice(
-                badge=badge,
+                badge=pricing_badge,
                 multiplier=multiplier,
                 replacement_input_usd_per_token=replacement.input_usd_per_token,
                 replacement_output_usd_per_token=replacement.output_usd_per_token,

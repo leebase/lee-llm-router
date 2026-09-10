@@ -24,6 +24,7 @@ REPO_CONFIG_DIR = Path(__file__).resolve().parents[1] / "config" / "staffing"
 FABLE_ROUTE = "claude-claude-fable-5-1-high-anthropic-sub"
 GLM_OPENROUTER_ROUTE = "pi-z-ai-glm-5-3-flash-openrouter"
 MIMO_ROUTE = "opencode-opencode-go-mimo-v2-5-opencode-go"
+SOL_LOW_ROUTE = "codex-gpt-5-6-sol-low-openai-sub"
 
 IMPL_CLASS = "impl/deterministic/none/s/python"
 
@@ -271,6 +272,86 @@ def test_explain_json_has_no_machinery_leakage(tmp_path, catalog_dir, capsys):
 
 
 # ---------------------------------------------------------------------------
+# Per-channel marginal pricing: each row's marginal price uses the badge
+# derived for its own channel from the snapshot (no report-wide badge).
+# ---------------------------------------------------------------------------
+
+
+def test_explain_marginal_price_uses_per_channel_badge(tmp_path, catalog_dir, capsys):
+    """HOT rows price at 0.75x, ON TRACK at 0.25x, no-badge rows at 1.0x."""
+    snapshot = _write_snapshot(
+        tmp_path / "availability.json",
+        codex=("ON TRACK", 80),
+        anthropic=("HOT", 80),
+        gemini=None,
+        opencode=None,
+    )
+    code, payload = _explain_json_run(capsys, catalog_dir, snapshot)
+    assert code == 0
+
+    sol = _by_route(payload, SOL_LOW_ROUTE)
+    assert sol["badge"] == "ON TRACK"
+    assert sol["marginal_input_usd_per_token"] == pytest.approx(
+        0.25 * sol["replacement_input_usd_per_token"]
+    )
+
+    fable = _by_route(payload, FABLE_ROUTE)
+    assert fable["badge"] == "HOT"
+    assert fable["marginal_input_usd_per_token"] == pytest.approx(
+        0.75 * fable["replacement_input_usd_per_token"]
+    )
+    # Exclusion reasons and the replacement price are preserved.
+    assert fable["reasons"] == ["never_automatic"]
+    assert fable["replacement_input_usd_per_token"] > 0.0
+
+    # openrouter (metered, no quota record) carries no badge: fail closed
+    # to the committed NO DATA multiplier (1.0) — marginal == replacement.
+    glm = _by_route(payload, GLM_OPENROUTER_ROUTE)
+    assert glm["badge"] is None
+    assert glm["marginal_input_usd_per_token"] == pytest.approx(
+        glm["replacement_input_usd_per_token"]
+    )
+
+
+def test_explain_table_shows_live_badges_with_matching_prices(
+    tmp_path, catalog_dir, capsys
+):
+    """Human table: HOT and ON TRACK rows show their own channel badges."""
+    snapshot = _write_snapshot(
+        tmp_path / "availability.json",
+        codex=("ON TRACK", 80),
+        anthropic=("HOT", 80),
+    )
+    code, captured = _run_explain(
+        capsys,
+        "--role",
+        "impl",
+        "--class",
+        IMPL_CLASS,
+        "--at",
+        "2026-09-15",
+        "--availability-file",
+        str(snapshot),
+        "--catalog-dir",
+        str(catalog_dir),
+    )
+    assert code == 0
+
+    lines = {
+        line.split()[0]: line
+        for line in captured.out.splitlines()
+        if line and not line.startswith("-")
+    }
+    sol_line = lines[SOL_LOW_ROUTE]
+    assert "ON TRACK" in sol_line
+    fable_line = lines[FABLE_ROUTE]
+    assert "HOT" in fable_line
+    # Fable is excluded but still priced at its own channel's badge.
+    assert "excluded" in fable_line
+    assert "never_automatic" in fable_line
+
+
+# ---------------------------------------------------------------------------
 # --at date transition
 # ---------------------------------------------------------------------------
 
@@ -329,9 +410,7 @@ def test_explain_text_terms_unavailable_before_first_entry(
     assert "selected terms: unavailable at 2026-09-08" in lines
     assert "selected terms at 2026-09-08" not in lines
     # No per-channel terms rows are rendered when the view fails closed.
-    assert not any(
-        line.startswith("  ") and "effective_from" in line for line in lines
-    )
+    assert not any(line.startswith("  ") and "effective_from" in line for line in lines)
 
 
 def test_explain_default_at_is_today(tmp_path, catalog_dir, capsys):
@@ -574,9 +653,7 @@ def test_explain_json_terms_deterministic_numerics_and_routes_fields(
 ):
     """JSON ``terms`` is deterministic, numeric post-re-tier, routes intact."""
     snapshot = _write_snapshot(tmp_path / "availability.json")
-    code, after = _explain_json_run(
-        capsys, catalog_dir, snapshot, at="2026-10-01"
-    )
+    code, after = _explain_json_run(capsys, catalog_dir, snapshot, at="2026-10-01")
     assert code == 0
 
     terms = after["terms"]

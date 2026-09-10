@@ -35,7 +35,6 @@ and no prompts are involved.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 import pytest
@@ -86,11 +85,10 @@ GOVERNED_ROLE_TO_RECORD_STAGE = {
 # — the tuple every live worker must map to exactly one route by.
 Identity = tuple[str | None, str | None, str, str]
 
-# The Pi stage-worker wrapper records its reasoning dial as
-# ``<PREFIX>_STAGE_WORKER_THINKING``; ``resolve_worker`` surfaces only the
-# ``_EFFORT``/``_REASONING_EFFORT`` spellings. The dial is read verbatim
-# (never inferred, never defaulted) so the comparison stays exact.
-_THINKING_ENV_RE = re.compile(r"\b[A-Z]+_STAGE_WORKER_THINKING=(\S+)")
+# Chief round 10 Luna escalation rung and its effort-max counterpart (the
+# never_automatic policy narrows to the latter).
+LUNA_XHIGH_PI_ROUTE_ID = "pi-gpt-5-6-luna-xhigh-openai-sub"
+LUNA_MAX_ROUTE_ID = "codex-gpt-5-6-luna-max-openai-sub"
 
 
 def worker_identity(worker: Worker) -> Identity:
@@ -99,9 +97,9 @@ def worker_identity(worker: Worker) -> Identity:
     Uses the public crews resolution pipeline (``resolve_worker`` for the
     command-derived provider/model/effort/channel and
     ``crew_page.HARNESS_BY_PROVIDER`` for the catalog harness spelling,
-    including ``pi_cli -> pi``). When the resolver yields no effort, the
-    command's own ``_STAGE_WORKER_THINKING`` value is taken verbatim; an
-    absent dial stays ``None`` — no effort is ever inferred.
+    including ``pi_cli -> pi``). The effort is the resolver's own value
+    verbatim — including the Pi/OMP ``_STAGE_WORKER_THINKING`` dial — and an
+    absent dial stays ``None``: no effort is ever inferred.
     """
     resolved = resolve_worker(worker)
     harness = HARNESS_BY_PROVIDER.get(resolved.provider)
@@ -109,12 +107,7 @@ def worker_identity(worker: Worker) -> Identity:
         f"worker {worker.id!r} resolves to provider {resolved.provider!r} "
         "with no catalog harness spelling"
     )
-    effort = resolved.effort
-    if effort is None:
-        dial = _THINKING_ENV_RE.search(worker.command)
-        if dial is not None:
-            effort = dial.group(1)
-    return (resolved.model, effort, harness, resolved.channel)
+    return (resolved.model, resolved.effort, harness, resolved.channel)
 
 
 def route_identity(route: Route) -> Identity:
@@ -534,3 +527,49 @@ def test_interactive_crews_and_auto_load_typed_without_dropped_fields(
         assert crew.escalation_ladder
         for ref in crew.escalation_ladder:
             assert ref in routes_by_id
+
+
+def test_interactive_escalation_refs_point_to_active_xhigh_luna_routes(
+    crews: CrewsCatalog, routes_by_id: dict[str, Route]
+) -> None:
+    """Chief round 10 places `gpt-5.6-luna | pi | xhigh | openai-sub` as an
+    automatic escalation rung in both interactive crews, so the Luna entry
+    in every escalation ladder must be the active XHigh route — never the
+    effort-max route the never_automatic policy narrows to."""
+    interactive = [
+        crew
+        for crew in crews.crews
+        if crew.kind == "interactive" and crew.computed is None
+    ]
+    assert {crew.crew_id for crew in interactive} == {
+        "sol-low-glm-pi",
+        "luna-sol",
+    }
+    for crew in interactive:
+        assert crew.escalation_ladder, f"{crew.crew_id}: no escalation ladder"
+        for ref in crew.escalation_ladder:
+            assert (
+                ref in routes_by_id
+            ), f"{crew.crew_id}: escalation ref {ref!r} is not a recorded route"
+            assert (
+                routes_by_id[ref].status == "active"
+            ), f"{crew.crew_id}: escalation ref {ref!r} is not active"
+            assert ref != LUNA_MAX_ROUTE_ID, (
+                f"{crew.crew_id}: escalation ladder names the effort-max Luna "
+                f"route {LUNA_MAX_ROUTE_ID!r}, which is never_automatic"
+            )
+        luna_rungs = [
+            ref
+            for ref in crew.escalation_ladder
+            if routes_by_id[ref].model == "gpt-5.6-luna"
+        ]
+        assert luna_rungs == [LUNA_XHIGH_PI_ROUTE_ID], (
+            f"{crew.crew_id}: Luna escalation rungs {luna_rungs} != "
+            f"[{LUNA_XHIGH_PI_ROUTE_ID!r}] (chief round 10)"
+        )
+        luna_route = routes_by_id[LUNA_XHIGH_PI_ROUTE_ID]
+        assert (luna_route.model, luna_route.effort, luna_route.harness) == (
+            "gpt-5.6-luna",
+            "xhigh",
+            "pi",
+        )
