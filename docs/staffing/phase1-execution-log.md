@@ -174,3 +174,20 @@ Future P1-5b2 must create the canonical top-level attempt-record placement.
 Phase 1 OpenRouter metered total is $0.308351162 plus unknown pre-P1-4a
 text-mode attempts; Luna subscription execution has a separate $0.089040000
 list/marginal estimate and is not a metered API charge.
+
+## P1-5b2 — Cost and final record split
+
+| Packet | Role | Explain / selection | Excluded summary | Route | Start / end | Exit | Usage / cost | Result |
+|---|---|---|---|---|---|---:|---|---|
+| P1-5b2 Luna author | impl | fresh `catalog explain --role impl --class impl/deterministic/none/m/python --json`; P1-5b GLM parent had failed two rounds and split escalation remained on eligible Luna; `parent_attempt_id: p1-5b-attempt-2-20260910`; `escalation_reason: non_convergence` | Gemini reserved for live proof; Go likely-exhausted; never-automatic/policy exclusions; GLM parent exhausted | `pi-gpt-5-6-luna-xhigh-openai-sub` | about 15:44 / about 15:54 | supervisor watchdog termination at 590 seconds | `provider_reported`, `pi --mode json events`; input 258923, output 26661, cached 7826432, reasoning 16855, total 8112016; subscription list/marginal execution estimate $0.062833350 | scoped partial in run.py/doctor.py but no tests or completion; supervisor read full diff; retained as handoff only |
+| P1-5b2 Sol escalation | impl | fresh implementation explain; final ladder rung `codex-gpt-5-6-sol-high-openai-sub` eligible; parent is timed Luna P1-5b2 attempt; `escalation_reason: platform_timeout` | Gemini reserved; Go likely-exhausted; never-automatic/policy exclusions; cheaper GLM and Luna packet attempts exhausted | `codex-gpt-5-6-sol-high-openai-sub` | about 15:55 / about 16:05 | supervisor watchdog termination while full suite ran, after author reported implementation and 37 focused passes | `usage.basis: unavailable`; `usage.source: codex exec --json usage` unavailable because watchdog preceded terminal `turn.completed` receipt; tokens unknown; no cost | kept only schema/API-proved handoff concepts; replaced path packet id with content hash, corrected route/provider/failure/duration facts, added 6 final-record tests; supervisor reproduced 37 focused and 1055 full passes/1 skip, Black/Ruff clean |
+| P1-5b2 review | review | `catalog explain --role review --class review/judge/none/m/python --author-route codex-gpt-5-6-sol-high-openai-sub --json`; Go excluded, independent DeepSeek fallback eligible | Sol/GPT family excluded by independence; Go TOO FAST/likely-exhausted; never-automatic/policy exclusions; Gemini reserved | `pi-deepseek-deepseek-v4-flash-openrouter` | about 16:07 / about 16:11 | 0 | `provider_reported`, `pi --mode json events`; input 106715, output 14682, cached 1050624, reasoning 9104, total 1172021; list/marginal $0.011430636 | PASS; 0 blocking; 4 hardening, 3 future concerns |
+
+P1-5b2 accepted after two author ladder attempts and one review, about 27
+minutes wall clock. Supervisor read the complete three-file diff, confirmed
+only owned files changed, and reproduced the full and focused gates. Hardening:
+remove or wire the latent `attempt_id` injection and retire old intermediate
+result helpers later. Future: explicit-null supervisor route and minimum
+nonzero duration are consumer choices, not P1 blockers. Phase 1 OpenRouter
+metered total is $0.319781798 plus unknown pre-P1-4a text-mode attempts; Luna
+subscription execution totals a separate $0.151873350 list/marginal estimate.

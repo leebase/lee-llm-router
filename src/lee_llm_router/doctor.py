@@ -1649,12 +1649,12 @@ def _run_catalog_no_subcommand(_args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
-# staffing run (P1-5a): select one route, dispatch it once, capture usage
+# staffing run (P1-5b2): select one route, dispatch it once, and record it
 # ---------------------------------------------------------------------------
 
 
 def _run_run(args: argparse.Namespace) -> int:
-    """Run ``run``: select one eligible route, dispatch its harness once.
+    """Run ``run``: select, dispatch, validate, append, and print one attempt.
 
     Corrected D209 contract (Chief ruling,
     ``docs/staffing/chief-answers-p1-1.md``, quoted):
@@ -1669,20 +1669,17 @@ def _run_run(args: argparse.Namespace) -> int:
     explain`` — an ineligible explicit route exits 3 with the explain
     reason.
 
-    P1-5a scope: then exactly one dispatch of the route's provider
-    ``build_command`` argv through the watchdog subprocess boundary, with
-    the packet text as the prompt, ``cwd`` set to the workdir, and no
-    shell anywhere. Pi runs its JSON event mode, Codex is forced to
-    ``json_flag: --json``, and Claude reuses the committed governed
-    stream-json capture so authoritative usage is captured; no oracle
-    runs, no cost is computed, and no ledger record is appended here.
-    P1-5b1 adds one optional, parsed-with-shlex oracle after the worker.
-    The oracle is argv-only, uses the workdir, and receives only the remaining
-    timeout budget. Its result is verification evidence; it never retries or
-    escalates. ``run`` never escalates: ``--parent`` and
-    ``--escalation-reason`` must be supplied together and are deliberately
-    unused downstream of that pairing check (a supervisor creates the linked
-    attempt).
+    P1-5a dispatches exactly one provider ``build_command`` argv through
+    the watchdog subprocess boundary, with the packet text as the prompt,
+    ``cwd`` set to the workdir, and no shell anywhere. Pi runs its JSON event
+    mode, Codex is forced to ``json_flag: --json``, and Claude reuses the
+    committed governed stream-json capture. P1-5b1 adds one optional,
+    parsed-with-shlex oracle after the worker. The oracle is argv-only, uses
+    the workdir, and receives only the remaining timeout budget. Its result
+    is verification evidence; it never retries or escalates. P1-5b2 now
+    calculates cost, builds one v2 record, validates it, appends it once,
+    and prints that record (or a compact equivalent). ``run`` never
+    escalates: a supplied parent/reason pair is recorded as a link.
 
     Exit codes: 0 when the child exited 0; the child's exit code otherwise
     (124 on a ceiling timeout); 3 for every refusal before or around the
@@ -1699,13 +1696,15 @@ def _run_run(args: argparse.Namespace) -> int:
     from lee_llm_router.staffing import (
         load_staffing_catalog,
     )
+    from lee_llm_router.staffing.ledger import append_attempt
     from lee_llm_router.staffing.run import (
         RunDispatchError,
         RunSelectionError,
+        build_attempt_record,
         dispatch_route,
         oracle_timeout_seconds,
+        packet_id_for_text,
         parse_oracle_command,
-        run_json_record,
         run_oracle,
         run_summary_lines,
         select_route,
@@ -1714,7 +1713,13 @@ def _run_run(args: argparse.Namespace) -> int:
     def fail(message: str, *, as_json: bool = False, exit_code: int = 3) -> int:
         print(f"run: {message}", file=sys.stderr)
         if as_json:
-            print(json.dumps({"error": message, "exit_code": exit_code}, indent=2))
+            print(
+                json.dumps(
+                    {"error": message, "exit_code": exit_code},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            )
         return exit_code
 
     as_json = bool(getattr(args, "json", False))
@@ -1722,8 +1727,8 @@ def _run_run(args: argparse.Namespace) -> int:
     role = args.role
     class_string = args.class_string
 
-    # Optional parent/escalation pair: parsed, pairing-checked, and unused
-    # (run never escalates; a supervisor creates the linked attempt).
+    # Optional parent/escalation pair: parsed and pairing-checked.  ``run``
+    # never escalates; a supervisor supplies the link when it launches one.
     parent = getattr(args, "parent", None)
     escalation_reason = getattr(args, "escalation_reason", None)
     if (parent is None) != (escalation_reason is None):
@@ -1835,10 +1840,44 @@ def _run_run(args: argparse.Namespace) -> int:
             # a deterministic run refusal rather than an unhandled traceback.
             return fail(f"oracle failed: {exc}", as_json=as_json)
 
+    class_record = {
+        "class_key": class_string,
+        "role": class_role,
+        "oracle_type": oracle_type,
+        "domain_tags": list(domain_tags),
+        "size_band": size_band,
+        "language": language,
+    }
+    try:
+        record = build_attempt_record(
+            outcome,
+            dispatch,
+            oracle,
+            packet_id=packet_id_for_text(prompt),
+            class_record=class_record,
+            availability=availability,
+            at_date=at_date,
+            oracle_cmd=getattr(args, "oracle", None),
+            parent_attempt_id=parent,
+            escalation_reason=escalation_reason,
+            attempt_id=getattr(args, "attempt_id", None),
+        )
+    except (LLMRouterError, OSError, TypeError, ValueError) as exc:
+        return fail(f"attempt record could not be built: {exc}", as_json=as_json)
+
+    # append_attempt performs the one schema validation immediately before
+    # its one O_APPEND write. There is no pre-write repair or retry path.
+    try:
+        append_attempt(record)
+    except (LLMRouterError, OSError, TypeError, ValueError) as exc:
+        return fail(f"attempt record could not be appended: {exc}", as_json=as_json)
+
     if as_json:
-        print(json.dumps(run_json_record(outcome, dispatch, oracle), indent=2))
+        # One compact JSON object is both the command result and the exact
+        # object encoded by append_attempt (the ledger adds only its newline).
+        print(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
     else:
-        for line in run_summary_lines(outcome, dispatch, oracle):
+        for line in run_summary_lines(outcome, dispatch, oracle, record=record):
             print(line)
     return dispatch.exit_code
 
@@ -2469,7 +2508,7 @@ def main(argv: list[str] | None = None) -> None:
 
     run_parser = subparsers.add_parser(
         "run",
-        help="Select one eligible staffing route, dispatch its harness once",
+        help="Select, dispatch, and record one eligible staffing attempt",
     )
     run_parser.add_argument(
         "--role",
@@ -2527,7 +2566,7 @@ def main(argv: list[str] | None = None) -> None:
         metavar="ATTEMPT_ID",
         help=(
             "Parent attempt id for an escalation-linked run; must be "
-            "supplied together with --escalation-reason (unused in P1-5a)"
+            "supplied together with --escalation-reason; recorded on the attempt"
         ),
     )
     run_parser.add_argument(
@@ -2536,8 +2575,8 @@ def main(argv: list[str] | None = None) -> None:
         dest="escalation_reason",
         metavar="R",
         help=(
-            "Escalation reason paired with --parent; both or neither "
-            "(unused in P1-5a)"
+            "Escalation reason paired with --parent; both or neither; "
+            "recorded on the attempt"
         ),
     )
     run_parser.add_argument(

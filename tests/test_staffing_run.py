@@ -1,4 +1,4 @@
-"""Tests for the P1-5a ``run`` command (doctor.py ``_run_run`` + staffing.run).
+"""Tests for the complete P1-5 ``run`` command and v2 attempt append.
 
 Contract under test is the Chief's corrected D209 syntax
 (``docs/staffing/chief-answers-p1-1.md``): ``run --role R --class C --packet
@@ -167,8 +167,8 @@ def packet(tmp_path: Path) -> Path:
 def scratch_state(monkeypatch, tmp_path):
     """Point every stateful ledger/env override at scratch paths.
 
-    P1-5a must not append to any ledger, so these files must not exist
-    after any run.
+    Every stateful path is scratch-only; successful dispatches append only to
+    the attempt ledger and pre-dispatch refusals create neither file.
     """
     events = tmp_path / "events.jsonl"
     attempts = tmp_path / "attempts.jsonl"
@@ -457,6 +457,17 @@ def _route_record(catalog_dir: Path, route_id: str) -> Any:
     return next(r for r in catalog.routes.routes if r.route_id == route_id)
 
 
+def _assert_output_matches_single_append(
+    captured: Any, scratch_state: dict[str, Path]
+) -> dict[str, Any]:
+    """Return the JSON output after proving it is the sole ledger object."""
+    payload = json.loads(captured.out)
+    lines = scratch_state["attempts"].read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0]) == payload
+    return payload
+
+
 # ---------------------------------------------------------------------------
 # 1. Explain-cheapest selection
 # ---------------------------------------------------------------------------
@@ -494,6 +505,7 @@ def test_run_explain_cheapest_selects_first_eligible(
         "effort": route.effort,
         "harness": route.harness,
         "channel": route.channel,
+        "provider": payload["router_event"]["provider"],
     }
     selection = payload["selection"]
     assert selection["basis"] == "explain_cheapest_eligible"
@@ -559,6 +571,7 @@ def test_run_explicit_eligible_route(
         "effort": route.effort,
         "harness": route.harness,
         "channel": route.channel,
+        "provider": payload["router_event"]["provider"],
     }
     assert len(launcher.processes) == 1
 
@@ -584,6 +597,7 @@ def test_run_explicit_excluded_route_exits_3_and_never_launches(
     assert "not eligible" in captured.err
     assert "never_automatic" in captured.err
     assert "channel exhausted" in captured.err
+    assert not scratch_state["attempts"].exists()
 
 
 def test_run_unknown_explicit_route_exits_3_and_never_launches(
@@ -603,6 +617,7 @@ def test_run_unknown_explicit_route_exits_3_and_never_launches(
     assert code == 3
     assert launcher.processes == []
     assert "does not match any route_id" in captured.err
+    assert not scratch_state["attempts"].exists()
 
 
 # ---------------------------------------------------------------------------
@@ -626,6 +641,7 @@ def test_run_no_eligible_route_exits_3_and_never_launches(
     assert code == 3
     assert launcher.processes == []
     assert "no eligible route" in captured.err
+    assert not scratch_state["attempts"].exists()
 
 
 # ---------------------------------------------------------------------------
@@ -734,7 +750,7 @@ def test_run_rejects_incomplete_parent_escalation_pair(
 def test_run_complete_parent_pair_launches_once_and_does_not_escalate(
     monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
 ):
-    """A complete pair is parsed and unused: one launch, no escalation state."""
+    """A supplied link is recorded, while run still launches only one worker."""
     launcher = LaunchRecorder(exit_code=0)
     code, captured = _run_cli(
         monkeypatch,
@@ -747,11 +763,10 @@ def test_run_complete_parent_pair_launches_once_and_does_not_escalate(
         launcher=launcher,
     )
     assert code == 0
-    payload = json.loads(captured.out)
+    payload = _assert_output_matches_single_append(captured, scratch_state)
     assert len(launcher.processes) == 1
-    # Parsed but deliberately unused in P1-5a: no escalation field anywhere.
-    assert "parent" not in json.dumps(payload).lower()
-    assert not scratch_state["attempts"].exists()
+    assert payload["parent_attempt_id"] == "attempt-123"
+    assert payload["escalation_reason"] == "review rejected the attempt"
     assert not scratch_state["events"].exists()
 
 
@@ -798,9 +813,9 @@ def test_run_pi_dispatch_argv_and_usage(
     assert usage["cached_input_tokens"] == 0
     assert usage["reasoning_tokens"] is None
     assert usage["total_tokens"] == 30
-    assert payload["dispatch"]["exit_code"] == 0
-    assert payload["dispatch"]["timed_out"] is False
-    assert payload["dispatch"]["stdout"].strip() == PI_EVENT_STDOUT
+    assert payload["router_event"]["route_id"] == PI_ROUTE
+    assert "exit_code=0, timed_out=False" in payload["provenance"]["notes"][0]
+    _assert_output_matches_single_append(captured, scratch_state)
     assert payload["wall_clock_ms"] >= 0
 
 
@@ -839,7 +854,9 @@ def test_run_codex_dispatch_argv_and_usage(
     assert usage["input_tokens"] == 12
     assert usage["output_tokens"] == 7
     assert usage["total_tokens"] == 19
-    assert payload["dispatch"]["exit_code"] == 0
+    assert payload["router_event"]["route_id"] == CODEX_ROUTE
+    assert "exit_code=0, timed_out=False" in payload["provenance"]["notes"][0]
+    _assert_output_matches_single_append(captured, scratch_state)
 
 
 def test_run_claude_governed_capture_argv_and_usage(
@@ -903,9 +920,10 @@ def test_run_timeout_kills_child_and_reports_124(
     assert len(launcher.processes) == 1
     assert launcher.processes[0].killed is True
     payload = json.loads(captured.out)
-    assert payload["dispatch"]["exit_code"] == 124
-    assert payload["dispatch"]["timed_out"] is True
-    assert payload["dispatch"]["duration_seconds"] > 0
+    assert payload["failure_class"] == "platform_timeout"
+    assert "exit_code=124, timed_out=True" in payload["provenance"]["notes"][0]
+    assert payload["wall_clock_ms"] > 0
+    _assert_output_matches_single_append(captured, scratch_state)
 
 
 # ---------------------------------------------------------------------------
@@ -991,10 +1009,10 @@ def test_run_workdir_validation(
 # ---------------------------------------------------------------------------
 
 
-def test_run_launches_exactly_once_and_appends_nothing(
+def test_run_launches_once_and_appends_exactly_one_matching_record(
     monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
 ):
-    """Success path: exactly one child, and no ledger/event file is created."""
+    """Success path has one child, one valid line, and output agreement."""
     launcher = LaunchRecorder(chunks=[(CODEX_RECEIPT_STDOUT + "\n").encode("utf-8")])
     code, captured = _run_cli(
         monkeypatch,
@@ -1007,7 +1025,8 @@ def test_run_launches_exactly_once_and_appends_nothing(
     )
     assert code == 0
     assert len(launcher.processes) == 1
-    assert not scratch_state["attempts"].exists()
+    payload = _assert_output_matches_single_append(captured, scratch_state)
+    assert payload["schema_version"] == 2
     assert not scratch_state["events"].exists()
 
 
@@ -1029,10 +1048,10 @@ def test_run_child_exit_code_propagates(
     assert len(launcher.processes) == 1
 
 
-def test_run_output_carries_streams_and_wallclock(
+def test_run_record_carries_duration_and_dispatch_provenance_without_streams(
     monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
 ):
-    """The JSON record carries stdout/stderr/exit/wallclock plus schema usage."""
+    """The strict v2 record carries duration and compact dispatch evidence."""
     stderr_line = b"child stderr scratch\n"
     launcher = LaunchRecorder(
         chunks=[(CODEX_RECEIPT_STDOUT + "\n").encode("utf-8")],
@@ -1049,20 +1068,12 @@ def test_run_output_carries_streams_and_wallclock(
     )
     assert code == 0
     payload = json.loads(captured.out)
-    dispatch = payload["dispatch"]
-    assert set(dispatch) == {
-        "argv",
-        "exit_code",
-        "timed_out",
-        "duration_seconds",
-        "stdout",
-        "stderr",
-    }
-    assert dispatch["stdout"].strip() == CODEX_RECEIPT_STDOUT
-    assert dispatch["stderr"] == stderr_line.decode("utf-8")
-    assert isinstance(dispatch["duration_seconds"], (int, float))
+    assert "dispatch" not in payload
+    assert CODEX_RECEIPT_STDOUT not in json.dumps(payload)
+    assert stderr_line.decode("utf-8") not in json.dumps(payload)
     assert isinstance(payload["wall_clock_ms"], int)
     assert set(payload["usage"]) == PROVIDER_REPORTED_KEYS
+    _assert_output_matches_single_append(captured, scratch_state)
 
 
 # ---------------------------------------------------------------------------
@@ -1130,11 +1141,9 @@ def test_run_without_oracle_is_unverified_and_launches_only_worker(
 
     assert code == 0
     payload = json.loads(captured.out)
-    verification = payload["verification"]
-    assert set(verification) == {"oracle_type", "verdict", "oracle"}
-    assert verification["oracle_type"] == "none"
-    assert verification["verdict"] == "unverified"
-    assert verification["oracle"] is None
+    assert payload["verdict"] == "unverified"
+    assert payload["oracle_cmd"] is None
+    assert payload["verified_success"] is False
     assert len(launcher.calls) == 1
 
 
@@ -1164,18 +1173,13 @@ def test_run_oracle_pass_uses_shlex_argv_workdir_and_no_shell(
 
     assert code == 0
     payload = json.loads(captured.out)
-    verification = payload["verification"]
-    assert set(verification) == {"oracle_type", "verdict", "oracle"}
-    assert verification["oracle_type"] == "command"
-    assert verification["verdict"] == "pass"
-    evidence = verification["oracle"]
-    assert evidence["argv"] == ["oracle", "--label", "hello world"]
-    assert evidence["exit_code"] == 0
-    assert evidence["stdout"] == "oracle says okay\n"
-    assert evidence["stderr"] == ""
-    assert evidence["timed_out"] is False
-    assert evidence["error"] is None
-    assert isinstance(evidence["duration_seconds"], (int, float))
+    assert payload["verdict"] == "pass"
+    assert payload["oracle_cmd"] == "oracle --label 'hello world'"
+    assert payload["failure_class"] is None
+    assert payload["verified_success"] is False  # no supervisor route was sourced
+    assert (
+        "exit_code=0, timed_out=False, error=none" in payload["provenance"]["notes"][-1]
+    )
     assert len(launcher.calls) == 2
     assert launcher.calls[0][1]["cwd"] == str(workdir)
     assert launcher.calls[1][1]["cwd"] == str(workdir)
@@ -1211,13 +1215,12 @@ def test_run_nonzero_oracle_is_fail_with_captured_evidence(
 
     assert code == 0
     payload = json.loads(captured.out)
-    oracle = payload["verification"]
-    assert oracle["verdict"] == "fail"
-    assert oracle["oracle"]["exit_code"] == 9
-    assert oracle["oracle"]["stdout"] == "oracle output\n"
-    assert oracle["oracle"]["stderr"] == "oracle rejected\n"
-    assert oracle["oracle"]["timed_out"] is False
-    assert oracle["oracle"]["error"] is None
+    assert payload["verdict"] == "fail"
+    assert payload["oracle_cmd"] == "oracle --check"
+    assert payload["failure_class"] == "spec_rejected"
+    assert (
+        "exit_code=9, timed_out=False, error=none" in payload["provenance"]["notes"][-1]
+    )
     assert len(launcher.calls) == 2
 
 
@@ -1239,8 +1242,9 @@ def test_run_worker_failure_still_runs_oracle_once(
 
     assert code == 7
     payload = json.loads(captured.out)
-    assert payload["dispatch"]["exit_code"] == 7
-    assert payload["verification"]["verdict"] == "pass"
+    assert payload["verdict"] == "pass"
+    assert payload["verified_success"] is False
+    assert "exit_code=7, timed_out=False" in payload["provenance"]["notes"][0]
     assert len(launcher.calls) == 2
 
 
@@ -1264,11 +1268,13 @@ def test_run_oracle_timeout_is_fail_and_not_retried(
     )
 
     assert code == 0
-    verification = json.loads(captured.out)["verification"]
-    assert verification["verdict"] == "fail"
-    assert verification["oracle"]["exit_code"] == 124
-    assert verification["oracle"]["timed_out"] is True
-    assert verification["oracle"]["error"] is None
+    payload = json.loads(captured.out)
+    assert payload["verdict"] == "fail"
+    assert payload["failure_class"] == "platform_timeout"
+    assert (
+        "exit_code=124, timed_out=True, error=none"
+        in payload["provenance"]["notes"][-1]
+    )
     assert len(launcher.calls) == 2
     assert launcher.processes[1].killed is True
 
@@ -1321,12 +1327,12 @@ def test_run_oracle_launch_failure_is_fail_with_stable_error(
     )
 
     assert code == 0
-    verification = json.loads(captured.out)["verification"]
-    assert verification["verdict"] == "fail"
-    assert verification["oracle"]["exit_code"] is None
-    assert verification["oracle"]["timed_out"] is False
-    assert verification["oracle"]["error"] == (
+    payload = json.loads(captured.out)
+    assert payload["verdict"] == "fail"
+    assert payload["failure_class"] == "platform_env"
+    assert (
         "launch failure: FileNotFoundError: oracle missing"
+        in payload["provenance"]["notes"][-1]
     )
     assert len(launcher.calls) == 2
 
@@ -1385,3 +1391,175 @@ def test_run_plain_summary_includes_verification(
     assert "verification: pass (oracle exit 0)" in captured.out
     assert "oracle output" not in captured.out
     assert len(launcher.calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# 11. P1-5b2 canonical record, cost, and append
+# ---------------------------------------------------------------------------
+
+
+def test_run_packet_id_is_content_addressed_not_a_path(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, tmp_path, scratch_state
+):
+    """The top-level packet id identifies exact text, independent of location."""
+    from lee_llm_router.staffing.run import packet_id_for_text
+
+    launcher = LaunchRecorder(chunks=[(CODEX_RECEIPT_STDOUT + "\n").encode()])
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        launcher=launcher,
+    )
+
+    assert code == 0
+    payload = _assert_output_matches_single_append(captured, scratch_state)
+    assert payload["packet_id"] == packet_id_for_text(PACKET_TEXT)
+    assert payload["packet_id"].startswith("sha256:")
+    assert str(packet) not in payload["packet_id"]
+
+
+def test_run_known_usage_has_list_and_marginal_cost_from_selected_price(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """Known required counters use the selected dated P0-4 price exactly."""
+    from lee_llm_router.staffing.terms import route_price
+
+    launcher = LaunchRecorder(chunks=[(CODEX_RECEIPT_STDOUT + "\n").encode()])
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        launcher=launcher,
+    )
+
+    assert code == 0
+    payload = _assert_output_matches_single_append(captured, scratch_state)
+    price = route_price(
+        CODEX_ROUTE,
+        "ON TRACK",
+        load_staffing_catalog(catalog_dir),
+    )
+    cost = payload["cost"]
+    assert cost["basis"] == ["list", "marginal"]
+    assert cost["usd_list"] == pytest.approx(
+        12 * price.replacement.input_usd_per_token
+        + 7 * price.replacement.output_usd_per_token
+    )
+    assert cost["usd_marginal"] == pytest.approx(
+        12 * price.marginal_input_usd_per_token
+        + 7 * price.marginal_output_usd_per_token
+    )
+    # The provider did not report cache/reasoning counters. The committed
+    # P0-4 API prices input/output and the v2 gate explicitly makes those
+    # components optional, so no zero is fabricated and cost remains known.
+    assert payload["usage"]["cached_input_tokens"] is None
+    assert payload["usage"]["reasoning_tokens"] is None
+
+
+@pytest.mark.parametrize(
+    ("worker_stdout", "reason_fragment"),
+    [
+        ("", "output was empty"),
+        (
+            json.dumps(
+                {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 12},
+                }
+            ),
+            "missing or had invalid required",
+        ),
+    ],
+    ids=["unavailable", "insufficient-required-usage"],
+)
+def test_run_unavailable_or_insufficient_usage_has_no_cost_figures(
+    monkeypatch,
+    capsys,
+    catalog_dir,
+    snapshot,
+    packet,
+    scratch_state,
+    worker_stdout,
+    reason_fragment,
+):
+    """Unknown required quantities produce unavailable cost, never figures."""
+    chunks = [(worker_stdout + "\n").encode()] if worker_stdout else []
+    launcher = LaunchRecorder(chunks=chunks)
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        launcher=launcher,
+    )
+
+    assert code == 0
+    payload = _assert_output_matches_single_append(captured, scratch_state)
+    assert payload["usage"]["basis"] == "unavailable"
+    assert reason_fragment in payload["usage"]["unavailable_reason"]
+    assert payload["cost"] == {"basis": ["unavailable"]}
+
+
+def test_run_invalid_final_record_writes_no_ledger_line(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """The committed ledger validation refuses a malformed candidate pre-write."""
+    launcher = LaunchRecorder(chunks=[(CODEX_RECEIPT_STDOUT + "\n").encode()])
+    monkeypatch.setattr(
+        "lee_llm_router.staffing.run.build_attempt_record",
+        lambda *_args, **_kwargs: {"schema_version": 2},
+    )
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        launcher=launcher,
+    )
+
+    assert code == 3
+    assert "attempt record could not be appended" in captured.err
+    assert "attempt-record v2 schema validation" in captured.err
+    assert not scratch_state["attempts"].exists()
+    assert len(launcher.processes) == 1
+
+
+def test_run_calls_committed_append_once(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """One completed attempt crosses the committed append boundary once."""
+    from lee_llm_router.staffing import ledger
+
+    calls: list[dict[str, Any]] = []
+    real_append = ledger.append_attempt
+
+    def recording_append(record):
+        calls.append(record)
+        return real_append(record)
+
+    monkeypatch.setattr(ledger, "append_attempt", recording_append)
+    launcher = LaunchRecorder(chunks=[(CODEX_RECEIPT_STDOUT + "\n").encode()])
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        launcher=launcher,
+    )
+
+    assert code == 0
+    payload = _assert_output_matches_single_append(captured, scratch_state)
+    assert calls == [payload]

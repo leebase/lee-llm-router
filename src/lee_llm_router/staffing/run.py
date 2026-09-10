@@ -29,21 +29,27 @@ Implements the selection-plus-dispatch foundation of the ``run`` command
   ``usage.basis: unavailable`` with a specific reason — no parser ever
   invents tokens.
 
-P1-5a scope boundary: no escalation, no oracle, no cost computation, and
-no ledger append happens here. ``run`` never escalates; parent and
-escalation-reason arguments are parsed upstream and deliberately unused.
+P1-5b2 completes the boundary: after the one worker and optional oracle,
+``run`` assembles one v2 attempt record, calculates list/marginal cost only
+from known counters and the selected dated price, validates it through the
+committed ledger API, appends it once, and prints the same record compactly.
+``run`` never escalates; parent and escalation-reason are only recorded as a
+paired link supplied by its supervisor.
 """
 
 from __future__ import annotations
 
+import hashlib
+import math
 import os
 import shlex
 import subprocess
 import time
+import uuid
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, TextIO
+from typing import Any, Callable, Mapping, TextIO
 
 from lee_llm_router.availability import AvailabilitySnapshot
 from lee_llm_router.crews import HARNESS_PROVIDER_CHANNELS
@@ -67,6 +73,7 @@ from lee_llm_router.resolver import PROMPT_PLACEHOLDER, Resolution
 from lee_llm_router.staffing.catalog import Route as StaffingRoute
 from lee_llm_router.staffing.catalog import StaffingCatalog
 from lee_llm_router.staffing.eligibility import (
+    EligibilityPrice,
     EligibilityRow,
     StaffingEligibilityError,
     evaluate_eligibility,
@@ -79,6 +86,8 @@ __all__ = [
     "DispatchOutcome",
     "OracleOutcome",
     "RunDispatchError",
+    "build_attempt_record",
+    "packet_id_for_text",
     "RunSelectionError",
     "SELECTION_BASIS_EXPLAIN_CHEAPEST_ELIGIBLE",
     "SELECTION_BASIS_EXPLICIT",
@@ -215,6 +224,7 @@ class SelectionOutcome:
     reason: str
     explain_ref: str
     excluded: tuple[tuple[str, str], ...]
+    pricing: EligibilityPrice | None = None
 
 
 @dataclass(frozen=True)
@@ -414,6 +424,7 @@ def select_route(
             ),
             explain_ref=explain_ref,
             excluded=excluded,
+            pricing=row.pricing,
         )
 
     eligible = sorted(
@@ -436,6 +447,7 @@ def select_route(
         ),
         explain_ref=explain_ref,
         excluded=excluded,
+        pricing=selected.pricing,
     )
 
 
@@ -455,6 +467,254 @@ def selection_record(outcome: SelectionOutcome) -> dict[str, Any]:
             for route_id, reason in outcome.excluded
         ],
     }
+
+
+def _utc_timestamp() -> str:
+    """Return one aware UTC timestamp for a router attempt and its event."""
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _new_attempt_id() -> str:
+    """Return a schema-safe id for a run that has no caller-supplied id."""
+    return f"router-run-{uuid.uuid4().hex}"
+
+
+def packet_id_for_text(packet_text: str) -> str:
+    """Return the canonical content identity for the dispatched packet.
+
+    The governed CLI accepts a packet file but no separately asserted packet
+    identifier.  A filesystem path is location metadata, not packet identity,
+    so the identifier is the SHA-256 of the exact UTF-8 text sent to the
+    provider.  Equal packet text therefore has one stable identity regardless
+    of where the file is stored.
+
+    Args:
+        packet_text: Exact packet text passed to :func:`dispatch_route`.
+
+    Returns:
+        ``sha256:<lowercase hex digest>``.
+    """
+    digest = hashlib.sha256(packet_text.encode("utf-8")).hexdigest()
+    return f"sha256:{digest}"
+
+
+def _known_token_count(usage: Mapping[str, Any], field: str) -> bool:
+    """Whether one billable counter is an actual nonnegative integer."""
+    value = usage.get(field)
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _attempt_cost(
+    outcome: SelectionOutcome, usage: Mapping[str, Any]
+) -> tuple[dict[str, Any], str]:
+    """Calculate list and marginal token cost from the selected P0-4 price.
+
+    The committed price API exposes the dated replacement input/output rates
+    and the badge-adjusted marginal rates.  Only those two required counters
+    are billed here; optional cache/reasoning/total counters remain evidence
+    and are never turned into estimates or sent through a second pricing
+    implementation.
+    """
+    if usage.get("basis") == "unavailable":
+        return {"basis": ["unavailable"]}, "usage basis is unavailable"
+    if not _known_token_count(usage, "input_tokens"):
+        return {"basis": ["unavailable"]}, "input_tokens is unknown"
+    if not _known_token_count(usage, "output_tokens"):
+        return {"basis": ["unavailable"]}, "output_tokens is unknown"
+    pricing = outcome.pricing
+    if pricing is None:
+        return {"basis": ["unavailable"]}, "selected route has no dated price"
+
+    input_tokens = usage["input_tokens"]
+    output_tokens = usage["output_tokens"]
+    list_cost = (
+        input_tokens * pricing.replacement_input_usd_per_token
+        + output_tokens * pricing.replacement_output_usd_per_token
+    )
+    marginal_cost = (
+        input_tokens * pricing.marginal_input_usd_per_token
+        + output_tokens * pricing.marginal_output_usd_per_token
+    )
+    if not math.isfinite(list_cost) or not math.isfinite(marginal_cost):
+        return {"basis": ["unavailable"]}, "calculated cost is not finite"
+    return {
+        "basis": ["list", "marginal"],
+        "usd_list": list_cost,
+        "usd_marginal": marginal_cost,
+    }, "cost calculated from known input/output counters"
+
+
+def build_attempt_record(
+    outcome: SelectionOutcome,
+    dispatch: DispatchOutcome,
+    oracle: OracleOutcome | None,
+    *,
+    packet_id: str,
+    class_record: Mapping[str, Any],
+    availability: AvailabilitySnapshot,
+    at_date: date,
+    oracle_cmd: str | None = None,
+    parent_attempt_id: str | None = None,
+    escalation_reason: str | None = None,
+    supervisor_route: Mapping[str, Any] | None = None,
+    attempt_id: str | None = None,
+    captured_at: str | None = None,
+) -> dict[str, Any]:
+    """Build one strict v2 router-run attempt record.
+
+    This function only assembles facts already produced by selection,
+    dispatch, the optional oracle, and the committed pricing/eligibility
+    path. Schema validation and the single append belong to
+    :mod:`lee_llm_router.staffing.ledger`; no retry or escalation is done.
+
+    Args:
+        outcome: Selected route and catalog-explain evidence.
+        dispatch: The one completed worker dispatch and usage receipt.
+        oracle: The one optional oracle outcome.
+        packet_id: Canonical identifier of the exact dispatched packet.
+        class_record: Canonical class block reconstructed from ``--class``.
+        availability: The snapshot used during eligibility evaluation.
+        at_date: Dated-terms date used during selection.
+        oracle_cmd: Original command string, or ``None`` when no oracle ran.
+        parent_attempt_id: Optional escalation parent.
+        escalation_reason: Optional paired escalation reason.
+        supervisor_route: Optional observed supervisor route. It must not be
+            invented when the caller records no supervisor identity.
+        attempt_id: Optional caller-supplied id; generated when absent.
+        captured_at: Optional aware UTC capture timestamp, primarily for tests.
+
+    Returns:
+        A mapping in the committed attempt-record v2 shape. It is not
+        written by this function.
+    """
+    route = outcome.route
+    usage = dict(dispatch.usage)
+    cost, cost_note = _attempt_cost(outcome, usage)
+    verdict = _oracle_verdict(oracle)
+    timestamp = captured_at or _utc_timestamp()
+    channel_headroom = availability.headroom(route.channel)
+    provider = _HARNESS_PROVIDER_NAMES.get(route.harness, route.harness)
+
+    # ``router_event`` is the existing event shape embedded as provenance
+    # evidence. A run is a strict eligibility decision, not a new resolver
+    # mode; the event remains a normal 17-field build_event result.
+    from lee_llm_router import events as events_mod
+
+    router_event = events_mod.build_event(
+        ts=timestamp,
+        harness="cli",
+        crew="run",
+        role=class_record["role"],
+        mode="strict",
+        worker_id=route.route_id,
+        provider=provider,
+        model=route.model,
+        effort=route.effort,
+        channel=route.channel,
+        headroom=channel_headroom.health.value,
+        reason=outcome.reason,
+        authorized_by=None,
+        route_id=route.route_id,
+        snapshot_observed_at=channel_headroom.observed_at,
+        snapshot_stale=channel_headroom.stale,
+    )
+
+    wall_clock_ms = max(
+        0,
+        round(
+            (dispatch.duration_seconds + (oracle.duration_seconds if oracle else 0.0))
+            * 1000.0
+        ),
+    )
+    notes = [
+        "router-run dispatch facts: "
+        f"exit_code={dispatch.exit_code}, timed_out={dispatch.timed_out}, "
+        f"duration_seconds={dispatch.duration_seconds:.6f}",
+        f"oracle verdict: {verdict}; command={'present' if oracle_cmd else 'none'}",
+        f"cost: {cost_note}; dated terms at {at_date.isoformat()}",
+    ]
+    if oracle is not None:
+        notes.append(
+            "oracle evidence: "
+            f"exit_code={oracle.exit_code}, timed_out={oracle.timed_out}, "
+            f"error={oracle.error or 'none'}"
+        )
+
+    record: dict[str, Any] = {
+        "schema_version": 2,
+        "attempt_id": attempt_id or _new_attempt_id(),
+        "record_kind": "router_run",
+        "packet_id": packet_id,
+        "parent_attempt_id": parent_attempt_id,
+        "escalation_reason": escalation_reason,
+        "captured_at": timestamp,
+        "verified_success": False,
+        "route": {
+            "model": route.model,
+            "effort": route.effort,
+            "harness": route.harness,
+            "channel": route.channel,
+            "provider": provider,
+        },
+        "class_record": dict(class_record),
+        "verdict": verdict,
+        "failure_class": _failure_class(dispatch, oracle),
+        "oracle_cmd": oracle_cmd if verdict != "unverified" else None,
+        "usage": usage,
+        "cost": cost,
+        "wall_clock_ms": wall_clock_ms,
+        "selection": selection_record(outcome),
+        "router_event": router_event,
+        "provenance": {
+            "source": "router-run",
+            "recorded_by": "lee-llm-router run",
+            "source_refs": [
+                "src/lee_llm_router/events.py EVENT_FIELDS and build_event contract",
+                ("config/staffing/terms.yaml via staffing.terms_at and " "route_price"),
+                (
+                    "docs/staffing/phase1-contracts.md §Attempt record v2 "
+                    "placement, §Usage evidence taxonomy, §Cost rule"
+                ),
+            ],
+            "notes": notes,
+        },
+    }
+    if supervisor_route is not None:
+        record["supervisor_route"] = dict(supervisor_route)
+
+    # The v2 gate is intentionally conservative. The CLI does not claim to
+    # observe its caller's route; direct callers may supply one only when it
+    # is real source evidence. Worker success is also required even though
+    # the schema cannot infer it from the provenance note.
+    record["verified_success"] = bool(
+        dispatch.exit_code == 0
+        and not dispatch.timed_out
+        and verdict == "pass"
+        and record["route"]
+        and record["class_record"]
+        and record.get("supervisor_route") is not None
+        and record["oracle_cmd"]
+        and record["failure_class"] is None
+        and usage.get("basis") != "unavailable"
+        and _known_token_count(usage, "input_tokens")
+        and _known_token_count(usage, "output_tokens")
+        and cost.get("basis") == ["list", "marginal"]
+        and isinstance(record["wall_clock_ms"], int)
+    )
+    return record
+
+
+def _failure_class(
+    dispatch: DispatchOutcome, oracle: OracleOutcome | None
+) -> str | None:
+    """Return only a failure class directly supported by run evidence."""
+    if dispatch.timed_out or (oracle is not None and oracle.timed_out):
+        return "platform_timeout"
+    if oracle is not None and oracle.error is not None:
+        return "platform_env"
+    if oracle is not None and oracle.exit_code not in (None, 0):
+        return "spec_rejected"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -959,13 +1219,15 @@ def run_summary_lines(
     outcome: SelectionOutcome,
     dispatch: DispatchOutcome,
     oracle: OracleOutcome | None = None,
+    *,
+    record: Mapping[str, Any] | None = None,
 ) -> list[str]:
     """The compact plain-text ``run`` summary (one fact per line).
 
-    Mirrors the ``--json`` summary object: selected route and basis, the
-    dispatch exit and wall clock, the authoritative usage basis with its
-    reported counters (``-`` when unknown), and the oracle verdict. Never
-    prints the packet prompt or the full captured stdout/stderr.
+    Mirrors the v2 record when ``record`` is supplied: selected route and
+    basis, the dispatch exit and wall clock, the authoritative usage basis
+    with its reported counters (``-`` when unknown), cost, and oracle verdict.
+    Never prints the packet prompt or the full captured stdout/stderr.
     """
     route = outcome.route
     model = route.model if route.effort is None else f"{route.model}/{route.effort}"
@@ -991,6 +1253,18 @@ def run_summary_lines(
             )
         )
         lines.append(f"usage: {usage.get('basis')} ({usage.get('source')}) {counters}")
+
+    if record is not None:
+        cost = record.get("cost", {})
+        if cost.get("basis") == ["list", "marginal"]:
+            lines.append(
+                "cost: list ${:.8f}, marginal ${:.8f}".format(
+                    cost["usd_list"], cost["usd_marginal"]
+                )
+            )
+        else:
+            lines.append("cost: unavailable")
+        lines.append(f"attempt: {record.get('attempt_id', '-')}")
 
     verdict = _oracle_verdict(oracle)
     if oracle is None:
