@@ -24,7 +24,8 @@ Commands:
     lee-llm-router shims diff [--harness <tag>] [--project <path>]
     lee-llm-router catalog explain --role ROLE --class CLASS
                                   [--at DATE] [--availability-file PATH]
-                                  [--catalog-dir PATH] [--json]
+                                  [--catalog-dir PATH]
+                                  [--author-route ROUTE_ID] [--json]
     lee-llm-router template
     lee-llm-router trace --last N
     lee-llm-router export-source --dest <path> [--force]
@@ -1246,6 +1247,84 @@ def _run_shims_no_subcommand(_args: argparse.Namespace) -> int:
 # catalog explain (P0-5b): per-route eligibility report over the catalog
 # ---------------------------------------------------------------------------
 
+FLOORS_DISCLOSURE: str = "floors recorded, not enforced"
+"""Chief round 15 (D86/D87) fact printed exactly once per explain run.
+
+The committed catalog's ``role_floors`` records are recorded data only in
+Phase 0: eligibility applies no floor check and excludes no route by one.
+"""
+
+INDEPENDENCE_NOT_EVALUATED: str = "independence not evaluated (no --author-route)"
+"""Chief round 15 (packet D) absent-input disclosure, printed exactly once.
+
+Independence is enforced only when explain receives ``--author-route``
+(Chief round 15 ruling 2); when the input is absent this exact disclosure
+replaces any exclusion — no route is excluded for independence without it.
+"""
+
+_INDEPENDENCE_APPLICABLE_ROLES: frozenset[str] = frozenset({"review", "judge"})
+"""Roles for which author-route independence applies (review/judge only)."""
+
+
+def _independence_record(
+    role: str,
+    author_route_id: str | None,
+    catalog: Any,
+) -> dict[str, Any]:
+    """Build the deterministic top-level ``independence`` explain record.
+
+    Absent input: ``evaluated`` false plus the exact absent-input
+    disclosure. Supplied input for review/judge: ``evaluated`` true plus
+    the author route, its derived family, and the family source. Supplied
+    input for any other role: not applicable — ``evaluated`` stays false
+    and the record says so rather than pretending the check ran. Raises
+    :class:`StaffingEligibilityError` on an unknown author route id (the
+    eligibility evaluation already fails closed on the same input).
+    """
+    from lee_llm_router.staffing.eligibility import (
+        resolve_author_route,
+        resolve_route_family,
+    )
+
+    applicable = role in _INDEPENDENCE_APPLICABLE_ROLES
+    if author_route_id is None:
+        return {
+            "evaluated": False,
+            "applicable": applicable,
+            "disclosure": INDEPENDENCE_NOT_EVALUATED,
+        }
+    author_route = resolve_author_route(catalog, author_route_id)
+    family, family_source = resolve_route_family(author_route)
+    record: dict[str, Any] = {
+        "evaluated": applicable,
+        "applicable": applicable,
+        "author_route": author_route_id,
+        "author_family": family,
+        "family_source": family_source,
+    }
+    if not applicable:
+        record["disclosure"] = f"independence not applicable for role {role!r}"
+    return record
+
+
+def _independence_text_line(record: dict[str, Any]) -> str:
+    """Render the one independence disclosure line for text output."""
+    if record["evaluated"]:
+        return (
+            f"independence: author route {record['author_route']}, "
+            f"family {record['author_family']} "
+            f"(from {record['family_source']})"
+        )
+    if record.get("author_route") is not None:
+        # Not-applicable-with-input case: record the supplied author route,
+        # its derived family, and the source once, alongside the disclosure.
+        return (
+            f"{record['disclosure']} (author route {record['author_route']}, "
+            f"family {record['author_family']} "
+            f"(from {record['family_source']}))"
+        )
+    return record["disclosure"]
+
 
 def _parse_class_string(
     class_string: str,
@@ -1435,6 +1514,20 @@ def _run_catalog_explain(args: argparse.Namespace) -> int:
     lookup selects for the requested date (display only, in both text and
     ``--json`` output) so the selected ``effective_from``/``fee_usd_month``
     terms are observable; it performs no choice, probability, or ladder.
+    Per Chief round 15 (D86/D87) it discloses exactly once per run — as the
+    ``floors recorded, not enforced`` text line and as the top-level
+    ``floors_disclosure`` JSON value — that the catalog's ``role_floors``
+    records are recorded data only in Phase 0 and exclude no route.
+    Per Chief round 15 packet D it also discloses author-route independence
+    exactly once: with no ``--author-route`` the exact absent-input line
+    ``independence not evaluated (no --author-route)`` (text) and the
+    top-level ``independence`` record (JSON, ``evaluated`` false); with an
+    author route supplied for review/judge the author route, its derived
+    family, and the family source are recorded once, and eligibility has
+    already excluded that route and every same-family candidate with the
+    reason ``independence``. For other roles the check is recorded as not
+    applicable rather than evaluated. Independence is an author/candidate
+    comparison, never a class-to-model preference (D206).
     """
     import json
     from datetime import date
@@ -1496,6 +1589,7 @@ def _run_catalog_explain(args: argparse.Namespace) -> int:
             language=language,
             domain_tags=domain_tags,
             class_key=args.class_string,
+            author_route_id=args.author_route,
             availability=availability,
             at_date=at_date,
         )
@@ -1503,6 +1597,11 @@ def _run_catalog_explain(args: argparse.Namespace) -> int:
         return fail(str(exc))
     except Exception as exc:  # no traceback on unexpected evaluation errors
         return fail(f"evaluation failed: {exc}")
+
+    try:
+        independence = _independence_record(role, args.author_route, catalog)
+    except StaffingEligibilityError as exc:
+        return fail(str(exc))
 
     ordered = sorted(rows, key=_explain_sort_key)
     route_views = [_explain_route_json(row) for row in ordered]
@@ -1517,6 +1616,8 @@ def _run_catalog_explain(args: argparse.Namespace) -> int:
                     "class_key": args.class_string,
                     "at": at_date.isoformat(),
                     "terms": terms_view,
+                    "floors_disclosure": FLOORS_DISCLOSURE,
+                    "independence": independence,
                     "routes": route_views,
                 },
                 indent=2,
@@ -1534,6 +1635,8 @@ def _run_catalog_explain(args: argparse.Namespace) -> int:
         )
         for line in _terms_lines(terms_view, at_date):
             print(line)
+        print(FLOORS_DISCLOSURE)
+        print(_independence_text_line(independence))
     return 0
 
 
@@ -2143,6 +2246,18 @@ def main(argv: list[str] | None = None) -> None:
         help=(
             "Directory holding the six staffing catalog YAML documents "
             "(default: the repo config/staffing directory)"
+        ),
+    )
+    catalog_explain_parser.add_argument(
+        "--author-route",
+        metavar="ROUTE_ID",
+        default=None,
+        help=(
+            "Author route id for review/judge independence: exclude that "
+            "route and every candidate whose model family equals the "
+            "author's (reason 'independence'). Without it, independence is "
+            "not evaluated (absent-input disclosure only). Unknown ids fail "
+            "closed (exit 3)."
         ),
     )
     catalog_explain_parser.add_argument(

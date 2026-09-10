@@ -25,11 +25,24 @@
 # effort `max` and Luna XHigh stays eligible subject to the other rules.
 # No other cited decision scopes any of these rules to an effort level.
 #
-# role_floors, reviewer_independence, and spend_caps are empty arrays: the
-# contracts (phase0-contracts.md §Policy) assign role floors and
-# reviewer-independence shapes to the archived labor-ladder roles policy and
-# require spend caps to cite their governing decision; no such decision is
-# cited in this packet, so nothing is invented here.
+# spend_caps remains an empty array: the contracts (phase0-contracts.md
+# §Policy) require spend caps to cite their governing decision; no such
+# decision is cited, so nothing is invented there.
+#
+# reviewer_independence holds exactly two records (Chief round 15): the
+# vocabulary mapping review -> reviewer and judge -> evaluator plus the
+# explain --author-route behavior come from chief-answers-15.md, and each
+# record copies its archived labor-ladder roles.yaml independence shape
+# verbatim. Independence is an author/candidate comparison, never a
+# class-to-model preference (D206).
+#
+# role_floors: recorded data only in Phase 0 (Chief round 15, D86/D87). Each
+# record keys a staffing role name to the floor copied verbatim from the
+# archived labor-ladder tier policy via the Chief round 15 vocabulary mapping.
+# Floors are NOT enforced: no authority has assigned T1-T4 tiers to the
+# current models (labor-ladder's tiers name retired models), so these records
+# carry no effective dates and drive no selection behavior. Enforcement
+# arrives in Phase 2 with evidence-based tiers or a Lee decision.
 #
 # D206 (decisions.md 2026-09-09, verbatim contract in phase0-contracts.md):
 # "Class metadata MUST NOT map directly to a preferred model or route. It may
@@ -148,6 +161,112 @@ role_class:
       class-to-route preference, D206).
     source: decisions.md D189 (D188 stage mapping confirmed unchanged)
 
-role_floors: []
-reviewer_independence: []
+role_floors:
+  - role_ref: impl
+    floor: T2
+    decision: >-
+      The impl staffing role maps to the archived implementer role (Chief
+      round 15) and the implementer's archived floor is T2. Recorded data
+      only: this floor is not enforced in Phase 0 because no authority has
+      assigned T1-T4 tiers to the current models.
+    source: >-
+      Chief round 15 (chief-answers-15.md, D86/D87: the role-name mapping
+      impl -> implementer, floors recorded but not enforced); archived
+      labor-ladder/policy/roles.yaml (floor shape and value: implementer
+      floor T2)
+  - role_ref: plan
+    floor: T2
+    decision: >-
+      The plan staffing role maps to the archived planner role (Chief round
+      15) and the planner's archived floor is T2. Recorded data only: this
+      floor is not enforced in Phase 0 because no authority has assigned
+      T1-T4 tiers to the current models.
+    source: >-
+      Chief round 15 (chief-answers-15.md, D86/D87: the role-name mapping
+      plan -> planner, floors recorded but not enforced); archived
+      labor-ladder/policy/roles.yaml (floor shape and value: planner floor
+      T2)
+  - role_ref: review
+    floor: T2
+    decision: >-
+      The review staffing role maps to the archived reviewer role (Chief
+      round 15) and the reviewer's archived floor is T2. Recorded data only:
+      this floor is not enforced in Phase 0 because no authority has assigned
+      T1-T4 tiers to the current models.
+    source: >-
+      Chief round 15 (chief-answers-15.md, D86/D87: the role-name mapping
+      review -> reviewer, floors recorded but not enforced); archived
+      labor-ladder/policy/roles.yaml (floor shape and value: reviewer floor
+      T2)
+  - role_ref: judge
+    floor: T2
+    decision: >-
+      The judge staffing role maps to the archived evaluator role (Chief
+      round 15) and the evaluator's archived floor is T2. Recorded data
+      only: this floor is not enforced in Phase 0 because no authority has
+      assigned T1-T4 tiers to the current models.
+    source: >-
+      Chief round 15 (chief-answers-15.md, D86/D87: the role-name mapping
+      judge -> evaluator, floors recorded but not enforced); archived
+      labor-ladder/policy/roles.yaml (floor shape and value: evaluator floor
+      T2)
+  - role_ref: prose
+    floor: T2
+    decision: >-
+      The prose staffing role maps to the archived author role (Chief round
+      15) and the author's archived floor is T2. Recorded data only: this
+      floor is not enforced in Phase 0 because no authority has assigned
+      T1-T4 tiers to the current models.
+    source: >-
+      Chief round 15 (chief-answers-15.md, D86/D87: the role-name mapping
+      prose -> author, floors recorded but not enforced); archived
+      labor-ladder/policy/roles.yaml (floor shape and value: author floor
+      T2)
+# reviewer_independence: exactly two records, keyed by the staffing
+# reviewer_ref names review and judge (Chief round 15 vocabulary mapping:
+# review -> reviewer, judge -> evaluator). Each record copies its archived
+# labor-ladder role's independence shape verbatim; no values are invented.
+# Enforcement occurs only when explain receives --author-route (Chief round
+# 15 ruling 2); with absent input, explain discloses "independence not
+# evaluated (no --author-route)" rather than excluding routes. Independence
+# is an author/candidate comparison, never a class-to-model preference
+# (D206).
+
+reviewer_independence:
+  - reviewer_ref: review
+    not_same_worker_as: authors
+    prefer_different_family: true
+    decision: >-
+      The review staffing role maps to the archived reviewer role (Chief
+      round 15) and carries the reviewer's archived independence shape
+      verbatim: the reviewer must not be the same worker as the authors and
+      a different model family is preferred. Independence is an
+      author/candidate comparison, never a class-to-model preference
+      (D206). Enforcement occurs only when explain receives --author-route;
+      when the input is absent, explain discloses "independence not
+      evaluated (no --author-route)" instead of excluding routes.
+    source: >-
+      Chief round 15 (chief-answers-15.md, ruling 1: the vocabulary mapping
+      review -> reviewer; ruling 2: the explain --author-route behavior and
+      the absent-input disclosure); archived labor-ladder/policy/roles.yaml
+      (reviewer independence shape: not_same_worker_as: authors,
+      prefer_different_family: true)
+  - reviewer_ref: judge
+    second_opinion_mode: different-family-than-author
+    decision: >-
+      The judge staffing role maps to the archived evaluator role (Chief
+      round 15) and carries the evaluator's archived independence shape
+      verbatim: the judge operates in second-opinion mode, different family
+      than the author. Independence is an author/candidate comparison,
+      never a class-to-model preference (D206). Enforcement occurs only
+      when explain receives --author-route; when the input is absent,
+      explain discloses "independence not evaluated (no --author-route)"
+      instead of excluding routes.
+    source: >-
+      Chief round 15 (chief-answers-15.md, ruling 1: the vocabulary mapping
+      judge -> evaluator; ruling 2: the explain --author-route behavior and
+      the absent-input disclosure); archived labor-ladder/policy/roles.yaml
+      (evaluator independence shape: second_opinion_mode:
+      different-family-than-author)
+
 spend_caps: []

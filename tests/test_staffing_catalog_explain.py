@@ -691,3 +691,376 @@ def test_explain_json_terms_preserve_unknown_literal(tmp_path, catalog_dir, caps
     # No choice/probability/ladder keys leak into the terms view.
     for entry in terms.values():
         assert set(entry) == {"effective_from", "fee_usd_month"}
+
+
+# ---------------------------------------------------------------------------
+# Chief round 15 (D86/D87): floors recorded, not enforced — disclosure only
+# ---------------------------------------------------------------------------
+
+
+def _strip_role_floors(catalog_dir: Path) -> Path:
+    """Rewrite the scratch catalog's policy.yaml with ``role_floors: []``.
+
+    The committed policy records Chief round 15 floors; the schema requires
+    the ``role_floors`` key but allows an empty array, so blanking it yields
+    a valid catalog that differs from the committed one only in that data.
+    Operates on the scratch copy in ``tmp_path``, never the repo config.
+    """
+    policy_path = catalog_dir / "policy.yaml"
+    lines = policy_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    start = next(i for i, line in enumerate(lines) if line.startswith("role_floors:"))
+    end = next(
+        i
+        for i in range(start + 1, len(lines))
+        if lines[i].strip() and not lines[i].startswith((" ", "#"))
+    )
+    lines[start:end] = ["role_floors: []\n"]
+    policy_path.write_text("".join(lines), encoding="utf-8")
+    return catalog_dir
+
+
+def test_explain_text_discloses_floors_exactly_once(tmp_path, catalog_dir, capsys):
+    """Text output carries the exact disclosure line exactly once."""
+    snapshot = _write_snapshot(tmp_path / "availability.json")
+    code, captured = _run_explain(
+        capsys,
+        "--role",
+        "impl",
+        "--class",
+        IMPL_CLASS,
+        "--at",
+        "2026-09-15",
+        "--availability-file",
+        str(snapshot),
+        "--catalog-dir",
+        str(catalog_dir),
+    )
+    assert code == 0
+    assert captured.out.splitlines().count("floors recorded, not enforced") == 1
+
+
+def test_explain_json_discloses_floors_as_additive_field_once(
+    tmp_path, catalog_dir, capsys
+):
+    """JSON adds exactly one top-level ``floors_disclosure`` field; rows intact."""
+    snapshot = _write_snapshot(tmp_path / "availability.json")
+    code, payload = _explain_json_run(capsys, catalog_dir, snapshot)
+    assert code == 0
+
+    # Exactly the prior top-level fields plus the two additive disclosures.
+    assert set(payload) == {
+        "role",
+        "class_key",
+        "at",
+        "terms",
+        "floors_disclosure",
+        "independence",
+        "routes",
+    }
+    assert payload["floors_disclosure"] == "floors recorded, not enforced"
+
+    # The key occurs exactly once in the serialized JSON (one top-level field).
+    raw = json.dumps(payload, indent=2)
+    assert raw.count('"floors_disclosure"') == 1
+    assert raw.count('"independence"') == 1
+
+    # Route row keys remain unchanged (no per-row floor field added).
+    for route in payload["routes"]:
+        assert set(route) == ROUTE_JSON_KEYS
+
+
+def test_explain_recorded_floors_change_no_eligibility(tmp_path, catalog_dir, capsys):
+    """Routes are identical with and without the committed ``role_floors`` data.
+
+    The recorded floors add no floor exclusion reason and change no route's
+    ``eligible``/``reasons`` — disclosure only, no enforcement.
+    """
+    snapshot = _write_snapshot(tmp_path / "availability.json")
+
+    code, with_floors = _explain_json_run(capsys, catalog_dir, snapshot)
+    assert code == 0
+
+    floors_dir = _strip_role_floors(catalog_dir)
+    assert floors_dir != REPO_CONFIG_DIR  # repo config untouched
+    code, without_floors = _explain_json_run(capsys, catalog_dir, snapshot)
+    assert code == 0
+
+    def floor_view(payload: dict) -> list[tuple]:
+        return [
+            (r["route_id"], r["eligible"], tuple(r["reasons"]))
+            for r in payload["routes"]
+        ]
+
+    assert floor_view(with_floors) == floor_view(without_floors)
+
+    # No reason string anywhere mentions a floor.
+    for payload in (with_floors, without_floors):
+        for route in payload["routes"]:
+            assert not any("floor" in reason.lower() for reason in route["reasons"])
+
+    # A route eligible under the committed floors stays eligible, empty reasons.
+    glm = _by_route(with_floors, GLM_OPENROUTER_ROUTE)
+    assert glm["eligible"] is True
+    assert glm["reasons"] == []
+
+
+# ---------------------------------------------------------------------------
+# Chief round 15 packet D: --author-route independence disclosure
+# ---------------------------------------------------------------------------
+
+REVIEW_CLASS = "review/deterministic/none/s/python"
+SONNET_HIGH_ROUTE = "claude-claude-sonnet-5-high-anthropic-sub"
+DEEPSEEK_FLASH_ROUTE = "pi-deepseek-deepseek-v4-flash-openrouter"
+
+
+def test_explain_absent_author_route_discloses_exactly_once(
+    tmp_path, catalog_dir, capsys
+):
+    """No --author-route: the exact disclosure line appears exactly once in
+    text, and JSON records evaluated=false (review/judge still applicable)."""
+    snapshot = _write_snapshot(tmp_path / "availability.json")
+    code, captured = _run_explain(
+        capsys,
+        "--role",
+        "review",
+        "--class",
+        REVIEW_CLASS,
+        "--at",
+        "2026-09-15",
+        "--availability-file",
+        str(snapshot),
+        "--catalog-dir",
+        str(catalog_dir),
+    )
+    assert code == 0
+    assert (
+        captured.out.splitlines().count(
+            "independence not evaluated (no --author-route)"
+        )
+        == 1
+    )
+
+    code, captured = _run_explain(
+        capsys,
+        "--role",
+        "review",
+        "--class",
+        REVIEW_CLASS,
+        "--at",
+        "2026-09-15",
+        "--availability-file",
+        str(snapshot),
+        "--catalog-dir",
+        str(catalog_dir),
+        "--json",
+    )
+    assert code == 0
+    payload = json.loads(captured.out)
+    assert payload["independence"] == {
+        "evaluated": False,
+        "applicable": True,
+        "disclosure": "independence not evaluated (no --author-route)",
+    }
+    # No route is excluded by independence without the input.
+    for route in payload["routes"]:
+        assert "independence" not in route["reasons"]
+
+
+def test_explain_author_route_review_excludes_same_route_and_family(
+    tmp_path, catalog_dir, capsys
+):
+    """--author-route FABLE for review: the author route and every same-family
+    (claude) candidate carry exactly the 'independence' reason; different-family
+    routes are untouched. The author route, derived family, and family source
+    are recorded once in text and JSON."""
+    snapshot = _write_snapshot(tmp_path / "availability.json")
+    code, captured = _run_explain(
+        capsys,
+        "--role",
+        "review",
+        "--class",
+        REVIEW_CLASS,
+        "--at",
+        "2026-09-15",
+        "--availability-file",
+        str(snapshot),
+        "--catalog-dir",
+        str(catalog_dir),
+        "--author-route",
+        FABLE_ROUTE,
+        "--json",
+    )
+    assert code == 0
+    payload = json.loads(captured.out)
+
+    assert payload["independence"] == {
+        "evaluated": True,
+        "applicable": True,
+        "author_route": FABLE_ROUTE,
+        "author_family": "claude",
+        "family_source": "model_vendor_prefix",
+    }
+    raw = json.dumps(payload, indent=2)
+    assert raw.count('"author_route"') == 1
+    assert raw.count('"author_family"') == 1
+    assert raw.count('"family_source"') == 1
+
+    fable = _by_route(payload, FABLE_ROUTE)
+    assert fable["eligible"] is False
+    assert "independence" in fable["reasons"]
+    assert fable["reasons"] == ["never_automatic", "independence"]
+
+    # Eligible same-family candidate: excluded by independence alone.
+    sonnet = _by_route(payload, SONNET_HIGH_ROUTE)
+    assert sonnet["eligible"] is False
+    assert sonnet["reasons"] == ["independence"]
+
+    # Different family (z-ai namespace): untouched and eligible.
+    glm = _by_route(payload, GLM_OPENROUTER_ROUTE)
+    assert glm["eligible"] is True
+    assert glm["reasons"] == []
+
+    # Same-family deepseek-v4-pro (leading-token deepseek) is a different
+    # family from z-ai; it must be untouched by a z-ai author route.
+    deepseek = _by_route(payload, DEEPSEEK_FLASH_ROUTE)
+    assert "independence" not in deepseek["reasons"]
+
+    # Existing route row fields are preserved.
+    for route in payload["routes"]:
+        assert set(route) == ROUTE_JSON_KEYS
+
+
+def test_explain_author_route_text_records_author_family_source_once(
+    tmp_path, catalog_dir, capsys
+):
+    """Text output records the author route, derived family, and source once."""
+    snapshot = _write_snapshot(tmp_path / "availability.json")
+    code, captured = _run_explain(
+        capsys,
+        "--role",
+        "review",
+        "--class",
+        REVIEW_CLASS,
+        "--at",
+        "2026-09-15",
+        "--availability-file",
+        str(snapshot),
+        "--catalog-dir",
+        str(catalog_dir),
+        "--author-route",
+        FABLE_ROUTE,
+    )
+    assert code == 0
+    line = (
+        f"independence: author route {FABLE_ROUTE}, family claude "
+        "(from model_vendor_prefix)"
+    )
+    assert captured.out.splitlines().count(line) == 1
+    assert "independence not evaluated (no --author-route)" not in captured.out
+
+
+def test_explain_author_route_judge_same_route(tmp_path, catalog_dir, capsys):
+    """--author-route SOL for judge: the author route itself is excluded with
+    the 'independence' reason alongside its existing reasons."""
+    snapshot = _write_snapshot(tmp_path / "availability.json")
+    code, captured = _run_explain(
+        capsys,
+        "--role",
+        "judge",
+        "--class",
+        "judge/deterministic/none/s/python",
+        "--at",
+        "2026-09-15",
+        "--availability-file",
+        str(snapshot),
+        "--catalog-dir",
+        str(catalog_dir),
+        "--author-route",
+        SOL_LOW_ROUTE,
+        "--json",
+    )
+    assert code == 0
+    payload = json.loads(captured.out)
+    assert payload["independence"]["evaluated"] is True
+    assert payload["independence"]["author_family"] == "gpt"
+    sol = _by_route(payload, SOL_LOW_ROUTE)
+    assert sol["eligible"] is False
+    assert "independence" in sol["reasons"]
+
+
+def test_explain_author_route_invalid_exits_3(tmp_path, catalog_dir, capsys):
+    """An unknown --author-route fails closed with a named error and exit 3."""
+    snapshot = _write_snapshot(tmp_path / "availability.json")
+    code, captured = _run_explain(
+        capsys,
+        "--role",
+        "review",
+        "--class",
+        REVIEW_CLASS,
+        "--at",
+        "2026-09-15",
+        "--availability-file",
+        str(snapshot),
+        "--catalog-dir",
+        str(catalog_dir),
+        "--author-route",
+        "no-such-route",
+    )
+    assert code == 3
+    assert captured.err.startswith("catalog explain:")
+    assert "no-such-route" in captured.err
+    assert captured.out == ""
+
+
+def test_explain_author_route_impl_not_applicable(tmp_path, catalog_dir, capsys):
+    """For impl the check is not applicable: no exclusion, evaluated false,
+    and the record says so rather than pretending it ran."""
+    snapshot = _write_snapshot(tmp_path / "availability.json")
+
+    # Baseline without --author-route for comparison.
+    code, baseline = _explain_json_run(capsys, catalog_dir, snapshot)
+    assert code == 0
+
+    code, payload = _explain_json_run(
+        capsys,
+        catalog_dir,
+        snapshot,
+        "2026-09-15",
+        "--author-route",
+        SOL_LOW_ROUTE,
+    )
+    assert code == 0
+    assert payload["independence"] == {
+        "evaluated": False,
+        "applicable": False,
+        "author_route": SOL_LOW_ROUTE,
+        "author_family": "gpt",
+        "family_source": "model_vendor_prefix",
+        "disclosure": "independence not applicable for role 'impl'",
+    }
+    # Eligibility is unchanged: no route gains the independence reason.
+    for baseline_route, route in zip(baseline["routes"], payload["routes"]):
+        assert route["reasons"] == baseline_route["reasons"]
+        assert route["eligible"] == baseline_route["eligible"]
+        assert "independence" not in route["reasons"]
+
+    code, captured = _run_explain(
+        capsys,
+        "--role",
+        "impl",
+        "--class",
+        IMPL_CLASS,
+        "--at",
+        "2026-09-15",
+        "--availability-file",
+        str(snapshot),
+        "--catalog-dir",
+        str(catalog_dir),
+        "--author-route",
+        SOL_LOW_ROUTE,
+    )
+    assert code == 0
+    assert (
+        "independence not applicable for role 'impl' (author route "
+        f"{SOL_LOW_ROUTE}, family gpt (from model_vendor_prefix))"
+    ) in captured.out

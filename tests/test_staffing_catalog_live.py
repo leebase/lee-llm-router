@@ -9,6 +9,12 @@ and the catalog YAML in ``config/staffing/``:
    byte-identical alias workers without inventing models.
 2. Every route with ``status: unpriced`` carries a nonempty
    ``status_reason``.
+3b. Chief round 15 (``docs/staffing/chief-answers-15.md``, rulings 1-2):
+   ``reviewer_independence`` holds exactly two records keyed by the staffing
+   reviewer_ref names ``review`` and ``judge``, each copying its archived
+   labor-ladder ``roles.yaml`` independence shape verbatim, with provenance
+   citing Chief round 15 and the archived roles file, enforcement stated as
+   only-with-``--author-route`` (absent input is disclosed, not excluded).
 3. Chief round 13 (``docs/staffing/chief-answers-13.md``, ruling 3): no
    literal governed/live name equality — instead (a) every live Auto-Orch
    crew name resolves to exactly one catalog record of either kind (a
@@ -54,6 +60,9 @@ from lee_llm_router.crews import (
 from lee_llm_router.staffing import (
     Crew,
     CrewsCatalog,
+    PolicyCatalog,
+    ReviewIndependenceRule,
+    RoleFloorRecord,
     Route,
     RoutesCatalog,
     load_staffing_document,
@@ -156,6 +165,11 @@ def crews() -> CrewsCatalog:
 
 
 @pytest.fixture(scope="module")
+def policy() -> PolicyCatalog:
+    return load_staffing_document("policy", STAFFING_DIR / "policy.yaml")
+
+
+@pytest.fixture(scope="module")
 def routes_by_identity(routes: RoutesCatalog) -> dict[Identity, list[str]]:
     """Map each route identity tuple to the route ids carrying it."""
     index: dict[Identity, list[str]] = {}
@@ -216,6 +230,202 @@ def test_alias_workers_are_byte_identical_to_canonical(
         )
         assert worker_identity(alias) == worker_identity(canonical)
         assert len(routes_by_identity[worker_identity(alias)]) == 1
+
+
+# ---------------------------------------------------------------------------
+# 1b. Role floors: recorded data only (Chief round 15, D86/D87)
+# ---------------------------------------------------------------------------
+
+# Chief round 15 vocabulary mapping and the archived floors it points at
+# (copied verbatim from labor-ladder/policy/roles.yaml: every mapped archived
+# role currently has floor T2). Exactly these five records, nothing else.
+# Keys are the staffing role names (impl, plan, review, judge, prose) — the
+# names a Phase-2 floors[role] lookup must resolve; the archived labor-ladder
+# names stay in the records' provenance (see ARCHIVED_ROLE_BY_STAFFING_ROLE).
+EXPECTED_ROLE_FLOORS: dict[str, str] = {
+    "impl": "T2",
+    "plan": "T2",
+    "review": "T2",
+    "judge": "T2",
+    "prose": "T2",
+}
+
+# The Chief round 15 vocabulary mapping the records must preserve in their
+# decision/source provenance: staffing role -> archived labor-ladder role.
+ARCHIVED_ROLE_BY_STAFFING_ROLE: dict[str, str] = {
+    "impl": "implementer",
+    "plan": "planner",
+    "review": "reviewer",
+    "judge": "evaluator",
+    "prose": "author",
+}
+
+
+def test_role_floors_are_exactly_the_chief_round15_mapping(
+    policy: PolicyCatalog,
+) -> None:
+    """Chief round 15 (chief-answers-15.md, D86/D87): the role_floors array
+    holds exactly five records keyed by the staffing role names impl, plan,
+    review, judge, prose (the names a Phase-2 floors[role] lookup resolves),
+    each carrying the floor copied verbatim from the archived labor-ladder
+    tier policy (T2 for every mapped role). No extra or missing records."""
+    assert len(policy.role_floors) == 5
+    recorded = {record.role_ref: record.floor for record in policy.role_floors}
+    assert recorded == EXPECTED_ROLE_FLOORS
+
+
+def test_role_floors_recorded_not_enforced_with_nonempty_provenance(
+    policy: PolicyCatalog,
+) -> None:
+    """Every role-floor record cites Chief round 15 for the vocabulary
+    mapping and the archived labor-ladder roles file for the floor shape and
+    value, states recorded-not-enforced, and adds no unsourced effective
+    date (floors are recorded data only in Phase 0)."""
+    assert policy.role_floors, "role_floors must not be empty"
+    for record in policy.role_floors:
+        assert isinstance(record, RoleFloorRecord)
+        assert record.decision.strip(), f"{record.role_ref}: empty decision"
+        assert record.source.strip(), f"{record.role_ref}: empty source"
+        decision = record.decision
+        source = record.source
+        # Chief round 15 supplies the vocabulary mapping for every record.
+        assert "Chief round 15" in decision and "Chief round 15" in source, (
+            f"{record.role_ref}: decision/source must cite Chief round 15 "
+            "for the vocabulary mapping"
+        )
+        assert (
+            "chief-answers-15.md" in source
+        ), f"{record.role_ref}: source must cite chief-answers-15.md"
+        # The archived labor-ladder roles file supplies the floor shape/value.
+        assert (
+            "labor-ladder/policy/roles.yaml" in source
+        ), f"{record.role_ref}: source must cite the archived roles file"
+        # The archived labor-ladder role name must survive in provenance so
+        # the Chief round 15 vocabulary mapping is not lost by re-keying to
+        # the staffing role names.
+        archived = ARCHIVED_ROLE_BY_STAFFING_ROLE[record.role_ref]
+        assert archived in decision and archived in source, (
+            f"{record.role_ref}: decision/source must keep the archived "
+            f"role name {archived!r} mapping (Chief round 15 vocabulary)"
+        )
+        # Recorded data only: not enforced in Phase 0.
+        assert (
+            "not enforced" in decision
+        ), f"{record.role_ref}: decision must state recorded-not-enforced"
+        # No unsourced effective dates.
+        assert record.effective_from is None, (
+            f"{record.role_ref}: effective_from {record.effective_from!r} "
+            "is not sourced"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 1c. Reviewer independence: exactly two archived shapes (Chief round 15)
+# ---------------------------------------------------------------------------
+
+# Chief round 15 (chief-answers-15.md, rulings 1-2): reviewer independence is
+# recorded for exactly the staffing reviewer_ref names review and judge (the
+# vocabulary mapping review -> reviewer, judge -> evaluator), copying the
+# archived labor-ladder roles.yaml independence shapes verbatim. Exactly
+# these two records, nothing else; the archived role names stay in the
+# records' provenance (see ARCHIVED_INDEPENDENCE_ROLE_BY_REVIEWER_REF).
+EXPECTED_INDEPENDENCE_SHAPES: dict[str, dict[str, object]] = {
+    "review": {"not_same_worker_as": "authors", "prefer_different_family": True},
+    "judge": {"second_opinion_mode": "different-family-than-author"},
+}
+
+# The Chief round 15 vocabulary mapping the records must preserve in their
+# decision/source provenance: staffing reviewer_ref -> archived role.
+ARCHIVED_INDEPENDENCE_ROLE_BY_REVIEWER_REF: dict[str, str] = {
+    "review": "reviewer",
+    "judge": "evaluator",
+}
+
+
+def test_reviewer_independence_is_exactly_two_chief_round15_records(
+    policy: PolicyCatalog,
+) -> None:
+    """Chief round 15: the reviewer_independence array holds exactly two
+    records keyed by the staffing reviewer_ref names review and judge, each
+    carrying its archived labor-ladder independence shape verbatim and no
+    fields from any other variant (no mode mixing across the schema's
+    three-shape oneOf). No extra or missing records."""
+    rules = policy.reviewer_independence
+    assert len(rules) == 2
+    by_ref = {rule.reviewer_ref: rule for rule in rules}
+    assert set(by_ref) == {"review", "judge"}
+    for ref, shape in EXPECTED_INDEPENDENCE_SHAPES.items():
+        rule = by_ref[ref]
+        assert isinstance(rule, ReviewIndependenceRule)
+        # Verbatim archived shape: exactly the archived variant's fields.
+        assert rule.not_same_worker_as == shape.get("not_same_worker_as")
+        assert rule.prefer_different_family == shape.get("prefer_different_family")
+        assert rule.second_opinion_mode == shape.get("second_opinion_mode")
+        # The fresh-eyes variant is archived for the debugger role only; it
+        # is invented on neither record.
+        assert rule.fresh_eyes_mode is None, (
+            f"{ref}: fresh_eyes_mode {rule.fresh_eyes_mode!r} is invented "
+            "(no archived shape carries it for this reviewer)"
+        )
+
+
+def test_reviewer_independence_provenance_cites_chief_round15_and_archive(
+    policy: PolicyCatalog,
+) -> None:
+    """Every reviewer-independence record cites Chief round 15 for the
+    vocabulary mapping and the explain --author-route behavior, cites the
+    archived labor-ladder roles file for the verbatim shape, and keeps the
+    archived role name in provenance so the Chief round 15 vocabulary
+    mapping is not lost by re-keying to the staffing reviewer_ref."""
+    assert policy.reviewer_independence, "reviewer_independence must not be empty"
+    for rule in policy.reviewer_independence:
+        assert rule.decision.strip(), f"{rule.reviewer_ref}: empty decision"
+        assert rule.source.strip(), f"{rule.reviewer_ref}: empty source"
+        assert "Chief round 15" in rule.decision and "Chief round 15" in rule.source, (
+            f"{rule.reviewer_ref}: decision/source must cite Chief round 15"
+        )
+        assert (
+            "chief-answers-15.md" in rule.source
+        ), f"{rule.reviewer_ref}: source must cite chief-answers-15.md"
+        assert (
+            "labor-ladder/policy/roles.yaml" in rule.source
+        ), f"{rule.reviewer_ref}: source must cite the archived roles file"
+        archived = ARCHIVED_INDEPENDENCE_ROLE_BY_REVIEWER_REF[rule.reviewer_ref]
+        assert archived in rule.decision and archived in rule.source, (
+            f"{rule.reviewer_ref}: decision/source must keep the archived "
+            f"role name {archived!r} mapping (Chief round 15 vocabulary)"
+        )
+
+
+def test_reviewer_independence_enforcement_only_with_author_route(
+    policy: PolicyCatalog,
+) -> None:
+    """Chief round 15 ruling 2: enforcement occurs only when explain
+    receives --author-route; when the input is absent, explain discloses
+    "independence not evaluated (no --author-route)" instead of excluding
+    routes. Independence is an author/candidate comparison, never a
+    class-to-model preference (D206)."""
+    for rule in policy.reviewer_independence:
+        assert "--author-route" in rule.decision, (
+            f"{rule.reviewer_ref}: decision must state the --author-route "
+            "enforcement gate"
+        )
+        assert "not evaluated" in rule.decision, (
+            f"{rule.reviewer_ref}: decision must state the absent-input "
+            "disclosure, not a silent exclusion"
+        )
+        assert "disclos" in rule.decision, (
+            f"{rule.reviewer_ref}: decision must state that absent input is "
+            "disclosed, not excluded"
+        )
+        assert "author/candidate" in rule.decision, (
+            f"{rule.reviewer_ref}: decision must frame independence as an "
+            "author/candidate comparison"
+        )
+        assert "never a class-to-model preference" in rule.decision, (
+            f"{rule.reviewer_ref}: decision must state the independence is "
+            "never a class-to-model preference (D206)"
+        )
 
 
 # ---------------------------------------------------------------------------

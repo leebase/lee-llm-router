@@ -17,8 +17,12 @@ checks, each with a named reason string:
   ``plan``/``review``/``judge``/``prose`` -> ``planning_review``),
   never a preference. The committed ``policy.role_class`` rows (D189)
   govern stage-role names and are not re-derived here;
-* role floors — applied only when the catalog carries ``role_floors``
-  entries; the committed catalog has none, so no floor is invented;
+* role floors — not applied: the committed catalog carries ``role_floors``
+  records (Chief round 15, D86/D87), but floors are recorded data only —
+  they are not enforced in Phase 0 because the current route tiers lack
+  authority (no T1-T4 tier is assigned to any current route/model). No
+  floor check runs here, so no floor exclusion reason is ever emitted and
+  recorded floors change no route's eligibility;
 * subscription headroom veto (``availability.py``) — a subscription
   channel whose headroom is ``exhausted``, ``likely_exhausted``, or
   ``unknown`` vetoes its routes. Metered and local channels carry no
@@ -30,6 +34,19 @@ checks, each with a named reason string:
   snapshot failure status) fails closed to the committed ``NO DATA``
   badge, whose configured multiplier is 1.0. A pricing failure excludes
   the route with a named reason.
+* author-route independence (Chief round 15, packet D) — applied only when
+  an author route id is supplied *and* the role is ``review`` or
+  ``judge``: the author route itself and every candidate whose model
+  family equals the author's are excluded with the reason
+  ``independence``. The family is the route's ``family`` attribute when
+  it carries a nonempty one, else the deterministic model-vendor-prefix
+  fallback (namespaced model id: namespace before ``/``; unnamespaced:
+  leading token before the first ``-``). Independence is an
+  author/candidate comparison only, never a class-to-model preference
+  (D206). Without an author route id no ``independence`` reason is ever
+  emitted; for roles other than review/judge the check is not applicable
+  and no reason is added. An unknown author route id fails closed with a
+  named :class:`StaffingEligibilityError`.
 
 D206 (verbatim, phase0-contracts.md §Class-metadata prohibition):
 "Class metadata MUST NOT map directly to a preferred model or route. It
@@ -49,6 +66,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 from lee_llm_router.availability import (
     AvailabilitySnapshot,
@@ -63,6 +81,9 @@ from lee_llm_router.staffing.catalog import (
     TermsEntry,
     canonical_class_key,
 )
+from lee_llm_router.staffing.catalog import (
+    Route as StaffingRoute,
+)
 from lee_llm_router.staffing.terms import (
     StaffingTermsError,
     badge_multiplier,
@@ -74,6 +95,8 @@ __all__ = [
     "EligibilityRow",
     "StaffingEligibilityError",
     "evaluate_eligibility",
+    "resolve_author_route",
+    "resolve_route_family",
 ]
 
 _SUBSCRIPTION_VETO_HEALTH: frozenset[Health] = frozenset(
@@ -99,6 +122,26 @@ _CLASS_ROLE_TO_GOVERNANCE: dict[str, str] = {
     "judge": "planning_review",
     "prose": "planning_review",
 }
+
+_INDEPENDENCE_ROLES: frozenset[str] = frozenset({"review", "judge"})
+"""Roles for which author-route independence applies (Chief round 15).
+
+The vocabulary mapping is review -> reviewer, judge -> evaluator; other
+roles carry no independence shape, so the check is not applicable there.
+"""
+
+_INDEPENDENCE_REASON = "independence"
+"""Exact exclusion reason for the author-route independence check."""
+
+_ROUTE_FAMILY_SOURCE_ATTR = "route.family"
+_MODEL_FAMILY_SOURCE_PREFIX = "model_vendor_prefix"
+"""Family-resolution source labels (Chief round 15, packet D).
+
+``route.family`` is used when the route carries a nonempty ``family``
+attribute; the committed typed routes have no family field, so the
+fallback source is ``model_vendor_prefix``. No schema field or vendor
+lookup table is added — the fallback is derived from the model id only.
+"""
 
 
 class StaffingEligibilityError(LLMRouterError):
@@ -261,6 +304,64 @@ def _role_scoped_reason(
     return None
 
 
+def resolve_route_family(route: Any) -> tuple[str, str]:
+    """Resolve one route's model family and the source that produced it.
+
+    Prefers a nonempty ``route.family`` attribute when the route carries
+    one (source ``"route.family"``). The committed typed routes have no
+    family field, so the fallback is deterministic over the model id: for
+    a namespaced model id the namespace before the first ``/`` (e.g.
+    ``z-ai/glm-5.3-flash`` -> ``z-ai``); for an unnamespaced model id the
+    leading token before the first ``-`` (e.g. ``gpt-5.6-sol`` -> ``gpt``,
+    ``claude-fable-5.1`` -> ``claude``), source
+    ``"model_vendor_prefix"``. The result is an author/candidate
+    comparison key for the independence check only — never a preference,
+    ranking, choice, or ladder input (D206). No schema field or vendor
+    lookup table is added.
+
+    Args:
+        route: A route-like object with a ``model`` attribute and an
+            optional ``family`` attribute.
+
+    Returns:
+        ``(family, source)`` where ``source`` is ``"route.family"`` or
+        ``"model_vendor_prefix"``.
+    """
+    family = getattr(route, "family", None)
+    if isinstance(family, str) and family.strip():
+        return family, _ROUTE_FAMILY_SOURCE_ATTR
+    model = route.model
+    if "/" in model:
+        return model.split("/", 1)[0], _MODEL_FAMILY_SOURCE_PREFIX
+    return model.split("-", 1)[0], _MODEL_FAMILY_SOURCE_PREFIX
+
+
+def resolve_author_route(
+    catalog: StaffingCatalog, author_route_id: str
+) -> StaffingRoute:
+    """Look up the author route by exact ``route_id`` (fail closed).
+
+    Args:
+        catalog: The loaded staffing catalog.
+        author_route_id: The ``--author-route`` route id.
+
+    Returns:
+        The catalog route whose ``route_id`` equals ``author_route_id``.
+
+    Raises:
+        StaffingEligibilityError: When no catalog route carries that id —
+            independence fails closed on an unknown author route.
+    """
+    for route in catalog.routes.routes:
+        if route.route_id == author_route_id:
+            return route
+    raise StaffingEligibilityError(
+        f"author_route_id {author_route_id!r} does not match any route_id in "
+        "the routes catalog (independence fails closed on an unknown "
+        "author route)"
+    )
+
+
 def _availability_for(
     availability: AvailabilitySnapshot, channel_id: str
 ) -> ChannelHeadroom:
@@ -327,6 +428,7 @@ def evaluate_eligibility(
     language: str,
     domain_tags: tuple[str, ...] | list[str] = (),
     class_key: str | None = None,
+    author_route_id: str | None = None,
     availability: AvailabilitySnapshot,
     at_date: date | str,
     openrouter_snapshot_path: str | Path | None = None,
@@ -348,6 +450,15 @@ def evaluate_eligibility(
         class_key: Optional canonical class-key string; when given it must
             equal :func:`canonical_class_key` of the structured fields or
             :class:`StaffingEligibilityError` is raised.
+        author_route_id: Optional author route id (Chief round 15, packet
+            D). Only for the ``review``/``judge`` roles: the author route
+            itself and every candidate whose model family equals the
+            author's (see :func:`resolve_route_family`) are excluded with
+            the reason ``independence`` — an author/candidate comparison
+            only, never a class-to-model preference (D206). For other
+            roles the check is not applicable and no reason is added.
+            An unknown id fails closed with a named
+            :class:`StaffingEligibilityError`.
         availability: An already-normalised
             :class:`~lee_llm_router.availability.AvailabilitySnapshot`.
             Subscription channels with ``exhausted``/``likely_exhausted``/
@@ -374,7 +485,9 @@ def evaluate_eligibility(
     Raises:
         StaffingEligibilityError: When a class field is outside the
             committed value sets or ``class_key`` mismatches the structured
-            arguments, or when ``at_date`` is not an ISO date.
+            arguments, when ``at_date`` is not an ISO date, or when
+            ``author_route_id`` is supplied but matches no catalog
+            route_id.
     """
     _validate_class(
         catalog,
@@ -396,6 +509,14 @@ def evaluate_eligibility(
             ) from exc
     governance_class = _CLASS_ROLE_TO_GOVERNANCE[role]
     channels = _channel_index(catalog)
+
+    independence_applies = False
+    author_family: str | None = None
+    if author_route_id is not None:
+        author_route = resolve_author_route(catalog, author_route_id)
+        if role in _INDEPENDENCE_ROLES:
+            independence_applies = True
+            author_family, _author_source = resolve_route_family(author_route)
 
     rows: list[EligibilityRow] = []
     for route in catalog.routes.routes:
@@ -437,6 +558,11 @@ def evaluate_eligibility(
                     f"terms unavailable at {when.isoformat()} for channel "
                     f"'{channel.channel_id}'"
                 )
+
+        if independence_applies:
+            candidate_family, _ = resolve_route_family(route)
+            if route.route_id == author_route_id or candidate_family == author_family:
+                reasons.append(_INDEPENDENCE_REASON)
 
         pricing: EligibilityPrice | None = None
         # Per-route pricing seam: the badge is the one derived for this

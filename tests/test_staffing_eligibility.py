@@ -24,6 +24,7 @@ from lee_llm_router.staffing.catalog import (
     canonical_class_key,
     load_staffing_catalog,
 )
+from lee_llm_router.staffing.eligibility import resolve_route_family
 
 REPO_CONFIG_DIR = Path(__file__).resolve().parents[1] / "config" / "staffing"
 
@@ -36,6 +37,7 @@ MIMO_ROUTE = "opencode-opencode-go-mimo-v2-5-opencode-go"
 GLM_OPENROUTER_ROUTE = "pi-z-ai-glm-5-3-flash-openrouter"
 GEMINI_PRO_ROUTE = "agy-gemini-3-1-pro-gemini-sub"
 SOL_LOW_ROUTE = "codex-gpt-5-6-sol-low-openai-sub"
+TERRA_HIGH_ROUTE = "codex-gpt-5-6-terra-high-openai-sub"
 
 _NOW = datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)
 
@@ -148,7 +150,9 @@ def test_healthy_anthropic_keeps_fable_excluded_for_never_automatic_only(
 # ---------------------------------------------------------------------------
 
 
-def test_luna_max_excluded_with_never_automatic_reason(catalog, healthy_snapshot) -> None:
+def test_luna_max_excluded_with_never_automatic_reason(
+    catalog, healthy_snapshot
+) -> None:
     """The effort-max Luna rule (D152/D187/D204, round 10 narrowing) still
     excludes the Luna Max route under a healthy snapshot."""
     row = _by_route(_evaluate(catalog, healthy_snapshot), LUNA_MAX_ROUTE)
@@ -548,3 +552,180 @@ def test_terms_unavailable_before_first_effective_date(catalog, healthy_snapshot
 def test_non_iso_at_date_rejected(catalog, healthy_snapshot) -> None:
     with pytest.raises(StaffingEligibilityError):
         _evaluate(catalog, healthy_snapshot, at_date="not-a-date")
+
+
+# ---------------------------------------------------------------------------
+# Chief round 15 packet D: author-route independence (review/judge only)
+# ---------------------------------------------------------------------------
+
+SONNET_HIGH_ROUTE = "claude-claude-sonnet-5-high-anthropic-sub"
+DEEPSEEK_FLASH_ROUTE = "pi-deepseek-deepseek-v4-flash-openrouter"
+GLM_OPENCODE_ROUTE = "pi-glm-5-3-flash-opencode-go"
+
+
+def _catalog_route(catalog, route_id: str):
+    return next(r for r in catalog.routes.routes if r.route_id == route_id)
+
+
+def test_resolve_route_family_prefers_nonempty_route_family_attribute() -> None:
+    """A route carrying a nonempty ``family`` attribute resolves from it."""
+    from types import SimpleNamespace
+
+    route = SimpleNamespace(route_id="x", model="gpt-5.6-sol", family="openai")
+    assert resolve_route_family(route) == ("openai", "route.family")
+
+
+def test_resolve_route_family_falls_back_to_model_id_deterministically(
+    catalog,
+) -> None:
+    """Typed routes have no family: namespaced ids use the namespace before
+    '/', unnamespaced ids use the leading token before the first '-'."""
+    by_id = {r.route_id: r for r in catalog.routes.routes}
+    assert resolve_route_family(by_id[GLM_OPENROUTER_ROUTE]) == (
+        "z-ai",
+        "model_vendor_prefix",
+    )
+    assert resolve_route_family(by_id[SOL_LOW_ROUTE]) == (
+        "gpt",
+        "model_vendor_prefix",
+    )
+    assert resolve_route_family(by_id[FABLE_ROUTE]) == (
+        "claude",
+        "model_vendor_prefix",
+    )
+    assert resolve_route_family(by_id[GEMINI_PRO_ROUTE]) == (
+        "gemini",
+        "model_vendor_prefix",
+    )
+    assert resolve_route_family(by_id[DEEPSEEK_FLASH_ROUTE]) == (
+        "deepseek",
+        "model_vendor_prefix",
+    )
+    # An empty family attribute is ignored (nonempty required).
+    from types import SimpleNamespace
+
+    empty = SimpleNamespace(route_id="x", model="gpt-5.6-sol", family="  ")
+    assert resolve_route_family(empty) == ("gpt", "model_vendor_prefix")
+
+
+def test_no_author_route_never_emits_independence(catalog, healthy_snapshot) -> None:
+    """Without --author-route no route carries the independence reason."""
+    for role in ("impl", "plan", "review", "judge", "prose"):
+        rows = _evaluate(catalog, healthy_snapshot, role=role)
+        assert all("independence" not in row.reasons for row in rows)
+
+
+def test_same_author_route_excluded_with_independence_reason(
+    catalog, healthy_snapshot
+) -> None:
+    """Review with the author route supplied: the author route itself is
+    excluded with 'independence', preserving existing reason order."""
+    rows = _evaluate(
+        catalog,
+        healthy_snapshot,
+        role="review",
+        author_route_id=SOL_LOW_ROUTE,
+    )
+    sol = _by_route(rows, SOL_LOW_ROUTE)
+    assert sol.eligible is False
+    assert sol.reasons == ("independence",)
+    # Same-family candidates (gpt leading token) are excluded too.
+    assert _by_route(rows, LUNA_XHIGH_PI_ROUTE).reasons == ("independence",)
+    # Different-family routes are untouched.
+    glm = _by_route(rows, GLM_OPENROUTER_ROUTE)
+    assert glm.eligible is True
+    assert glm.reasons == ()
+    # Pricing is preserved alongside the added reason.
+    assert sol.pricing is not None
+    assert sol.pricing.multiplier == 0.25
+
+
+def test_same_family_excluded_with_independence_reason(
+    catalog, healthy_snapshot
+) -> None:
+    """Author Fable (claude family): the eligible same-family Sonnet route is
+    excluded by 'independence' alone; the author route keeps its existing
+    never_automatic reason first."""
+    rows = _evaluate(
+        catalog,
+        healthy_snapshot,
+        role="review",
+        author_route_id=FABLE_ROUTE,
+    )
+    assert _by_route(rows, FABLE_ROUTE).reasons == (
+        "never_automatic",
+        "independence",
+    )
+    sonnet = _by_route(rows, SONNET_HIGH_ROUTE)
+    assert sonnet.eligible is False
+    assert sonnet.reasons == ("independence",)
+
+
+def test_different_family_not_excluded(catalog, healthy_snapshot) -> None:
+    """A different-family candidate stays eligible under a review author."""
+    rows = _evaluate(
+        catalog,
+        healthy_snapshot,
+        role="review",
+        author_route_id=GLM_OPENROUTER_ROUTE,
+    )
+    glm = _by_route(rows, GLM_OPENROUTER_ROUTE)
+    assert glm.eligible is False
+    assert glm.reasons == ("independence",)
+    # glm-5.3-flash (unnamespaced) is family 'glm', not 'z-ai': untouched.
+    opencode_glm = _by_route(rows, GLM_OPENCODE_ROUTE)
+    assert opencode_glm.eligible is True
+    assert opencode_glm.reasons == ()
+    # deepseek-v4-pro (leading token 'deepseek') differs from z-ai: untouched.
+    deepseek_pro = _by_route(rows, "pi-deepseek-v4-pro-opencode-go")
+    assert deepseek_pro.eligible is True
+    assert deepseek_pro.reasons == ()
+
+
+def test_judge_role_applies_independence(catalog, healthy_snapshot) -> None:
+    """Judge with an author route behaves like review: same route and family
+    excluded with the exact 'independence' reason."""
+    rows = _evaluate(
+        catalog, healthy_snapshot, role="judge", author_route_id=SOL_LOW_ROUTE
+    )
+    sol = _by_route(rows, SOL_LOW_ROUTE)
+    assert sol.reasons == ("independence",)
+    assert _by_route(rows, TERRA_HIGH_ROUTE).reasons == ("independence",)
+
+
+def test_impl_role_author_route_is_not_applicable(catalog, healthy_snapshot) -> None:
+    """For impl the check is not applicable: rows are identical to the
+    baseline evaluation and the author route gains no independence reason."""
+    baseline = _evaluate(catalog, healthy_snapshot, role="impl")
+    rows = _evaluate(
+        catalog,
+        healthy_snapshot,
+        role="impl",
+        author_route_id=SOL_LOW_ROUTE,
+    )
+    assert rows == baseline
+    assert all("independence" not in row.reasons for row in rows)
+
+
+def test_unknown_author_route_fails_closed(catalog, healthy_snapshot) -> None:
+    """An author route id matching no catalog route raises a named error."""
+    with pytest.raises(StaffingEligibilityError) as excinfo:
+        _evaluate(
+            catalog,
+            healthy_snapshot,
+            role="review",
+            author_route_id="no-such-route",
+        )
+    assert "no-such-route" in str(excinfo.value)
+    assert "author_route_id" in str(excinfo.value)
+
+
+def test_prose_role_author_route_is_not_applicable(catalog, healthy_snapshot) -> None:
+    """Only review/judge carry the independence shape; prose does not."""
+    rows = _evaluate(
+        catalog,
+        healthy_snapshot,
+        role="prose",
+        author_route_id=FABLE_ROUTE,
+    )
+    assert all("independence" not in row.reasons for row in rows)
