@@ -208,3 +208,18 @@ null keys, and CLI wiring; behavior itself was reviewed as correct. Phase 1
 OpenRouter metered total is $0.329930258 plus unknown pre-P1-4a text-mode
 attempts; Luna subscription execution totals a separate $0.209281200
 list/marginal estimate.
+
+## P1-1 — Effective tier in explain
+
+| Packet | Role | Explain / selection | Excluded summary | Route | Start / end | Exit | Usage / cost | Result |
+|---|---|---|---|---|---|---:|---|---|
+| P1-1 author | impl | `catalog explain --role impl --class impl/deterministic/none/xs/python --json`; Gemini and Anthropic eligible but reserved by D209 consumption identities for live proofs; first authority-available metered rung GLM | Go likely-exhausted; never-automatic/policy exclusions; Gemini/Anthropic held for their at-most-one live proofs | `pi-z-ai-glm-5-3-flash-openrouter` | about 16:29 / about 16:39 | supervisor watchdog termination while focused tests were starting | `provider_reported`, `pi --mode json events`; input 81228, output 7525, cached 507840, reasoning 3700, total 596593; list/marginal $0.007973350 | complete scoped effective-tier projection and tests; supervisor read diff and reproduced 43 focused/1062 full passes, 1 skip, but rejected Black failure before review |
+| P1-1 formatting repair | impl | fresh same implementation explain; GLM remained first authority-available rung | same exclusions/reservations | `pi-z-ai-glm-5-3-flash-openrouter` | about 16:41 / 16:42 | 0 | `provider_reported`, `pi --mode json events`; input 4787, output 811, cached 17088, reasoning 118, total 22686; list/marginal $0.000561775 | formatting-only repair; 43 focused passed; Black/Ruff clean |
+| P1-1 review | review | `catalog explain --role review --class review/judge/none/xs/python --author-route pi-z-ai-glm-5-3-flash-openrouter --json`; Go excluded; independent DeepSeek fallback eligible | author independence; Go TOO FAST/likely-exhausted; never-automatic/policy exclusions; Gemini reserved | `pi-deepseek-deepseek-v4-flash-openrouter` | about 16:42 / about 16:45 | 0 | `provider_reported`, `pi --mode json events`; input 85834, output 11492, cached 617216, reasoning 7772, total 714542; list/marginal $0.009140712 | PASS; 0 blocking, 0 hardening, 0 future concerns |
+
+P1-1 accepted after two author attempts and one review, about 16 minutes wall
+clock. Both gate dates expose each channel's effective fee, `kind` tier label,
+and `effective_from` from the committed terms lookup; Anthropic/Gemini change
+from the 2026-09-09 $100 terms to the 2026-09-30 $20 terms. Eligibility,
+ordering, reasons, and text output remain unchanged. Phase 1 OpenRouter metered
+total is $0.347606095 plus unknown pre-P1-4a text-mode attempts.

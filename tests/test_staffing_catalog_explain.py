@@ -664,7 +664,7 @@ def test_explain_json_terms_deterministic_numerics_and_routes_fields(
         assert entry["effective_from"] == "2026-09-30"
         assert isinstance(entry["fee_usd_month"], (int, float))
         assert entry["fee_usd_month"] == 20
-        assert set(entry) == {"effective_from", "fee_usd_month"}
+        assert set(entry) == {"effective_from", "fee_usd_month", "kind"}
 
     # Deterministic: same inputs produce byte-identical selected terms.
     code, again = _explain_json_run(capsys, catalog_dir, snapshot, at="2026-10-01")
@@ -691,7 +691,108 @@ def test_explain_json_terms_preserve_unknown_literal(tmp_path, catalog_dir, caps
     assert isinstance(terms["opencode-go"]["effective_from"], str)
     # No choice/probability/ladder keys leak into the terms view.
     for entry in terms.values():
-        assert set(entry) == {"effective_from", "fee_usd_month"}
+        assert set(entry) == {"effective_from", "fee_usd_month", "kind"}
+
+
+# ---------------------------------------------------------------------------
+# P1-1: effective tier (term-kind label) in the JSON terms view
+# ---------------------------------------------------------------------------
+
+
+def test_explain_json_tier_label_reproduces_both_gate_dates(
+    tmp_path, catalog_dir, capsys
+):
+    """Gate item 1: Anthropic and Gemini differ between the two dates.
+
+    At ``--at 2026-09-15`` both subscription channels carry the 2026-09-09
+    $100/mo terms; at ``--at 2026-10-01`` both carry the 2026-09-30
+    $20/mo re-tier — selected by the committed ``terms_at`` lookup, never
+    recomputed here, and carrying the ``subscription`` tier label at both
+    dates. Eligibility, ordering, and reasons are untouched.
+    """
+    snapshot = _write_snapshot(tmp_path / "availability.json")
+    code, before = _explain_json_run(capsys, catalog_dir, snapshot, at="2026-09-15")
+    assert code == 0
+    code, after = _explain_json_run(capsys, catalog_dir, snapshot, at="2026-10-01")
+    assert code == 0
+
+    for channel in ("anthropic-sub", "gemini-sub"):
+        pre = before["terms"][channel]
+        post = after["terms"][channel]
+        assert pre == {
+            "effective_from": "2026-09-09",
+            "fee_usd_month": 100,
+            "kind": "subscription",
+        }
+        assert post == {
+            "effective_from": "2026-09-30",
+            "fee_usd_month": 20,
+            "kind": "subscription",
+        }
+        # The dated terms genuinely differ between the two gate dates.
+        assert pre != post
+
+
+def test_explain_json_tier_label_present_for_every_channel(
+    tmp_path, catalog_dir, capsys
+):
+    """All seven committed channels carry the exact selected tier label."""
+    snapshot = _write_snapshot(tmp_path / "availability.json")
+    code, payload = _explain_json_run(capsys, catalog_dir, snapshot, at="2026-09-15")
+    assert code == 0
+
+    terms = payload["terms"]
+    assert set(terms) == {
+        "openai-sub",
+        "anthropic-sub",
+        "gemini-sub",
+        "opencode-go",
+        "openrouter",
+        "opencode-zen",
+        "local",
+    }
+    expected_kind = {
+        "openai-sub": "subscription",
+        "anthropic-sub": "subscription",
+        "gemini-sub": "subscription",
+        "opencode-go": "subscription",
+        "openrouter": "metered",
+        "opencode-zen": "metered",
+        "local": "local",
+    }
+    for channel, tier in expected_kind.items():
+        entry = terms[channel]
+        assert entry["kind"] == tier
+        assert set(entry) == {"effective_from", "fee_usd_month", "kind"}
+    # Truthful unknowns: the unknown fee literal survives alongside the label.
+    assert terms["opencode-go"]["fee_usd_month"] == "unknown"
+    assert terms["local"]["fee_usd_month"] == "unknown"
+
+
+def test_explain_text_output_unchanged_by_tier_label(tmp_path, catalog_dir, capsys):
+    """Text output compatibility: the tier label is JSON-only disclosure."""
+    snapshot = _write_snapshot(tmp_path / "availability.json")
+    code, captured = _run_explain(
+        capsys,
+        "--role",
+        "impl",
+        "--class",
+        IMPL_CLASS,
+        "--at",
+        "2026-09-15",
+        "--availability-file",
+        str(snapshot),
+        "--catalog-dir",
+        str(catalog_dir),
+    )
+    assert code == 0
+
+    lines = captured.out.splitlines()
+    assert "selected terms at 2026-09-15" in lines
+    assert "  anthropic-sub: effective_from 2026-09-09, fee_usd_month 100" in lines
+    assert "  gemini-sub: effective_from 2026-09-09, fee_usd_month 100" in lines
+    # No kind/tier text leaked into the per-channel lines or elsewhere.
+    assert not any("kind" in line or "tier" in line.lower() for line in lines)
 
 
 # ---------------------------------------------------------------------------
@@ -1128,18 +1229,14 @@ def test_explain_author_route_family_override_reaches_explain(
     snapshot = _write_snapshot(tmp_path / "availability.json")
 
     # Baseline (no override): prefix fallback excludes every claude-* model.
-    baseline = _review_author_json(
-        capsys, catalog_dir, snapshot, SONNET_HIGH_ROUTE
-    )
+    baseline = _review_author_json(capsys, catalog_dir, snapshot, SONNET_HIGH_ROUTE)
     assert baseline["independence"]["family_source"] == "model_vendor_prefix"
     assert baseline["independence"]["author_family"] == "claude"
     assert "independence" in _by_route(baseline, FABLE_ROUTE)["reasons"]
 
     # Override: the explicit family reaches the CLI output and the exclusion.
     _set_route_family(catalog_dir, SONNET_HIGH_ROUTE, "scribble")
-    payload = _review_author_json(
-        capsys, catalog_dir, snapshot, SONNET_HIGH_ROUTE
-    )
+    payload = _review_author_json(capsys, catalog_dir, snapshot, SONNET_HIGH_ROUTE)
     assert payload["independence"]["author_route"] == SONNET_HIGH_ROUTE
     assert payload["independence"]["author_family"] == "scribble"
     assert payload["independence"]["family_source"] == "route.family"
@@ -1197,9 +1294,7 @@ def test_explain_candidate_family_override_changes_exclusion(
     snapshot = _write_snapshot(tmp_path / "availability.json")
 
     # Baseline: GLM is eligible for review with empty reasons.
-    baseline = _review_author_json(
-        capsys, catalog_dir, snapshot, FABLE_ROUTE
-    )
+    baseline = _review_author_json(capsys, catalog_dir, snapshot, FABLE_ROUTE)
     assert baseline["independence"]["family_source"] == "model_vendor_prefix"
     glm_baseline = _by_route(baseline, GLM_OPENROUTER_ROUTE)
     assert glm_baseline["eligible"] is True
@@ -1207,9 +1302,7 @@ def test_explain_candidate_family_override_changes_exclusion(
 
     # Override the candidate family; exclusion follows the explicit value.
     _set_route_family(catalog_dir, GLM_OPENROUTER_ROUTE, "claude")
-    payload = _review_author_json(
-        capsys, catalog_dir, snapshot, FABLE_ROUTE
-    )
+    payload = _review_author_json(capsys, catalog_dir, snapshot, FABLE_ROUTE)
     assert payload["independence"]["author_family"] == "claude"
     assert payload["independence"]["family_source"] == "model_vendor_prefix"
 

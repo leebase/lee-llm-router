@@ -1490,11 +1490,12 @@ def _selected_terms_view(
 
     Display-only projection of :func:`lee_llm_router.staffing.terms.terms_at`
     — no date selection is reimplemented here: each channel's selected
-    ``effective_from`` and ``fee_usd_month`` are copied verbatim, with the
-    ``"unknown"`` literal shown without coercion. Returns ``None`` when the
-    committed lookup fails closed for the requested date (e.g. no entry yet);
-    no value is ever invented. Channel order follows the committed channels
-    document, so the view is deterministic.
+    ``effective_from``, ``fee_usd_month``, and term-kind tier label
+    (``kind``, the TermsEntry field, verbatim) are copied unchanged, with
+    the ``"unknown"`` literal shown without coercion. Returns ``None``
+    when the committed lookup fails closed for the requested date (e.g. no
+    entry yet); no value is ever invented. Channel order follows the
+    committed channels document, so the view is deterministic.
     """
     from lee_llm_router.staffing import StaffingTermsError, terms_at
 
@@ -1506,6 +1507,7 @@ def _selected_terms_view(
         channel: {
             "effective_from": entry.effective_from,
             "fee_usd_month": entry.fee_usd_month,
+            "kind": entry.kind,
         }
         for channel, entry in selected.items()
     }
@@ -1533,7 +1535,9 @@ def _run_catalog_explain(args: argparse.Namespace) -> int:
     The report also projects the dated terms the committed ``terms_at``
     lookup selects for the requested date (display only, in both text and
     ``--json`` output) so the selected ``effective_from``/``fee_usd_month``
-    terms are observable; it performs no choice, probability, or ladder.
+    terms and the per-channel term-kind tier label (``kind``, JSON terms
+    view only) are observable; it performs no choice, probability, or
+    ladder.
     Per Chief round 15 (D86/D87) it discloses exactly once per run — as the
     ``floors recorded, not enforced`` text line and as the top-level
     ``floors_disclosure`` JSON value — that the catalog's ``role_floors``
