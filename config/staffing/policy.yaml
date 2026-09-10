@@ -1,0 +1,140 @@
+# Staffing policy catalog — P0-3i.
+#
+# Shape authority: config/staffing/schema/policy.schema.json (P0-1) and
+# docs/staffing/phase0-contracts.md §Policy. Every entry below cites its
+# governing decision id in `decision`/`source`; nothing here is invented.
+#
+# Encoded entries are exactly the committed policy rules:
+#   never_automatic — Fable 5.1, Opus 5, Luna Max (D152, D187, D204)
+#   role_scoped     — Gemini 3.1 Pro, planner/reviewer only (D188)
+#   role_class      — the D189-confirmed stage/role → governance-class mapping
+# The three-entry never_automatic set is the contract set locked by D204
+# item 2 ("Never-automatic set unchanged (Fable 5.1, Opus 5, Luna Max)"); it
+# does not exhaust crews.py's legacy NEVER_AUTOMATIC_MODELS constant, which
+# is pre-existing code data containing four live ids (claude-fable-5-1,
+# claude-fable-5, gpt-5.6-luna, claude-opus-5) — the extra claude-fable-5 id
+# has no contract-named entry here. Model refs are the live ids already
+# committed in src/lee_llm_router/crews.py (NEVER_AUTOMATIC_MODELS,
+# ROLE_SCOPED_MODELS) and docs/staffing/catalog.md (policy-constant home
+# table): Fable 5.1 -> claude-fable-5-1, Opus 5 -> claude-opus-5, Luna Max ->
+# gpt-5.6-luna, Gemini 3.1 Pro -> gemini-3.1-pro. All rules are model-level;
+# the schema's optional per-effort `effort` narrowing is omitted because no
+# cited decision scopes any of these rules to an effort level.
+#
+# role_floors, reviewer_independence, and spend_caps are empty arrays: the
+# contracts (phase0-contracts.md §Policy) assign role floors and
+# reviewer-independence shapes to the archived labor-ladder roles policy and
+# require spend caps to cite their governing decision; no such decision is
+# cited in this packet, so nothing is invented here.
+#
+# D206 (decisions.md 2026-09-09, verbatim contract in phase0-contracts.md):
+# "Class metadata MUST NOT map directly to a preferred model or route. It may
+# only: 1. join production attempts to comparable benchmark evidence; and
+# 2. determine whether an unevidenced cheap trial is permitted." The
+# `role_class` entries below are role-to-class governance only; nothing in
+# this file maps a class to a model or route.
+
+never_automatic:
+  - model_ref: claude-fable-5-1
+    decision: >-
+      Fable 5.1 must never be used in an automatic selection: a resolver may
+      reach it only when a crew names the model explicitly (never automatic).
+    source: >-
+      decisions.md D152 (model-routing ladder for the escalation cascade);
+      D187 (D152-D158 ladder rules bind the crew-aware resolver); D204 item 2
+      (never-automatic set unchanged: Fable 5.1, Opus 5, Luna Max)
+  - model_ref: claude-opus-5
+    decision: >-
+      Opus 5 must never be used in an automatic selection: a resolver may
+      reach it only when a crew names the model explicitly (never automatic).
+    source: >-
+      decisions.md D152 (model-routing ladder for the escalation cascade);
+      D187 (D152-D158 ladder rules bind the crew-aware resolver); D204 item 2
+      (never-automatic set unchanged: Fable 5.1, Opus 5, Luna Max)
+  - model_ref: gpt-5.6-luna
+    decision: >-
+      Luna Max must never be used in an automatic selection: a resolver may
+      reach it only when a crew names the model explicitly (never automatic).
+    source: >-
+      decisions.md D152 (model-routing ladder for the escalation cascade);
+      D187 (D152-D158 ladder rules bind the crew-aware resolver); D204 item 2
+      (never-automatic set unchanged: Fable 5.1, Opus 5, Luna Max)
+
+role_scoped:
+  - model_ref: gemini-3.1-pro
+    allowed_role_classes:
+      - planning_review
+    denied_role_classes:
+      - coding
+    decision: >-
+      Gemini 3.1 Pro is role-scoped eligible: for coding/implementation roles
+      it is never chosen automatically (strict or flex) and bind to it is
+      refused; for planner/reviewer roles it is eligible in strict, flex, and
+      bind, subject to the same headroom and never-automatic rules as any
+      other worker. Direction is model-to-roles only; this is not a
+      class-to-model preference (D206).
+    source: >-
+      decisions.md D188 (amends D152/D153/D187; D189 confirms the mapping
+      unchanged)
+
+role_class:
+  - role_ref: author
+    role_class: coding
+    decision: >-
+      The author role is governed as the coding role class (role-to-class
+      governance only; never a class-to-model or class-to-route preference,
+      D206).
+    source: decisions.md D189 (D188 stage mapping confirmed unchanged)
+  - role_ref: primary
+    role_class: coding
+    decision: >-
+      The primary role is governed as the coding role class (role-to-class
+      governance only; never a class-to-model or class-to-route preference,
+      D206).
+    source: decisions.md D189 (D188 stage mapping confirmed unchanged)
+  - role_ref: envision
+    role_class: planning_review
+    decision: >-
+      The envision stage role is governed as the planning_review role class
+      (role-to-class governance only; never a class-to-model or
+      class-to-route preference, D206).
+    source: decisions.md D189 (D188 stage mapping confirmed unchanged)
+  - role_ref: ideate
+    role_class: planning_review
+    decision: >-
+      The ideate stage role is governed as the planning_review role class
+      (role-to-class governance only; never a class-to-model or
+      class-to-route preference, D206).
+    source: decisions.md D189 (D188 stage mapping confirmed unchanged)
+  - role_ref: reconsider
+    role_class: planning_review
+    decision: >-
+      The reconsider stage role is governed as the planning_review role class
+      (role-to-class governance only; never a class-to-model or
+      class-to-route preference, D206).
+    source: decisions.md D189 (D188 stage mapping confirmed unchanged)
+  - role_ref: score
+    role_class: planning_review
+    decision: >-
+      The score stage role is governed as the planning_review role class
+      (role-to-class governance only; never a class-to-model or
+      class-to-route preference, D206).
+    source: decisions.md D189 (D188 stage mapping confirmed unchanged)
+  - role_ref: reviewer
+    role_class: planning_review
+    decision: >-
+      The reviewer role is governed as the planning_review role class
+      (role-to-class governance only; never a class-to-model or
+      class-to-route preference, D206).
+    source: decisions.md D189 (D188 stage mapping confirmed unchanged)
+  - role_ref: judge
+    role_class: planning_review
+    decision: >-
+      The judge role is governed as the planning_review role class
+      (role-to-class governance only; never a class-to-model or
+      class-to-route preference, D206).
+    source: decisions.md D189 (D188 stage mapping confirmed unchanged)
+
+role_floors: []
+reviewer_independence: []
+spend_caps: []

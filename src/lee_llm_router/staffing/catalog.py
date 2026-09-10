@@ -47,6 +47,7 @@ __all__ = [
     "ClassesCatalog",
     "Crew",
     "CrewsCatalog",
+    "CrewSupervisor",
     "DenyPredicate",
     "FeeEntry",
     "NeverAutomaticRule",
@@ -125,7 +126,13 @@ class StaffingCatalogError(LLMRouterError):
 
 @dataclass(frozen=True)
 class Route:
-    """One dispatch route: identity tuple (model, effort, harness, channel)."""
+    """One dispatch route: identity tuple (model, effort, harness, channel).
+
+    ``status`` is the schema-enforced lifecycle value (``active``,
+    ``unpriced``, or ``retired``); ``status_reason`` is optional here and
+    conditionally required by the schema only when ``status`` is
+    ``unpriced``.
+    """
 
     route_id: str
     model: str
@@ -134,6 +141,8 @@ class Route:
     channel: str
     dispatch_template: str
     usage_capture: str
+    status: str
+    status_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -303,14 +312,53 @@ class ClassesCatalog:
 
 
 @dataclass(frozen=True)
+class CrewSupervisor:
+    """Governed-crew supervisor identity (Chief round 9).
+
+    The schema fixes this object to exactly ``{kind: engine,
+    owner: auto-orch}``: the supervisor is the Auto-Orch loop plus the
+    agent-orch engine, never a model route. Shape only; no decision logic.
+    """
+
+    kind: str
+    owner: str
+
+
+@dataclass(frozen=True)
 class Crew:
+    """One saved staffing block, preserving every schema-valid field.
+
+    Chief round 9 gives ``crew`` exactly three conditional shapes, all
+    discriminated by the required ``kind``:
+
+    * ``interactive`` (named): ``supervisor_route``, ``worker_routes``,
+      ``reviewer_route``, ``escalation_ladder`` are all set.
+    * ``governed``: ``source``, ``crew_name``, typed ``supervisor``,
+      ``worker_routes``, and ``escalation="not-recorded"``; never a
+      supervisor route, reviewer route, or escalation ladder.
+    * the reserved ``auto`` placeholder: ``kind="interactive"``,
+      ``computed=True``, ``authority="policy"``, with every route-bearing
+      and governed-only field unset.
+
+    Each optional field is ``None`` exactly when the schema forbids or
+    omits it for that shape, so loading preserves every field of each
+    schema-valid shape without interpreting it. Shape only; no decision
+    logic and no resolution of route references.
+    """
+
     crew_id: str
-    supervisor_route: str
-    worker_routes: Mapping[str, tuple[str, ...]]
-    reviewer_route: str
-    escalation_ladder: tuple[str, ...]
+    kind: str
     authority: str
     evidence_ref: str
+    supervisor_route: str | None = None
+    worker_routes: Mapping[str, tuple[str, ...]] | None = None
+    reviewer_route: str | None = None
+    escalation_ladder: tuple[str, ...] | None = None
+    source: str | None = None
+    crew_name: str | None = None
+    supervisor: CrewSupervisor | None = None
+    escalation: str | None = None
+    computed: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -474,6 +522,8 @@ def _convert(value: Any, hint: Any, path: str) -> Any:
         for arg in non_none:
             if dataclasses.is_dataclass(arg) and isinstance(value, Mapping):
                 return _build(arg, value, path)
+        if len(non_none) == 1:
+            return _convert(value, non_none[0], path)
         return value
     if dataclasses.is_dataclass(hint) and isinstance(hint, type):
         return _build(hint, value, path)

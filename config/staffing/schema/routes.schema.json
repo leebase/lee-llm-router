@@ -21,7 +21,7 @@
     "route": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["route_id", "model", "effort", "harness", "channel", "dispatch_template", "usage_capture"],
+      "required": ["route_id", "model", "effort", "harness", "channel", "dispatch_template", "usage_capture", "status"],
       "properties": {
         "route_id": {
           "description": "Stable string identifier for this route.",
@@ -52,8 +52,28 @@
           "description": "Exactly one usage capture mechanism.",
           "type": "string",
           "enum": ["native_json", "stream_events", "worker_written", "none"]
+        },
+        "status": {
+          "description": "Lifecycle status of this route: active (dispatchable), unpriced (not yet evaluated for cost), or retired (no longer dispatched).",
+          "type": "string",
+          "enum": ["active", "unpriced", "retired"]
+        },
+        "status_reason": {
+          "description": "Sourced explanation required only when status is unpriced; must contain at least one non-whitespace character. Optional for active and retired routes, whose status is self-explanatory.",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "status": { "const": "unpriced" } },
+            "required": ["status"]
+          },
+          "then": { "required": ["status_reason"] }
+        }
+      ]
     }
   }
 }

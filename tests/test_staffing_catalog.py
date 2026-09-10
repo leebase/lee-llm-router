@@ -6,6 +6,7 @@ not-yet-authored live catalog YAML. No provider prompts are involved.
 
 from __future__ import annotations
 
+import dataclasses
 import re
 from pathlib import Path
 
@@ -32,6 +33,7 @@ from lee_llm_router.staffing import (
     load_staffing_document,
     validate_class_block,
 )
+from lee_llm_router.staffing.catalog import CrewSupervisor
 
 # ---------------------------------------------------------------------------
 # Handwritten valid fixture documents (minimal but schema-valid)
@@ -49,6 +51,7 @@ def routes_doc() -> dict:
                 "channel": "chan-sub-a",
                 "dispatch_template": "dispatch {prompt}",
                 "usage_capture": "native_json",
+                "status": "active",
             },
             {
                 "route_id": "route-local-fallback",
@@ -58,6 +61,7 @@ def routes_doc() -> dict:
                 "channel": "chan-local",
                 "dispatch_template": "dispatch {prompt}",
                 "usage_capture": "none",
+                "status": "active",
             },
         ]
     }
@@ -248,10 +252,16 @@ def classes_doc() -> dict:
 
 
 def crews_doc() -> dict:
+    """Shared two-crew fixture: one named interactive + the auto placeholder.
+
+    Governed-crew coverage lives in ``crews_doc_with_governed()`` so the
+    shared document count stays at two (tests/test_doctor.py depends on it).
+    """
     return {
         "crews": [
             {
                 "crew_id": "night-crew",
+                "kind": "interactive",
                 "supervisor_route": "route-openrouter-high",
                 "worker_routes": {
                     "impl": ["route-openrouter-high", "route-local-fallback"],
@@ -264,15 +274,40 @@ def crews_doc() -> dict:
             },
             {
                 "crew_id": "auto",
-                "supervisor_route": "route-openrouter-high",
-                "worker_routes": {"impl": ["route-local-fallback"]},
-                "reviewer_route": "route-openrouter-high",
-                "escalation_ladder": ["route-local-fallback"],
+                "kind": "interactive",
+                "computed": True,
                 "authority": "policy",
                 "evidence_ref": "computed placeholder",
             },
         ]
     }
+
+
+def crews_doc_with_governed() -> dict:
+    """Test-local crews doc: shared fixture plus one governed record at [1].
+
+    Never used for the shared ``crews_doc()`` count; governs nothing.
+    """
+    doc = crews_doc()
+    doc["crews"].insert(
+        1,
+        {
+            "crew_id": "orch-crew",
+            "kind": "governed",
+            "source": "auto-orch/crews.yaml",
+            "crew_name": "auto-orch-default",
+            "supervisor": {"kind": "engine", "owner": "auto-orch"},
+            "worker_routes": {
+                "primary": ["route-openrouter-high"],
+                "reviewer": ["route-local-fallback"],
+                "judge": ["route-local-fallback"],
+            },
+            "escalation": "not-recorded",
+            "authority": "lee",
+            "evidence_ref": "governed fixture evidence",
+        },
+    )
+    return doc
 
 
 _DOC_BUILDERS = {
@@ -337,7 +372,11 @@ def test_routes_document_types(catalog_dir: Path) -> None:
     assert first.route_id == "route-openrouter-high"
     assert first.effort == "high"
     assert first.usage_capture == "native_json"
+    assert first.status == "active"
+    assert first.status_reason is None
     assert routes.routes[1].effort is None
+    assert routes.routes[1].status == "active"
+    assert routes.routes[1].status_reason is None
 
 
 def test_channels_document_types(catalog_dir: Path) -> None:
@@ -403,17 +442,132 @@ def test_classes_document_types(catalog_dir: Path) -> None:
 def test_crews_document_types(catalog_dir: Path) -> None:
     crews = load_staffing_catalog(catalog_dir).crews
     assert isinstance(crews.crews, tuple)
-    first = crews.crews[0]
-    assert isinstance(first, Crew)
-    assert first.crew_id == "night-crew"
-    assert first.authority == "chief"
-    assert first.worker_routes["impl"] == (
+    assert all(isinstance(crew, Crew) for crew in crews.crews)
+
+
+def test_interactive_crew_fields_preserved(catalog_dir: Path) -> None:
+    crews = load_staffing_catalog(catalog_dir).crews
+    crew = crews.crews[0]
+    assert isinstance(crew, Crew)
+    assert crew.crew_id == "night-crew"
+    assert crew.kind == "interactive"
+    assert crew.authority == "chief"
+    assert crew.evidence_ref == "scratch fixture evidence"
+    assert crew.supervisor_route == "route-openrouter-high"
+    assert crew.worker_routes == {
+        "impl": ("route-openrouter-high", "route-local-fallback"),
+        "plan": ("route-local-fallback",),
+    }
+    assert crew.reviewer_route == "route-openrouter-high"
+    assert crew.escalation_ladder == (
         "route-openrouter-high",
         "route-local-fallback",
     )
-    assert first.escalation_ladder == ("route-openrouter-high", "route-local-fallback")
-    assert crews.crews[1].authority == "policy"
-    assert crews.crews[1].crew_id == "auto"
+    assert crew.source is None
+    assert crew.crew_name is None
+    assert crew.supervisor is None
+    assert crew.escalation is None
+    assert crew.computed is None
+
+
+def test_governed_crew_fields_preserved(tmp_path: Path) -> None:
+    write_docs(tmp_path, {name: builder() for name, builder in _DOC_BUILDERS.items()})
+    (tmp_path / "crews.yaml").write_text(
+        yaml.safe_dump(crews_doc_with_governed()), encoding="utf-8"
+    )
+    crews = load_staffing_catalog(tmp_path).crews
+    crew = crews.crews[1]
+    assert isinstance(crew, Crew)
+    assert crew.crew_id == "orch-crew"
+    assert crew.kind == "governed"
+    assert crew.authority == "lee"
+    assert crew.evidence_ref == "governed fixture evidence"
+    assert crew.source == "auto-orch/crews.yaml"
+    assert crew.crew_name == "auto-orch-default"
+    assert crew.supervisor == CrewSupervisor(kind="engine", owner="auto-orch")
+    assert crew.worker_routes == {
+        "primary": ("route-openrouter-high",),
+        "reviewer": ("route-local-fallback",),
+        "judge": ("route-local-fallback",),
+    }
+    assert crew.escalation == "not-recorded"
+    assert crew.supervisor_route is None
+    assert crew.reviewer_route is None
+    assert crew.escalation_ladder is None
+    assert crew.computed is None
+
+
+def test_auto_placeholder_crew_fields_preserved(catalog_dir: Path) -> None:
+    crews = load_staffing_catalog(catalog_dir).crews
+    crew = crews.crews[1]
+    assert isinstance(crew, Crew)
+    assert crew.crew_id == "auto"
+    assert crew.kind == "interactive"
+    assert crew.authority == "policy"
+    assert crew.evidence_ref == "computed placeholder"
+    assert crew.computed is True
+    assert crew.supervisor_route is None
+    assert crew.worker_routes is None
+    assert crew.reviewer_route is None
+    assert crew.escalation_ladder is None
+    assert crew.source is None
+    assert crew.crew_name is None
+    assert crew.supervisor is None
+    assert crew.escalation is None
+
+
+def test_crew_typed_objects_are_frozen(tmp_path: Path) -> None:
+    write_docs(tmp_path, {name: builder() for name, builder in _DOC_BUILDERS.items()})
+    (tmp_path / "crews.yaml").write_text(
+        yaml.safe_dump(crews_doc_with_governed()), encoding="utf-8"
+    )
+    crews = load_staffing_catalog(tmp_path).crews
+    crew = crews.crews[0]
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        crew.crew_id = "x"  # type: ignore[misc]
+    supervisor = crews.crews[1].supervisor
+    assert supervisor is not None
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        supervisor.owner = "x"  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Route lifecycle status (typed loading + schema-conditional status_reason)
+# ---------------------------------------------------------------------------
+
+
+def test_unpriced_route_with_reason_preserved(tmp_path: Path) -> None:
+    doc = routes_doc()
+    doc["routes"][0]["status"] = "unpriced"
+    doc["routes"][0]["status_reason"] = "awaiting current fee quote"
+    write_docs(tmp_path, {"routes": doc})
+    routes = load_staffing_document("routes", tmp_path / "routes.yaml")
+    first = routes.routes[0]
+    assert first.status == "unpriced"
+    assert first.status_reason == "awaiting current fee quote"
+
+
+def test_unpriced_route_without_reason_rejected_by_schema(tmp_path: Path) -> None:
+    doc = routes_doc()
+    doc["routes"][0]["status"] = "unpriced"
+    write_docs(tmp_path, {"routes": doc})
+    with pytest.raises(StaffingCatalogError) as excinfo:
+        load_staffing_document("routes", tmp_path / "routes.yaml")
+    assert excinfo.value.document == "routes"
+    assert excinfo.value.failure_type == FailureType.CONTRACT_VIOLATION
+    assert "status_reason" in str(excinfo.value)
+    assert excinfo.value.path == "$.routes[0]"
+
+
+def test_active_route_with_reason_accepted_and_preserved(tmp_path: Path) -> None:
+    doc = routes_doc()
+    doc["routes"][0]["status"] = "active"
+    doc["routes"][0]["status_reason"] = "kept for audit trail"
+    write_docs(tmp_path, {"routes": doc})
+    routes = load_staffing_document("routes", tmp_path / "routes.yaml")
+    first = routes.routes[0]
+    assert first.status == "active"
+    assert first.status_reason == "kept for audit trail"
 
 
 # ---------------------------------------------------------------------------
@@ -457,6 +611,50 @@ def test_unknown_nested_field_rejected(
     assert excinfo.value.document == name
     assert excinfo.value.path == f"{nested_path}.bogus_nested"
     assert "bogus_nested" in str(excinfo.value)
+
+
+def test_governed_crew_with_supervisor_route_rejected_by_schema(
+    tmp_path: Path,
+) -> None:
+    doc = crews_doc_with_governed()
+    doc["crews"][1]["supervisor_route"] = "route-openrouter-high"
+    write_docs(tmp_path, {name: builder() for name, builder in _DOC_BUILDERS.items()})
+    (tmp_path / "crews.yaml").write_text(yaml.safe_dump(doc), encoding="utf-8")
+    with pytest.raises(StaffingCatalogError) as excinfo:
+        load_staffing_catalog(tmp_path)
+    assert excinfo.value.document == "crews"
+    assert "False schema does not allow" in str(excinfo.value)
+    assert excinfo.value.path == "$.crews[1]"
+    assert excinfo.value.failure_type == FailureType.CONTRACT_VIOLATION
+
+
+def test_interactive_named_crew_missing_supervisor_route_rejected_by_schema(
+    tmp_path: Path,
+) -> None:
+    doc = crews_doc()
+    del doc["crews"][0]["supervisor_route"]
+    write_docs(tmp_path, {name: builder() for name, builder in _DOC_BUILDERS.items()})
+    (tmp_path / "crews.yaml").write_text(yaml.safe_dump(doc), encoding="utf-8")
+    with pytest.raises(StaffingCatalogError) as excinfo:
+        load_staffing_catalog(tmp_path)
+    assert excinfo.value.document == "crews"
+    assert "supervisor_route" in str(excinfo.value)
+    assert excinfo.value.failure_type == FailureType.CONTRACT_VIOLATION
+
+
+def test_auto_placeholder_with_worker_routes_rejected_by_schema(
+    tmp_path: Path,
+) -> None:
+    doc = crews_doc_with_governed()
+    doc["crews"][2]["worker_routes"] = {"impl": ["route-local-fallback"]}
+    write_docs(tmp_path, {name: builder() for name, builder in _DOC_BUILDERS.items()})
+    (tmp_path / "crews.yaml").write_text(yaml.safe_dump(doc), encoding="utf-8")
+    with pytest.raises(StaffingCatalogError) as excinfo:
+        load_staffing_catalog(tmp_path)
+    assert excinfo.value.document == "crews"
+    assert "False schema does not allow" in str(excinfo.value)
+    assert excinfo.value.path == "$.crews[2]"
+    assert excinfo.value.failure_type == FailureType.CONTRACT_VIOLATION
 
 
 def test_unknown_field_inside_crew_worker_routes_rejected(tmp_path: Path) -> None:

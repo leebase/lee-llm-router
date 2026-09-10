@@ -74,11 +74,17 @@ High review finding.
 
 ## Named crew
 
-A named crew is a saved staffing block with a supervisor route, worker routes
-per role, reviewer route, escalation ladder, `authority` (`lee`, `chief`, or
-`policy`), and `evidence_ref`. `lee` pins or overrides; `chief` chooses under
-delegated managerial authority; `policy` is reserved for the computed `auto`
-crew placeholder and means the staffing system's choice (D206).
+A named crew has `kind: interactive | governed`. Interactive crews carry a
+supervisor route, worker routes per role, reviewer route, and nonempty
+escalation ladder. Governed crews reference `source: auto-orch/crews.yaml` and
+`crew_name`, carry `supervisor: {kind: engine, owner: auto-orch}`, map the
+recorded stages plus governed primary/reviewer/judge when the live fields
+resolve to exactly one full route without inference, and record
+`escalation: not-recorded`; no supervisor route or identity ladder is
+invented. The `auto` placeholder is interactive with `authority: policy` and
+routes marked `computed`. `lee` pins or overrides and `chief` chooses under
+delegated managerial authority (Chief round 9, D86/D87; attempt-record
+supervisor contract unchanged).
 
 ## Terms and prices
 
