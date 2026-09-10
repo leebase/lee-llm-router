@@ -224,6 +224,18 @@ accepts a worker artifact only with explicit provider-copy provenance. Phase 1
 OpenRouter metered total is $0.382932125 plus unknown pre-P1-4a text-mode
 attempts; Luna subscription execution totals $0.363461550 estimated.
 
+## P1-4f — OMP usage capture
+
+| Packet | Role | Explain / selection | Excluded summary | Route | Start / end | Exit | Usage / cost | Result |
+|---|---|---|---|---|---|---:|---|---|
+| P1-4f author | impl | explained `impl/deterministic/none/s/python`; first authority-available GLM | Go likely-exhausted; proof subscriptions reserved; policy exclusions | `pi-z-ai-glm-5-3-flash-openrouter` | about 17:53 / 17:59 | 0 | provider-reported; input 184306, output 21966, cached 1175040, reasoning 7677, total 1381312; $0.019314450 | governed JSON parser; 35 focused and supervisor 1169 full passed/1 skip; Black/Ruff clean |
+| P1-4f review | review | explained with GLM author; Go excluded; independent DeepSeek eligible | author independence; Go likely-exhausted; Gemini reserved | `pi-deepseek-deepseek-v4-flash-openrouter` | about 18:00 / 18:03 | 0 | provider-reported; input 80745, output 10128, cached 671232, reasoning 5401, total 762105; $0.008484084 | PASS; 0 blocking, 4 hardening |
+
+P1-4f accepted in one author attempt and one review. OMP's opt-in JSON mode
+now captures assistant terminal usage while excluding repeated agent-end state;
+missing evidence stays unavailable. Phase 1 OpenRouter metered total is
+$0.410730659 plus unknown pre-P1-4a text-mode attempts.
+
 ## P1-1 — Effective tier in explain
 
 | Packet | Role | Explain / selection | Excluded summary | Route | Start / end | Exit | Usage / cost | Result |
