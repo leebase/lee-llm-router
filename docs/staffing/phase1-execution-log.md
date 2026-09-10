@@ -78,3 +78,18 @@ completions, one review repair) and two reviews, about 28 minutes wall clock.
 Supervisor read the diff and reproduced 118 focused passes, full suite 941
 passed/1 skipped, Black/Ruff clean. Phase 1 provider-reported metered total is
 now $0.048778894 plus the explicitly unknown text-mode attempts before P1-4a.
+
+## P1-4b — Codex usage capture
+
+| Packet | Role | Explain / selection | Excluded summary | Route | Start / end | Exit | Usage / cost | Result |
+|---|---|---|---|---|---|---:|---|---|
+| P1-4b author | impl | `catalog explain --role impl --class impl/deterministic/none/s/python --json`; governed first rung eligible | channel likely-exhausted 7; never-automatic 4; Gemini Pro role-scoped 1; unpriced/pricing unavailable 1 (overlap) | `pi-z-ai-glm-5-3-flash-openrouter` | 12:36 / 12:43 | 0 | `provider_reported`, `pi --mode json events`; input 72128, output 32196, cached 1820352, reasoning 19744, total 1924676; list/marginal $0.013458600 | Codex JSONL parser + opt-in governed JSON flag; 39 focused, 980 full passed/1 skipped; Black/Ruff clean |
+| P1-4b review | review | `catalog explain --role review --class review/judge/none/s/python --author-route pi-z-ai-glm-5-3-flash-openrouter --json`; independent fallback eligible | author family independence; Go likely-exhausted; never-automatic and remaining exclusions | `pi-deepseek-deepseek-v4-flash-openrouter` | 12:43 / 12:48 | 0 | `provider_reported`, `pi --mode json events`; input 105882, output 18904, cached 360192, reasoning 14484, total 484978; list/marginal $0.012069960 | PASS; 0 blocking; 3 hardening, 1 future concern |
+
+P1-4b accepted in one author attempt and one review, about 12 minutes wall
+clock. Supervisor inspected the complete diff and reproduced 80 focused/relevant
+passes plus Black/Ruff clean. Non-blocking: untagged JSON objects are skipped,
+one helper name is terse, and parser assembly is indirect. Future: P1-5 must
+set `json_flag: --json` and call the standalone capture path deliberately.
+Phase 1 provider-reported metered total is $0.074307454 plus unknown pre-P1-4a
+text-mode attempts.

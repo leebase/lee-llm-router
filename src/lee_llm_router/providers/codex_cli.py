@@ -13,6 +13,22 @@ from lee_llm_router.response import LLMRequest, LLMResponse, LLMUsage
 
 PROMPT_PLACEHOLDER = "{prompt}"
 
+# Exact usage.source string required for Codex JSONL receipts by D209
+# ruling 2 via docs/staffing/phase1-contracts.md §Usage evidence taxonomy.
+CODEX_USAGE_SOURCE = "codex exec --json usage"
+
+# ``codex exec --json`` emits JSONL events; the successful
+# ``turn.completed`` receipt is the only accounting boundary. Interim
+# events (``thread.started``, ``item.completed``, ``token_count``, …)
+# never contribute counters, so interim usage is never double counted.
+CODEX_TERMINAL_EVENT_TYPE = "turn.completed"
+_CODEX_FAILURE_EVENT_TYPES = ("turn.failed", "error")
+_CODEX_INPUT_KEYS = ("input_tokens", "prompt_tokens")
+_CODEX_OUTPUT_KEYS = ("output_tokens", "completion_tokens")
+_CODEX_CACHED_KEYS = ("cached_input_tokens", "cached_read_tokens")
+_CODEX_REASONING_KEYS = ("reasoning_output_tokens", "reasoning_tokens")
+_CODEX_TOTAL_KEYS = ("total_tokens",)
+
 
 class CodexCLIProvider:
     """Invokes the Codex CLI via subprocess and returns its stdout."""
@@ -24,6 +40,11 @@ class CodexCLIProvider:
     default_model_flag = "--model"
     default_output_flag = None
     default_prompt_flag = None
+    # Governed capture (``run``) sets ``json_flag: "--json"`` in the Codex
+    # provider config so ``codex exec`` emits the JSONL usage receipt that
+    # :func:`capture_usage` parses. The default stays null so legacy argv
+    # contracts are untouched.
+    default_json_flag: str | None = None
 
     def _resolve_config_command(self, config: dict[str, Any]) -> str:
         command = config.get("command", self.default_command)
@@ -78,6 +99,7 @@ class CodexCLIProvider:
             ("output_flag", self.default_output_flag),
             ("output_path", None),
             ("prompt_flag", self.default_prompt_flag),
+            ("json_flag", self.default_json_flag),
         ):
             self._resolve_config_string_flag(config, key, default)
 
@@ -103,6 +125,12 @@ class CodexCLIProvider:
 
         The final positional element is the literal ``{prompt}`` placeholder,
         which :meth:`complete` replaces with the resolved prompt text.
+
+        For governed capture, set ``config['json_flag']`` (e.g.
+        ``"--json"``) to request the Codex JSONL usage receipt stream; the
+        flag is inserted immediately after the subcommand so the relative
+        order of the model, effort, output, prompt, and positional-prompt
+        elements is unchanged.
 
         Args:
             config: Provider configuration mapping.
@@ -145,12 +173,19 @@ class CodexCLIProvider:
             "prompt_flag",
             self.default_prompt_flag,
         )
+        json_flag = self._resolve_config_string_flag(
+            config,
+            "json_flag",
+            self.default_json_flag,
+        )
         resolved_model = model or config.get("model") or ""
         resolved_effort = effort if effort is not None else config.get("effort")
 
         cmd = [command, *extra_args]
         if subcommand:
             cmd.append(subcommand)
+        if json_flag:
+            cmd.append(json_flag)
         if resolved_model and model_flag:
             cmd.extend([model_flag, str(resolved_model)])
         if resolved_effort:
@@ -385,6 +420,272 @@ def _coerce_usage_value(value: Any, *, field_name: str) -> int:
             failure_type=FailureType.CONTRACT_VIOLATION,
             cause=exc,
         ) from exc
+
+
+def _nonnegative_int(value: Any) -> bool:
+    """Return True only for a genuine nonnegative ``int`` (bools excluded)."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _parse_codex_events(output: str) -> list[dict[str, Any]]:
+    """Parse ``codex --json`` output as one JSON object or JSONL events.
+
+    A whole-text JSON object is a single event; otherwise every non-blank
+    line must parse as a JSON object. Unlike lenient stream readers, a
+    malformed or non-object event fails closed: the receipt stream is the
+    sole usage authority, and a corrupted capture must never degrade into
+    an estimate.
+
+    Args:
+        output: Captured stdout of a ``codex exec --json`` run.
+
+    Returns:
+        Every parsed JSON object event, in order; ``[]`` when the output
+        is empty or whitespace only.
+
+    Raises:
+        LLMRouterError: With ``FailureType.CONTRACT_VIOLATION`` when the
+            output is a whole-text non-object, or any line is malformed
+            or is not a JSON object.
+    """
+    if not isinstance(output, str) or not output.strip():
+        return []
+    try:
+        whole = json.loads(output)
+    except JSONDecodeError:
+        whole = None
+    if whole is not None:
+        if not isinstance(whole, dict):
+            raise LLMRouterError(
+                "Codex --json output must be a JSON object or JSONL events",
+                failure_type=FailureType.CONTRACT_VIOLATION,
+            )
+        return [whole]
+    events: list[dict[str, Any]] = []
+    for line_number, line in enumerate(output.splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except JSONDecodeError as exc:
+            raise LLMRouterError(
+                f"invalid Codex JSONL event on line {line_number}",
+                failure_type=FailureType.CONTRACT_VIOLATION,
+                cause=exc,
+            ) from exc
+        if not isinstance(event, dict):
+            raise LLMRouterError(
+                f"invalid Codex JSONL event on line {line_number}: "
+                "event must be an object",
+                failure_type=FailureType.CONTRACT_VIOLATION,
+            )
+        events.append(event)
+    return events
+
+
+def _consistent_codex_usage_value(
+    mappings: tuple[dict[str, Any], ...], keys: tuple[str, ...]
+) -> Any:
+    """Return the single consistent value for a usage key family.
+
+    Mirrors agent-orch ``worker.py`` ``_parse_provider_usage``: every key
+    of the family is looked up across the nested ``usage`` mapping and the
+    receipt itself, and alias keys that disagree in value or type fail
+    closed instead of picking one silently.
+
+    Args:
+        mappings: Mappings to read, in precedence order.
+        keys: Alias key names for one counter family.
+
+    Returns:
+        The single present value, or ``None`` when the family is absent.
+
+    Raises:
+        LLMRouterError: With ``FailureType.CONTRACT_VIOLATION`` when two
+            present members of the family disagree.
+    """
+    values: list[tuple[str, Any]] = []
+    for mapping in mappings:
+        for key in keys:
+            if key in mapping:
+                values.append((key, mapping[key]))
+    if not values:
+        return None
+    first_key, first_value = values[0]
+    for key, value in values[1:]:
+        if value != first_value or type(value) is not type(first_value):
+            raise LLMRouterError(
+                "Codex usage contains conflicting values for "
+                f"{first_key!r} and {key!r}",
+                failure_type=FailureType.CONTRACT_VIOLATION,
+            )
+    return first_value
+
+
+def _codex_unavailable_usage(reason: str) -> dict[str, Any]:
+    """Return the schema-valid unavailable v2 usage mapping with null counters."""
+    return {
+        "basis": "unavailable",
+        "unavailable_reason": reason,
+        "input_tokens": None,
+        "output_tokens": None,
+        "cached_input_tokens": None,
+        "reasoning_tokens": None,
+        "total_tokens": None,
+    }
+
+
+def capture_usage(output: str) -> dict[str, Any]:
+    """Parse authoritative Codex JSONL usage from captured output.
+
+    Implements the P1-4b usage parser (D209 ruling 2 via
+    ``docs/staffing/phase1-contracts.md`` §Usage evidence taxonomy). Only
+    the successful terminal ``turn.completed`` receipt is read; interim
+    JSONL events are ignored so usage is never double counted. Key alias
+    families are reconciled like the agent-orch ``worker.py`` Codex
+    receipt parser: conflicting aliases, multiple terminal receipts,
+    terminal failure events, malformed JSONL, and counters that
+    contradict each other fail closed with
+    ``FailureType.CONTRACT_VIOLATION`` rather than estimating. No token
+    figure is ever estimated from text, context length, cost, or elapsed
+    time.
+
+    Args:
+        output: Captured stdout of a ``codex exec --json`` run — one JSON
+            object or JSON lines.
+
+    Returns:
+        A usage mapping that is directly schema-valid against the
+        attempt-record v2 ``$defs/usage`` subschema (P1-5): ``basis``,
+        ``source`` or ``unavailable_reason``, and the token counters
+        ``input_tokens``, ``output_tokens``, ``cached_input_tokens``,
+        ``reasoning_tokens``, ``total_tokens`` — nothing else. When the
+        terminal receipt reports valid required input and output counts,
+        ``basis`` is ``provider_reported`` with the exact source
+        ``codex exec --json usage``; ``total_tokens`` is the reported
+        total (reconciled against ``input_tokens + output_tokens``) or,
+        when the receipt reports none, the sum of the reported
+        components. ``cached_input_tokens`` and ``reasoning_tokens``
+        stay ``null`` when the receipt does not report them, and a
+        genuine source-reported zero stays zero. When usage is missing
+        or required input/output is absent or invalid, ``basis`` is
+        ``unavailable`` with a specific ``unavailable_reason`` and
+        ``None`` counters — never default zeros.
+
+    Raises:
+        LLMRouterError: With ``FailureType.CONTRACT_VIOLATION`` when a
+            JSONL line is malformed or not an object, the whole-output
+            JSON is not an object, the stream emits a terminal failure
+            event or multiple ``turn.completed`` receipts, the
+            ``usage`` field is not an object, alias keys conflict, an
+            optional reported counter is not a nonnegative integer, a
+            reported total contradicts its components, reasoning exceeds
+            output, or cached input exceeds input tokens.
+    """
+    events = _parse_codex_events(output)
+
+    terminal_receipt: dict[str, Any] | None = None
+    for event in events:
+        event_type = event.get("type")
+        if event_type in _CODEX_FAILURE_EVENT_TYPES:
+            raise LLMRouterError(
+                f"Codex emitted terminal failure event {event_type!r}",
+                failure_type=FailureType.CONTRACT_VIOLATION,
+            )
+        if event_type != CODEX_TERMINAL_EVENT_TYPE:
+            continue
+        if terminal_receipt is not None:
+            raise LLMRouterError(
+                "Codex emitted multiple terminal usage receipts",
+                failure_type=FailureType.CONTRACT_VIOLATION,
+            )
+        terminal_receipt = event
+
+    if terminal_receipt is None:
+        if not isinstance(output, str) or not output.strip():
+            reason = "Codex --json output was empty"
+        else:
+            reason = (
+                "Codex --json output contained no terminal "
+                "turn.completed usage receipt"
+            )
+        return _codex_unavailable_usage(reason)
+
+    raw_usage = terminal_receipt.get("usage")
+    if raw_usage is not None and not isinstance(raw_usage, dict):
+        raise LLMRouterError(
+            "Codex turn.completed usage field must be an object",
+            failure_type=FailureType.CONTRACT_VIOLATION,
+        )
+    mappings = (
+        (raw_usage, terminal_receipt) if raw_usage is not None else (terminal_receipt,)
+    )
+
+    input_value = _consistent_codex_usage_value(mappings, _CODEX_INPUT_KEYS)
+    output_value = _consistent_codex_usage_value(mappings, _CODEX_OUTPUT_KEYS)
+    if not _nonnegative_int(input_value) or not _nonnegative_int(output_value):
+        if raw_usage is None:
+            reason = "Codex turn.completed receipt carried no usage object"
+        else:
+            reason = (
+                "Codex turn.completed usage was missing or had invalid "
+                "required input_tokens/output_tokens"
+            )
+        return _codex_unavailable_usage(reason)
+
+    cached_value = _consistent_codex_usage_value(mappings, _CODEX_CACHED_KEYS)
+    reasoning_value = _consistent_codex_usage_value(mappings, _CODEX_REASONING_KEYS)
+    total_value = _consistent_codex_usage_value(mappings, _CODEX_TOTAL_KEYS)
+    for name, value in (
+        ("cached_input_tokens", cached_value),
+        ("reasoning_output_tokens", reasoning_value),
+        ("total_tokens", total_value),
+    ):
+        if value is not None and not _nonnegative_int(value):
+            raise LLMRouterError(
+                f"Codex usage field {name!r} must be a nonnegative integer",
+                failure_type=FailureType.CONTRACT_VIOLATION,
+            )
+
+    # Codex reports cached input and reasoning as subsets of input and
+    # output respectively, with total = input + output; reported evidence
+    # contradicting those invariants fails closed.
+    if total_value is not None and total_value != input_value + output_value:
+        raise LLMRouterError(
+            "Codex usage total_tokens contradicts input_tokens + output_tokens",
+            failure_type=FailureType.CONTRACT_VIOLATION,
+        )
+    if reasoning_value is not None and reasoning_value > output_value:
+        raise LLMRouterError(
+            "Codex usage reasoning_output_tokens contradicts output_tokens",
+            failure_type=FailureType.CONTRACT_VIOLATION,
+        )
+    if cached_value is not None and cached_value > input_value:
+        raise LLMRouterError(
+            "Codex usage cached_input_tokens contradicts input_tokens",
+            failure_type=FailureType.CONTRACT_VIOLATION,
+        )
+
+    # Final counter assembly reuses the existing payload usage reader:
+    # values are already strictly validated, and the reader derives the
+    # total from the reported components when the receipt omits one.
+    validated_usage: dict[str, Any] = {
+        "prompt_tokens": input_value,
+        "completion_tokens": output_value,
+    }
+    if total_value is not None:
+        validated_usage["total_tokens"] = total_value
+    counters = _usage_from_payload({"usage": validated_usage})
+
+    return {
+        "basis": "provider_reported",
+        "source": CODEX_USAGE_SOURCE,
+        "input_tokens": counters.prompt_tokens,
+        "output_tokens": counters.completion_tokens,
+        "cached_input_tokens": cached_value,
+        "reasoning_tokens": reasoning_value,
+        "total_tokens": counters.total_tokens,
+    }
 
 
 def _snippet(text: str, limit: int = 200) -> str:
