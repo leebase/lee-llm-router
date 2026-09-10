@@ -223,3 +223,21 @@ and `effective_from` from the committed terms lookup; Anthropic/Gemini change
 from the 2026-09-09 $100 terms to the 2026-09-30 $20 terms. Eligibility,
 ordering, reasons, and text output remain unchanged. Phase 1 OpenRouter metered
 total is $0.347606095 plus unknown pre-P1-4a text-mode attempts.
+
+## P1-4d — agy usage capture
+
+| Packet | Role | Explain / selection | Excluded summary | Route | Start / end | Exit | Usage / cost | Result |
+|---|---|---|---|---|---|---:|---|---|
+| P1-4d attempt 1 | impl | `catalog explain --role impl --class impl/deterministic/none/s/python --json`; Gemini/Anthropic reserved for live proof; first authority-available metered route GLM | Go likely-exhausted; never-automatic/policy exclusions; subscription proof reservations | `pi-z-ai-glm-5-3-flash-openrouter` | about 16:46 / about 16:56 | watchdog timeout, zero repository output | `provider_reported`, `pi --mode json events`; input 112314, output 14210, cached 1503424, reasoning 10992, total 1629948; list/marginal $0.011976050 | `escalation_reason: platform_timeout`; no source change; single-topic packet required no Rule-B split |
+| P1-4d Luna escalation | impl | fresh implementation explain; Luna XHigh eligible; parent is P1-4d attempt 1; `escalation_reason: platform_timeout` | same exclusions/reservations; GLM failed to complete | `pi-gpt-5-6-luna-xhigh-openai-sub` | about 16:57 / about 17:07 | supervisor watchdog termination during final checks | `provider_reported`, `pi --mode json events`; input 276861, output 26849, cached 5927424, reasoning 14450, total 6231134; subscription list/marginal execution estimate $0.065693250 | implemented governed JSON receipt capture and 28 fake-boundary tests; supervisor read entire diff, reproduced 28 focused and 1090 full passes/1 skip, Black/Ruff clean |
+| P1-4d review | review | `catalog explain --role review --class review/judge/none/s/python --author-route pi-gpt-5-6-luna-xhigh-openai-sub --json`; Go excluded; independent DeepSeek eligible | Luna/GPT independence; Go TOO FAST/likely-exhausted; never-automatic/policy exclusions; Gemini reserved | `pi-deepseek-deepseek-v4-flash-openrouter` | about 17:09 / about 17:12 | 0 | `provider_reported`, `pi --mode json events`; input 81351, output 10494, cached 949760, reasoning 4387, total 1041605; list/marginal $0.008596476 | PASS; 0 blocking; 3 hardening, 2 future concerns |
+
+P1-4d accepted after two author attempts and one review, about 26 minutes.
+agy JSON receipts now produce strict provider-reported usage with the exact
+taxonomy source; missing receipts remain unavailable and contradictions fail
+closed. Non-blocking: parser is deliberately stricter than the reference for
+multiple receipts and reasoning consistency. P1-5's agy dispatch integration
+remains a seam to verify before the optional Gemini live proof. Phase 1
+OpenRouter metered total is $0.368178621 plus unknown pre-P1-4a text-mode
+attempts; Luna subscription execution totals a separate $0.274974450
+list/marginal estimate.
