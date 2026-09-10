@@ -47,3 +47,17 @@ pricing snapshot citation fields do not enforce both-or-neither; documentation
 says byte equality while tests enforce parsed JSON equality. Future: unpriced
 known-token attempts cannot set `verified_success`; imports may carry an
 oracle string and the importer must never invent one.
+
+## P1-3 — Ledger writer
+
+| Packet | Role | Explain / selection | Excluded summary | Route | Start / end | Exit | Usage / cost | Result |
+|---|---|---|---|---|---|---:|---|---|
+| P1-3 author | impl | `catalog explain --role impl --class impl/deterministic/persistence/s/python --json`; governed ladder first rung eligible | channel likely-exhausted 7; never-automatic 4; Gemini Pro role-scoped 1; unpriced/pricing unavailable 1 (reasons overlap) | `pi-z-ai-glm-5-3-flash-openrouter` | 11:55 / 11:59 | 0 | `usage.basis: unavailable`; `unavailable_reason: text mode`; tokens unknown; no cost | two owned files only; 31 focused and 917 full tests passed, 1 full-suite skip; Black/Ruff clean |
+| P1-3 review | review | `catalog explain --role review --class review/judge/persistence/s/python --author-route pi-z-ai-glm-5-3-flash-openrouter --json`; independent fallback eligible | author family independence; Go likely-exhausted; never-automatic and remaining policy exclusions | `pi-deepseek-deepseek-v4-flash-openrouter` | 12:00 / 12:04 | 0 | `usage.basis: unavailable`; `unavailable_reason: text mode`; tokens unknown; no cost | PASS; 0 blocking; 3 hardening, 1 future concern |
+
+P1-3 accepted in one author attempt and one review, about nine minutes wall
+clock. Supervisor read both complete new files and reproduced 31 focused
+passes plus Black/Ruff clean. Non-blocking: raw write `OSError` is not wrapped,
+invalid UTF-8 lacks ledger line diagnostics, and one test regex is loose.
+Future: repository-relative schema discovery matches current project convention
+but a wheel would need packaged schema data.
