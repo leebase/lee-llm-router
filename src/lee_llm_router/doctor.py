@@ -355,6 +355,7 @@ GOVERNED_HARNESSES: tuple[str, ...] = (
     "claude_code",
     "claude_code_cli",
     "omp_cli",
+    "pi_cli",
     "opencode_cli",
     "antigravity_cli",
 )

@@ -245,9 +245,29 @@ crews:
     not LIVE_CREWS_FILE.is_file(), reason="live Auto-Orch crews file not present"
 )
 def test_live_crews_file_has_fourteen_complete_crews() -> None:
+    # The fourteen crews this file shipped with must survive; newer crews
+    # may be added, so only a subset check, never a total-count assertion.
+    expected_ids = frozenset(
+        {
+            "mixed-flagship",
+            "mixed-balanced",
+            "mixed-economy",
+            "openai-flagship",
+            "openai-balanced",
+            "openai-economy",
+            "anthropic-flagship",
+            "anthropic-balanced",
+            "anthropic-economy",
+            "opencode-go-economy",
+            "opencode-go-balanced",
+            "gemini-flash-tiered",
+            "tri-vendor-workhorse",
+            "gemini-pro-crew",
+        }
+    )
     config = load_crews(LIVE_CREWS_FILE)
 
-    assert len(config.crews) == 14
+    assert expected_ids <= set(config.crews), sorted(expected_ids - set(config.crews))
     for name, crew in config.crews.items():
         assert set(crew.stages) == set(STAGE_NAMES), name
         for stage in STAGE_NAMES:

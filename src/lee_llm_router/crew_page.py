@@ -55,6 +55,7 @@ HARNESS_BY_PROVIDER: dict[str, str] = {
     "agy": "agy",
     "opencode_cli": "opencode",
     "opencode": "opencode",
+    "pi_cli": "pi",
     "omp_cli": "omp",
     "omp": "omp",
 }

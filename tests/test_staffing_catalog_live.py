@@ -1,4 +1,4 @@
-"""Live snapshot oracle for the staffing catalog (P0-3p).
+"""Live snapshot oracle for the staffing catalog (P0-3p, Chief round 13).
 
 Proves, against the live ``/home/lee/projects/auto-orch/config/crews.yaml``
 and the catalog YAML in ``config/staffing/``:
@@ -9,10 +9,20 @@ and the catalog YAML in ``config/staffing/``:
    byte-identical alias workers without inventing models.
 2. Every route with ``status: unpriced`` carries a nonempty
    ``status_reason``.
-3. The 14 governed ``crew_name`` values in ``config/staffing/crews.yaml``
-   exactly equal the 14 live crew names, and each governed crew's five
-   stage bindings resolve to recorded route refs that match the live
-   stage worker's identity tuple.
+3. Chief round 13 (``docs/staffing/chief-answers-13.md``, ruling 3): no
+   literal governed/live name equality — instead (a) every live Auto-Orch
+   crew name resolves to exactly one catalog record of either kind (a
+   governed ``crew_name`` or an interactive ``governed_ref``), (b) every
+   governed catalog ``crew_name`` names a live crew, and (c) every
+   live-backed interactive record carries ``governed_ref`` equal to its
+   live name, and each live governed ``primary``/``reviewer``/``judge``
+   route resolves by its exact ``(model, effort, harness)`` key — effort
+   compared verbatim, never inferred — to exactly one catalog row (which
+   pins the channel) whose route id equals the FIRST entry of the
+   record's ordered ``impl``/``review``/``judge`` role routes, with
+   ``sol-low-glm-pi`` exercised explicitly. Each governed crew's five stage bindings
+   additionally resolve to recorded route refs that match the live stage
+   worker's identity tuple.
 4. The two interactive crews and the ``auto`` computed placeholder load
    as typed ``Crew`` objects with no field dropped.
 
@@ -25,6 +35,7 @@ and no prompts are involved.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -32,8 +43,10 @@ import yaml
 
 from lee_llm_router.crew_page import HARNESS_BY_PROVIDER
 from lee_llm_router.crews import (
+    GOVERNED_ROLES,
     STAGE_NAMES,
     CrewsConfig,
+    GovernedRoute,
     Worker,
     load_crews,
     resolve_crews_path,
@@ -61,17 +74,34 @@ ALIAS_TO_CANONICAL: dict[str, str] = {
 
 GOVERNED_CREW_COUNT = 14
 
+# Chief round 13: the live governed role names mapped onto the interactive
+# record's ordered role-route arrays (chief-answers-13 ruling 3c).
+GOVERNED_ROLE_TO_RECORD_STAGE = {
+    "primary": "impl",
+    "reviewer": "review",
+    "judge": "judge",
+}
+
 # Route identity in staffing catalog order (model, effort, harness, channel)
 # — the tuple every live worker must map to exactly one route by.
 Identity = tuple[str | None, str | None, str, str]
+
+# The Pi stage-worker wrapper records its reasoning dial as
+# ``<PREFIX>_STAGE_WORKER_THINKING``; ``resolve_worker`` surfaces only the
+# ``_EFFORT``/``_REASONING_EFFORT`` spellings. The dial is read verbatim
+# (never inferred, never defaulted) so the comparison stays exact.
+_THINKING_ENV_RE = re.compile(r"\b[A-Z]+_STAGE_WORKER_THINKING=(\S+)")
 
 
 def worker_identity(worker: Worker) -> Identity:
     """Derive a worker's exact ``(model, effort, harness, channel)`` tuple.
 
-    Uses the public crews resolution pipeline only: ``resolve_worker`` for
-    the command-derived provider/model/effort and
-    ``crew_page.HARNESS_BY_PROVIDER`` for the catalog harness spelling.
+    Uses the public crews resolution pipeline (``resolve_worker`` for the
+    command-derived provider/model/effort/channel and
+    ``crew_page.HARNESS_BY_PROVIDER`` for the catalog harness spelling,
+    including ``pi_cli -> pi``). When the resolver yields no effort, the
+    command's own ``_STAGE_WORKER_THINKING`` value is taken verbatim; an
+    absent dial stays ``None`` — no effort is ever inferred.
     """
     resolved = resolve_worker(worker)
     harness = HARNESS_BY_PROVIDER.get(resolved.provider)
@@ -79,12 +109,35 @@ def worker_identity(worker: Worker) -> Identity:
         f"worker {worker.id!r} resolves to provider {resolved.provider!r} "
         "with no catalog harness spelling"
     )
-    return (resolved.model, resolved.effort, harness, resolved.channel)
+    effort = resolved.effort
+    if effort is None:
+        dial = _THINKING_ENV_RE.search(worker.command)
+        if dial is not None:
+            effort = dial.group(1)
+    return (resolved.model, effort, harness, resolved.channel)
 
 
 def route_identity(route: Route) -> Identity:
     """Return a staffing route's ``(model, effort, harness, channel)`` tuple."""
     return (route.model, route.effort, route.harness, route.channel)
+
+
+def governed_role_identity(
+    role_route: GovernedRoute,
+) -> tuple[str | None, str | None, str]:
+    """Return a live governed route's exact ``(model, effort, harness)`` key.
+
+    The harness spelling goes through ``crew_page.HARNESS_BY_PROVIDER``
+    (including ``pi_cli -> pi``); the model and effort are the live
+    record's own values verbatim — effort is never inferred from another
+    role, crew, or route.
+    """
+    harness = HARNESS_BY_PROVIDER.get(role_route.harness)
+    assert harness is not None, (
+        f"governed {role_route.role!r} route harness "
+        f"{role_route.harness!r} has no catalog harness spelling"
+    )
+    return (role_route.model, role_route.effort, harness)
 
 
 # ---------------------------------------------------------------------------
@@ -204,24 +257,167 @@ def test_documented_unpriced_mimo_route_still_mapped(
 
 
 # ---------------------------------------------------------------------------
-# 3. Governed crew names + five stage bindings resolve to recorded routes
+# 3. Chief round 13 live-vs-catalog invariant + governed stage bindings
 # ---------------------------------------------------------------------------
 
 
-def test_governed_crew_names_exactly_equal_live_crews(
+def test_round13_live_crew_names_map_to_exactly_one_catalog_record(
     live: CrewsConfig, crews: CrewsCatalog
 ) -> None:
+    """Chief round 13 (a): every live Auto-Orch crew name resolves to
+    exactly one catalog record, matching either a governed ``crew_name``
+    or an interactive ``governed_ref`` — zero or multiple matches fail.
+    """
+    records_by_name: dict[str, list[str]] = {}
+    for crew in crews.crews:
+        name = crew.crew_name if crew.kind == "governed" else crew.governed_ref
+        if name is None:
+            continue
+        records_by_name.setdefault(name, []).append(crew.crew_id)
+    problems: list[str] = []
+    for name in live.crews:
+        matches = records_by_name.get(name, [])
+        if len(matches) != 1:
+            problems.append(
+                f"live crew {name!r} matched {len(matches)} catalog records "
+                f"{matches} (expected exactly 1)"
+            )
+    assert (
+        not problems
+    ), "live crew names did not map to exactly one catalog record each:\n" + "\n".join(
+        problems
+    )
+
+
+def test_round13_governed_records_name_live_crews(
+    live: CrewsConfig, crews: CrewsCatalog
+) -> None:
+    """Chief round 13 (b): every governed catalog ``crew_name`` names a
+    live crew. The catalog keeps its P0-3 fourteen governed records; live
+    counts are read, never asserted (chief-answers-13 ruling 1/3).
+    """
     governed = [crew for crew in crews.crews if crew.kind == "governed"]
     assert (
         len(governed) == GOVERNED_CREW_COUNT
-    ), f"expected {GOVERNED_CREW_COUNT} governed crews, found {len(governed)}"
-    assert (
-        len(live.crews) == GOVERNED_CREW_COUNT
-    ), f"expected {GOVERNED_CREW_COUNT} live crews, found {len(live.crews)}"
+    ), f"expected {GOVERNED_CREW_COUNT} governed catalog records, found {len(governed)}"
     names = [crew.crew_name for crew in governed]
     assert None not in names, "governed crew missing crew_name"
-    assert sorted(names) == sorted(live.crews)
     assert len(set(names)) == GOVERNED_CREW_COUNT, "duplicate crew_name values"
+    missing = sorted(set(names) - set(live.crews))
+    assert not missing, f"governed crew_name values with no live crew: {missing}"
+
+
+def test_round13_live_backed_interactive_records_resolve_governed_roles(
+    live: CrewsConfig,
+    crews: CrewsCatalog,
+    routes: RoutesCatalog,
+    routes_by_id: dict[str, Route],
+) -> None:
+    """Chief round 13 (c): every live-backed interactive record carries
+    ``governed_ref`` equal to its live crew name, and each live governed
+    ``primary``/``reviewer``/``judge`` route resolves — by its exact
+    ``(model, effort, harness)`` key over the whole route catalog, with
+    the channel supplied by that unique row and the effort compared
+    verbatim (never inferred) — to exactly one recorded route whose id
+    equals the FIRST entry of the record's ordered
+    ``impl``/``review``/``judge`` role routes (strict first-entry
+    equality, not mere membership; later entries are same-role
+    fallbacks documented by the record's evidence_ref).
+    """
+    live_backed = [
+        crew
+        for crew in crews.crews
+        if crew.kind == "interactive" and crew.governed_ref is not None
+    ]
+    assert live_backed, "expected at least one live-backed interactive record"
+    for crew in live_backed:
+        ref = crew.governed_ref
+        assert (
+            ref in live.crews
+        ), f"{crew.crew_id}: governed_ref {ref!r} names no live crew"
+        assert (
+            crew.computed is not True
+        ), f"{crew.crew_id}: a live-backed record must not be computed"
+        assert crew.worker_routes, f"{crew.crew_id}: no worker_routes"
+        live_governed = live.crews[ref].governed
+        for role in GOVERNED_ROLES:
+            if role not in live_governed:
+                continue
+            role_route = live_governed[role]
+            key = governed_role_identity(role_route)
+            matches = [
+                route
+                for route in routes.routes
+                if (route.model, route.effort, route.harness) == key
+            ]
+            assert len(matches) == 1, (
+                f"{crew.crew_id}: live governed {role!r} {key} resolved to "
+                f"{[route.route_id for route in matches]} (expected exactly 1)"
+            )
+            resolved = matches[0]
+            stage = GOVERNED_ROLE_TO_RECORD_STAGE[role]
+            refs = list((crew.worker_routes or {}).get(stage) or [])
+            assert refs, f"{crew.crew_id}: no recorded {stage!r} role routes"
+            assert resolved.route_id == refs[0], (
+                f"{crew.crew_id}: live governed {role!r} {key} resolves to "
+                f"{resolved.route_id} {route_identity(resolved)}, which is "
+                f"not the first entry of the record's ordered {stage!r} "
+                f"routes {refs} (expected {refs[0]})"
+            )
+
+
+def test_round13_sol_low_glm_pi_governed_roles_resolve_explicitly(
+    live: CrewsConfig,
+    crews: CrewsCatalog,
+    routes_by_id: dict[str, Route],
+) -> None:
+    """Chief round 13 (c) exercised explicitly on ``sol-low-glm-pi``: the
+    interactive record is live-backed via ``governed_ref``, and the live
+    governed roles pin their exact ``(model, effort, harness, channel)``
+    tuples — the OpenRouter GLM lane for the governed primary, the
+    OpenCode Go V4 Pro lane for the governed reviewer, and the Astra Low
+    codex judge. Uniqueness and recording are asserted generically; this
+    test pins the concrete lanes.
+    """
+    record = next(
+        (crew for crew in crews.crews if crew.crew_id == "sol-low-glm-pi"), None
+    )
+    assert record is not None, "catalog record sol-low-glm-pi missing"
+    assert record.kind == "interactive"
+    assert record.governed_ref == "sol-low-glm-pi"
+    assert "sol-low-glm-pi" in live.crews
+    assert record.worker_routes is not None
+
+    live_governed = live.crews["sol-low-glm-pi"].governed
+    assert set(live_governed) == set(GOVERNED_ROLES), (
+        f"live sol-low-glm-pi governed roles {sorted(live_governed)} != "
+        f"{sorted(GOVERNED_ROLES)}"
+    )
+
+    expected = {
+        "primary": (
+            "pi-z-ai-glm-5-3-flash-openrouter",
+            ("z-ai/glm-5.3-flash", None, "pi", "openrouter"),
+        ),
+        "reviewer": (
+            "pi-deepseek-v4-pro-opencode-go",
+            ("deepseek-v4-pro", None, "pi", "opencode-go"),
+        ),
+        "judge": (
+            "codex-gpt-6-astra-low-openai-sub",
+            ("gpt-6-astra", "low", "codex", "openai-sub"),
+        ),
+    }
+    for role, (route_id, identity) in expected.items():
+        key = governed_role_identity(live_governed[role])
+        assert key == identity[:3], (
+            f"sol-low-glm-pi: live governed {role!r} derived {key}, "
+            f"expected {identity[:3]}"
+        )
+        assert route_identity(routes_by_id[route_id]) == identity, (
+            f"sol-low-glm-pi: route {route_id!r} identity "
+            f"{route_identity(routes_by_id[route_id])} != {identity}"
+        )
 
 
 def test_governed_stage_bindings_resolve_to_recorded_routes(

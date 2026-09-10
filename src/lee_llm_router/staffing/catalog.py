@@ -342,8 +342,11 @@ class Crew:
 
     Each optional field is ``None`` exactly when the schema forbids or
     omits it for that shape, so loading preserves every field of each
-    schema-valid shape without interpreting it. Shape only; no decision
-    logic and no resolution of route references.
+    schema-valid shape without interpreting it. The optional
+    ``governed_ref`` (ordinary named interactive crews only; the schema
+    forbids it on governed crews and on ``auto``) is preserved verbatim
+    when present. Shape only; no decision logic and no resolution of
+    route references.
     """
 
     crew_id: str
@@ -359,6 +362,7 @@ class Crew:
     supervisor: CrewSupervisor | None = None
     escalation: str | None = None
     computed: bool | None = None
+    governed_ref: str | None = None
 
 
 @dataclass(frozen=True)

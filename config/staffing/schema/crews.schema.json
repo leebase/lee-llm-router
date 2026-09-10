@@ -95,6 +95,10 @@
           "description": "Reserved for the `auto` placeholder block: marks that its route-bearing fields are unset because the staffing system computes them at run time.",
           "const": true
         },
+        "governed_ref": {
+          "description": "Ordinary named interactive crews only. Optional nonempty reference preserved verbatim on the block. Explicitly forbidden on governed crews and on the reserved `auto` placeholder.",
+          "$ref": "#/$defs/nonemptyString"
+        },
         "authority": {
           "description": "Who set this block: `lee` pins or overrides; `chief` chooses under delegated managerial authority; `policy` is reserved for the computed `auto` placeholder and means the staffing system's choice.",
           "type": "string",
@@ -143,6 +147,7 @@
               "crew_name": false,
               "supervisor": false,
               "escalation": false,
+              "governed_ref": false,
               "computed": { "const": true }
             },
             "required": ["computed"]
@@ -204,7 +209,8 @@
               "supervisor_route": false,
               "reviewer_route": false,
               "escalation_ladder": false,
-              "computed": false
+              "computed": false,
+              "governed_ref": false
             }
           }
         }

@@ -422,19 +422,21 @@ crews:
   # GLM -> Luna XHigh via Pi -> Sol High via Codex, stop before never-automatic) ----
   - crew_id: sol-low-glm-pi
     kind: interactive
+    governed_ref: sol-low-glm-pi
     supervisor_route: codex-gpt-5-6-sol-low-openai-sub
     worker_routes:
-      impl: [pi-glm-5-3-flash-opencode-go, pi-z-ai-glm-5-3-flash-openrouter]
+      impl: [pi-z-ai-glm-5-3-flash-openrouter, pi-glm-5-3-flash-opencode-go]
       plan: [codex-gpt-5-6-sol-low-openai-sub]
       review: [pi-deepseek-v4-pro-opencode-go, pi-deepseek-deepseek-v4-flash-openrouter]
       judge: [codex-gpt-6-astra-low-openai-sub]
     reviewer_route: pi-deepseek-v4-pro-opencode-go
     escalation_ladder:
+      - pi-z-ai-glm-5-3-flash-openrouter
       - pi-glm-5-3-flash-opencode-go
       - pi-gpt-5-6-luna-xhigh-openai-sub
       - codex-gpt-5-6-sol-high-openai-sub
     authority: chief
-    evidence_ref: "Chief round 10 authoritative repair, chief authority (chief-answers-10/D203); evidence: ai-workforce-benchmark exports/staffing-evidence-v5-20260908.json (GLM/DeepSeek accepted on the tested implementation packets; Pi cheapest harness on the one three-harness comparison). Route ids are the catalog's; role-route values are ordered arrays — first is primary, later entries are same-role fallbacks used only when the earlier route's channel is exhausted or unknown (the reason is recorded per attempt). Every binding maps by exact route tuple to one existing active row in config/staffing/routes.yaml, no route invented: gpt-5.6-sol|codex|low|openai-sub -> codex-gpt-5-6-sol-low-openai-sub (supervisor and plan); glm-5.3-flash|pi|opencode-go -> pi-glm-5-3-flash-opencode-go (impl primary, escalation rung 1); z-ai/glm-5.3-flash|pi|openrouter -> pi-z-ai-glm-5-3-flash-openrouter (impl fallback); opencode-go/deepseek-v4-pro|pi|opencode-go -> pi-deepseek-v4-pro-opencode-go (review primary and reviewer_route); deepseek/deepseek-v4-flash|pi|openrouter -> pi-deepseek-deepseek-v4-flash-openrouter (review fallback); gpt-6-astra|codex|low|openai-sub -> codex-gpt-6-astra-low-openai-sub (judge); gpt-5.6-luna|pi|xhigh|openai-sub -> pi-gpt-5-6-luna-xhigh-openai-sub (escalation rung 2); gpt-5.6-sol|codex|high|openai-sub -> codex-gpt-5-6-sol-high-openai-sub (escalation rung 3) -> stop, never-automatic above."
+    evidence_ref: "Chief round 14 authoritative repair of the round 10 block (chief authority, chief-answers-14, D86/D87: impl order is exactly-metered OpenRouter first, Go same-role fallback); evidence: ai-workforce-benchmark exports/staffing-evidence-v5-20260908.json (GLM/DeepSeek accepted on the tested implementation packets; Pi cheapest harness on the one three-harness comparison). Route ids are the catalog's; role-route values are ordered arrays — first is primary, later entries are same-role fallbacks used only when the earlier route's channel is exhausted or unknown (the reason is recorded per attempt). Phase 0 ordering note (Chief round 14): in Phase 0 a named crew's order is a human choice, and for a crew that also runs governed the exactly-metered OpenRouter route goes first because agent-orch's accounting fails closed on unaccounted spend and the Go subscription has no per-run receipt; the Go route is the same-role fallback; Phase 2's auto placeholder will order by marginal price and headroom, which is where 'Go first when COLD' belongs. Every binding maps by exact route tuple to one existing active row in config/staffing/routes.yaml, no route invented: gpt-5.6-sol|codex|low|openai-sub -> codex-gpt-5-6-sol-low-openai-sub (supervisor and plan); z-ai/glm-5.3-flash|pi|openrouter -> pi-z-ai-glm-5-3-flash-openrouter (impl primary, escalation rung 1); glm-5.3-flash|pi|opencode-go -> pi-glm-5-3-flash-opencode-go (impl same-role fallback, escalation rung 2); opencode-go/deepseek-v4-pro|pi|opencode-go -> pi-deepseek-v4-pro-opencode-go (review primary and reviewer_route); deepseek/deepseek-v4-flash|pi|openrouter -> pi-deepseek-deepseek-v4-flash-openrouter (review fallback); gpt-6-astra|codex|low|openai-sub -> codex-gpt-6-astra-low-openai-sub (judge); gpt-5.6-luna|pi|xhigh|openai-sub -> pi-gpt-5-6-luna-xhigh-openai-sub (escalation rung 3); gpt-5.6-sol|codex|high|openai-sub -> codex-gpt-5-6-sol-high-openai-sub (escalation rung 4) -> stop, never-automatic above."
 
   # ---- interactive: the Chief round-10 second interactive crew (one-crew
   # append, per chief-answers-10/D204/D205: Luna XHigh via Pi for coding and

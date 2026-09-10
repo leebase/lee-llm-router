@@ -544,6 +544,72 @@ def test_doctor_crews_role_scoped_model_no_warning_in_planning_stage(tmp_path, c
     assert captured.err == ""
 
 
+PI_GOVERNED_YAML = """
+workers:
+  pi_worker:
+    command: "/usr/bin/env PI_STAGE_WORKER_BINARY=/x/bin/pi \
+PI_STAGE_WORKER_PROVIDER=openai-codex PI_STAGE_WORKER_MODEL=gpt-5.6-sol \
+python3 /x/w.py {stage}"
+crews:
+  pi-crew:
+    description: Governed run whose harnesses are pi_cli.
+    stages:
+      author: pi_worker
+    governed:
+      primary: {harness: pi_cli}
+      reviewer: {harness: pi_cli}
+"""
+
+UNKNOWN_GOVERNED_HARNESS_YAML = """
+workers:
+  pi_worker:
+    command: "/usr/bin/env PI_STAGE_WORKER_BINARY=/x/bin/pi \
+PI_STAGE_WORKER_MODEL=gpt-5.6-sol python3 /x/w.py {stage}"
+crews:
+  pi-crew:
+    description: Governed run naming an unregistered harness.
+    stages:
+      author: pi_worker
+    governed:
+      primary: {harness: warp_cli}
+"""
+
+
+def test_doctor_crews_governed_pi_cli_routes_accepted(tmp_path, capsys):
+    """Governed primary and reviewer routes naming pi_cli validate cleanly."""
+    from lee_llm_router.doctor import main
+
+    crews_file = tmp_path / "crews.yaml"
+    crews_file.write_text(PI_GOVERNED_YAML, encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["doctor", "--crews", "--crews-file", str(crews_file)])
+    assert exc_info.value.code == 0
+
+    captured = capsys.readouterr()
+    assert "  x  " not in captured.err
+    assert "OK crews: 1 crews, 1/1 workers resolved" in captured.out
+    assert captured.err == ""
+
+
+def test_doctor_crews_unknown_governed_harness_fails(tmp_path, capsys):
+    """A governed route naming an unknown harness errors with the known set."""
+    from lee_llm_router.doctor import main
+
+    crews_file = tmp_path / "crews.yaml"
+    crews_file.write_text(UNKNOWN_GOVERNED_HARNESS_YAML, encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["doctor", "--crews", "--crews-file", str(crews_file)])
+    assert exc_info.value.code == 1
+
+    err = capsys.readouterr().err
+    assert "unknown harness 'warp_cli'" in err
+    assert "known: " in err
+    assert "omp_cli" in err
+    assert "pi_cli" in err
+
+
 def test_doctor_crews_unmapped_stage_warns(monkeypatch):
     """A crew stage with no role class emits a warning citing D188."""
     from lee_llm_router.crews import Crew, CrewsConfig, Stage, Worker
