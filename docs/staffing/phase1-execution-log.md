@@ -61,3 +61,20 @@ passes plus Black/Ruff clean. Non-blocking: raw write `OSError` is not wrapped,
 invalid UTF-8 lacks ledger line diagnostics, and one test regex is loose.
 Future: repository-relative schema discovery matches current project convention
 but a wheel would need packaged schema data.
+
+## P1-4a — Pi usage capture
+
+| Packet | Role | Explain / selection | Excluded summary | Route | Start / end | Exit | Usage / cost | Result |
+|---|---|---|---|---|---|---:|---|---|
+| P1-4a attempt 1 | impl | `catalog explain --role impl --class impl/deterministic/none/s/python --json`; governed first rung eligible | channel likely-exhausted 7; never-automatic 4; Gemini Pro role-scoped 1; unpriced/pricing unavailable 1 (overlap) | `pi-z-ai-glm-5-3-flash-openrouter` | 12:06 / 12:16 | watchdog timeout; process group terminated | `usage.basis: unavailable`; `unavailable_reason: text mode`; tokens unknown; no cost | no output and no file changes; split under Rule B |
+| P1-4a parser | impl | same explain and eligible first rung | same excluded summary | `pi-z-ai-glm-5-3-flash-openrouter` | 12:18 / 12:21 | 0 | `usage.basis: unavailable`; `unavailable_reason: text mode`; tokens unknown; no cost | parser authored; 18 focused, 935 full passed/1 skipped; Black/Ruff clean |
+| P1-4a mode | impl | same explain and eligible first rung | same excluded summary | `pi-z-ai-glm-5-3-flash-openrouter` | 12:22 / 12:23 | 0 | `usage.basis: unavailable`; `unavailable_reason: text mode`; tokens unknown; no cost | build command changed to JSON; 29 builder + 18 parser tests passed; Black/Ruff clean |
+| P1-4a review 1 | review | `catalog explain --role review --class review/judge/none/s/python --author-route pi-z-ai-glm-5-3-flash-openrouter --json`; independent fallback eligible | author family independence; Go likely-exhausted; never-automatic and remaining exclusions | `pi-deepseek-deepseek-v4-flash-openrouter` | 12:24 / 12:27 | 0 | `provider_reported`, `pi --mode json events`; input 258023, output 23288, cached 1223702, reasoning 16308, total 1505013; list/marginal $0.025586316 from P0-4 terms | FAIL: parser flattened `assistant_messages`, `cache_write_tokens`, and `reasoning_reason` into strict v2 usage; 4 hardening, 2 future concerns |
+| P1-4a repair 1 | impl | same implementation explain, first rung eligible | same implementation exclusions | `pi-z-ai-glm-5-3-flash-openrouter` | 12:28 / 12:31 | 0 | `provider_reported`, `pi --mode json events`; input 120338, output 9682, cached 426240, reasoning 2030, total 556260; list/marginal $0.011445850 | returned schema-valid usage only; 24 parser + 94 builder tests passed; Black/Ruff clean |
+| P1-4a re-review | review | same independent review explain/fallback | same review exclusions | `pi-deepseek-deepseek-v4-flash-openrouter` | 12:32 / 12:34 | 0 | `provider_reported`, `pi --mode json events`; input 118836, output 10503, cached 410006, reasoning 6665, total 539345; list/marginal $0.011746728 | PASS; 0 blocking/hardening/future findings |
+
+P1-4a accepted after four author attempts (one timeout, two bounded split
+completions, one review repair) and two reviews, about 28 minutes wall clock.
+Supervisor read the diff and reproduced 118 focused passes, full suite 941
+passed/1 skipped, Black/Ruff clean. Phase 1 provider-reported metered total is
+now $0.048778894 plus the explicitly unknown text-mode attempts before P1-4a.

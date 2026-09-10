@@ -990,7 +990,7 @@ crews:
 _PI_BASE_TAIL = [
     "--print",
     "--mode",
-    "text",
+    "json",
     "--no-session",
     "--no-extensions",
     "--no-skills",
