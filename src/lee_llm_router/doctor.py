@@ -26,6 +26,11 @@ Commands:
                                   [--at DATE] [--availability-file PATH]
                                   [--catalog-dir PATH]
                                   [--author-route ROUTE_ID] [--json]
+    lee-llm-router run --role ROLE --class CLASS --packet FILE
+                       [--route ROUTE_ID] [--workdir DIR]
+                       [--parent ATTEMPT_ID --escalation-reason R]
+                       [--timeout S] [--at DATE] [--availability-file PATH]
+                       [--catalog-dir PATH] [--json]
     lee-llm-router template
     lee-llm-router trace --last N
     lee-llm-router export-source --dest <path> [--force]
@@ -1645,6 +1650,169 @@ def _run_catalog_no_subcommand(_args: argparse.Namespace) -> int:
     return 3
 
 
+# ---------------------------------------------------------------------------
+# staffing run (P1-5a): select one route, dispatch it once, capture usage
+# ---------------------------------------------------------------------------
+
+
+def _run_run(args: argparse.Namespace) -> int:
+    """Run ``run``: select one eligible route, dispatch its harness once.
+
+    Corrected D209 contract (Chief ruling,
+    ``docs/staffing/chief-answers-p1-1.md``, quoted):
+    ``lee-llm-router run --role R --class C --packet FILE [--route ID]
+    [--workdir DIR] [--parent ATTEMPT_ID --escalation-reason R]
+    [--timeout S] [--json]``. ``--role`` and ``--class`` are always
+    required: they describe the work and drive eligibility (role scoping,
+    never-automatic, headroom, don't-cheap-trial flag). Without ``--route``
+    the selection basis is ``explain_cheapest_eligible`` for that role and
+    class; with ``--route ID`` the basis is ``explicit`` and the route must
+    be eligible under the same role/class eligibility path as ``catalog
+    explain`` — an ineligible explicit route exits 3 with the explain
+    reason.
+
+    P1-5a scope: then exactly one dispatch of the route's provider
+    ``build_command`` argv through the watchdog subprocess boundary, with
+    the packet text as the prompt, ``cwd`` set to the workdir, and no
+    shell anywhere. Pi runs its JSON event mode, Codex is forced to
+    ``json_flag: --json``, and Claude reuses the committed governed
+    stream-json capture so authoritative usage is captured; no oracle
+    runs, no cost is computed, and no ledger record is appended here.
+    ``run`` never escalates: ``--parent`` and ``--escalation-reason``
+    must be supplied together and are deliberately unused downstream of
+    that pairing check (a supervisor creates the linked attempt).
+
+    Exit codes: 0 when the child exited 0; the child's exit code otherwise
+    (124 on a ceiling timeout); 3 for every refusal before or around the
+    launch (argument pairing, packet/workdir problems, catalog or snapshot
+    errors, selection refusals, dispatch wiring errors) — a refused run
+    launches nothing.
+    """
+    import json
+    from datetime import date
+    from pathlib import Path
+
+    from lee_llm_router.availability import load_availability
+    from lee_llm_router.providers.base import LLMRouterError
+    from lee_llm_router.staffing import (
+        load_staffing_catalog,
+    )
+    from lee_llm_router.staffing.run import (
+        RunSelectionError,
+        dispatch_route,
+        run_json_record,
+        run_summary_lines,
+        select_route,
+    )
+
+    def fail(message: str, *, as_json: bool = False, exit_code: int = 3) -> int:
+        print(f"run: {message}", file=sys.stderr)
+        if as_json:
+            print(json.dumps({"error": message, "exit_code": exit_code}, indent=2))
+        return exit_code
+
+    as_json = bool(getattr(args, "json", False))
+    route_id = getattr(args, "route", None)
+    role = args.role
+    class_string = args.class_string
+
+    # Optional parent/escalation pair: parsed, pairing-checked, and unused
+    # (run never escalates; a supervisor creates the linked attempt).
+    parent = getattr(args, "parent", None)
+    escalation_reason = getattr(args, "escalation_reason", None)
+    if (parent is None) != (escalation_reason is None):
+        return fail(
+            "--parent and --escalation-reason must be supplied together",
+            as_json=as_json,
+        )
+
+    packet_path = Path(args.packet).expanduser()
+    try:
+        prompt = packet_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return fail(f"packet file cannot be read: {exc}", as_json=as_json)
+    if not prompt.strip():
+        return fail(f"packet file is empty: {packet_path}", as_json=as_json)
+
+    # --role and --class are always required (Chief's corrected D209
+    # contract): they describe the work and drive eligibility even when
+    # --route names the candidate explicitly. No stored or default class;
+    # no eligibility check that omits class policy.
+    try:
+        class_role, oracle_type, domain_tags, size_band, language = _parse_class_string(
+            class_string
+        )
+    except ValueError as exc:
+        return fail(str(exc), as_json=as_json)
+    if class_role != role:
+        return fail(
+            f"--role {role!r} does not equal the --class role segment "
+            f"{class_role!r}",
+            as_json=as_json,
+        )
+
+    if args.at is not None:
+        try:
+            at_date = date.fromisoformat(args.at)
+        except ValueError:
+            return fail(
+                f"--at: not an ISO date (YYYY-MM-DD): {args.at!r}", as_json=as_json
+            )
+    else:
+        at_date = date.today()
+
+    catalog_dir = (
+        Path(args.catalog_dir)
+        if args.catalog_dir is not None
+        else _default_catalog_dir()
+    )
+    try:
+        catalog = load_staffing_catalog(catalog_dir)
+    except Exception as exc:
+        return fail(f"catalog invalid: {exc}", as_json=as_json)
+
+    availability = load_availability(args.availability_file)
+    if args.availability_file is not None and availability.problem is not None:
+        return fail(
+            f"availability snapshot unusable: {availability.problem}", as_json=as_json
+        )
+
+    try:
+        outcome = select_route(
+            catalog,
+            availability,
+            role=role,
+            oracle_type=oracle_type,
+            size_band=size_band,
+            language=language,
+            domain_tags=domain_tags,
+            class_key=class_string,
+            at_date=at_date,
+            route_id=route_id,
+            openrouter_snapshot_path=args.openrouter_snapshot,
+            rate_table_path=args.rate_table,
+        )
+    except RunSelectionError as exc:
+        return fail(str(exc), as_json=as_json, exit_code=exc.exit_code)
+
+    try:
+        dispatch = dispatch_route(
+            outcome.route,
+            prompt,
+            workdir=args.workdir,
+            timeout_seconds=args.timeout,
+        )
+    except LLMRouterError as exc:
+        return fail(f"dispatch failed: {exc}", as_json=as_json)
+
+    if as_json:
+        print(json.dumps(run_json_record(outcome, dispatch), indent=2))
+    else:
+        for line in run_summary_lines(outcome, dispatch):
+            print(line)
+    return dispatch.exit_code
+
+
 class _FastResolveArgs:
     """Fast-path argument namespace for resolve."""
 
@@ -2266,6 +2434,120 @@ def main(argv: list[str] | None = None) -> None:
         help="Emit a JSON object instead of a plain-text table",
     )
     catalog_explain_parser.set_defaults(func=_run_catalog_explain)
+
+    run_parser = subparsers.add_parser(
+        "run",
+        help="Select one eligible staffing route, dispatch its harness once",
+    )
+    run_parser.add_argument(
+        "--role",
+        required=True,
+        metavar="ROLE",
+        help="Class role (impl, plan, review, judge, prose); always required",
+    )
+    run_parser.add_argument(
+        "--class",
+        required=True,
+        dest="class_string",
+        metavar="CLASS",
+        help=(
+            "Canonical five-segment class string "
+            "role/oracle_type/domain_tags/size_band/language "
+            "(e.g. impl/deterministic/none/s/python); always required"
+        ),
+    )
+    run_parser.add_argument(
+        "--packet",
+        required=True,
+        metavar="FILE",
+        help="Path to the packet file whose text is dispatched verbatim",
+    )
+    run_parser.add_argument(
+        "--route",
+        default=None,
+        metavar="ROUTE_ID",
+        help=(
+            "Explicit route id: selection basis 'explicit'; the route must "
+            "be eligible under the same role/class path as catalog explain "
+            "(an excluded route exits 3 and launches nothing). Without it, "
+            "the first eligible route in catalog explain marginal-price "
+            "order is selected (basis 'explain_cheapest_eligible')"
+        ),
+    )
+    run_parser.add_argument(
+        "--workdir",
+        default=None,
+        metavar="DIR",
+        help="Child process working directory (must exist; default: inherit)",
+    )
+    run_parser.add_argument(
+        "--parent",
+        default=None,
+        metavar="ATTEMPT_ID",
+        help=(
+            "Parent attempt id for an escalation-linked run; must be "
+            "supplied together with --escalation-reason (unused in P1-5a)"
+        ),
+    )
+    run_parser.add_argument(
+        "--escalation-reason",
+        default=None,
+        dest="escalation_reason",
+        metavar="R",
+        help=(
+            "Escalation reason paired with --parent; both or neither "
+            "(unused in P1-5a)"
+        ),
+    )
+    run_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        metavar="S",
+        help=(
+            "Wall-clock ceiling in seconds (default: the dispatch "
+            "boundary's standard ceiling)"
+        ),
+    )
+    run_parser.add_argument(
+        "--at",
+        default=None,
+        metavar="DATE",
+        help="ISO date (YYYY-MM-DD) for dated terms (default: today)",
+    )
+    run_parser.add_argument(
+        "--availability-file",
+        metavar="PATH",
+        default=None,
+        help="Path to the availability snapshot (default: per-host default)",
+    )
+    run_parser.add_argument(
+        "--catalog-dir",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Directory holding the six staffing catalog YAML documents "
+            "(default: the repo config/staffing directory)"
+        ),
+    )
+    run_parser.add_argument(
+        "--openrouter-snapshot",
+        metavar="PATH",
+        default=None,
+        help="Injectable pinned OpenRouter snapshot path (testing override)",
+    )
+    run_parser.add_argument(
+        "--rate-table",
+        metavar="PATH",
+        default=None,
+        help="Injectable agent-orch rate-table path (testing override)",
+    )
+    run_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a JSON summary object instead of plain text",
+    )
+    run_parser.set_defaults(func=_run_run)
 
     template_parser = subparsers.add_parser(
         "template",

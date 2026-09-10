@@ -1,0 +1,727 @@
+"""Staffing ``run`` selection and subprocess dispatch (P1-5a).
+
+Implements the selection-plus-dispatch foundation of the ``run`` command
+(D209 ruling 4 via ``docs/staffing/phase1-contracts.md`` §``run``):
+
+* **Selection.** Role/class selection (always required; ``--route`` is
+  optional on top, per the Chief's corrected D209 contract in
+  ``docs/staffing/chief-answers-p1-1.md``), over
+  exactly the ``catalog explain`` path (:func:`evaluate_eligibility` over
+  the committed catalog, an availability snapshot, dated terms, and
+  marginal pricing). An explicit route must be active and currently
+  eligible under the same role/class path; an excluded explicit route is
+  a refusal (exit 3) carrying the
+  exact explain reason, and nothing is launched. Role/class selection
+  takes the first eligible route in ``catalog explain --json``
+  marginal-price order and preserves the selection basis, reason, explain
+  reference, and every excluded route id/reason — explain evidence only,
+  never a new selection judgment (D206).
+* **Dispatch.** The selected route's harness provider ``build_command``
+  argv is substituted with the packet prompt and run exactly once through
+  the repository's watchdog/subprocess boundary
+  (:func:`lee_llm_router.dispatch.run_dispatch`), with ``cwd`` set to the
+  workdir and no shell interpolation anywhere. Pi runs its JSON event
+  mode and captures usage through the accepted P1-4a parser; Codex forces
+  ``json_flag: --json`` (the P1-4b governed capture note) and parses the
+  JSONL receipt; Claude reuses the committed governed capture
+  (``--output-format stream-json`` + :func:`capture_claude_usage`).
+  Every other wired harness runs the same boundary and records
+  ``usage.basis: unavailable`` with a specific reason — no parser ever
+  invents tokens.
+
+P1-5a scope boundary: no escalation, no oracle, no cost computation, and
+no ledger append happens here. ``run`` never escalates; parent and
+escalation-reason arguments are parsed upstream and deliberately unused.
+"""
+
+from __future__ import annotations
+
+import subprocess
+import time
+from dataclasses import dataclass
+from datetime import date
+from pathlib import Path
+from typing import Any, Callable, TextIO
+
+from lee_llm_router.availability import AvailabilitySnapshot
+from lee_llm_router.crews import HARNESS_PROVIDER_CHANNELS
+from lee_llm_router.dispatch import run_dispatch
+from lee_llm_router.providers.antigravity_cli import AntigravityCLIProvider
+from lee_llm_router.providers.base import FailureType, LLMRouterError
+from lee_llm_router.providers.codex_cli import (
+    CLAUDE_GOVERNED_CONFIG,
+    ClaudeCodeCLIProvider,
+    CodexCLIProvider,
+    capture_claude_usage,
+)
+from lee_llm_router.providers.codex_cli import (
+    capture_usage as capture_codex_usage,
+)
+from lee_llm_router.providers.omp_cli import OmpCLIProvider
+from lee_llm_router.providers.opencode_cli import OpenCodeCLIProvider
+from lee_llm_router.providers.pi_cli import PiCLIProvider
+from lee_llm_router.providers.pi_cli import capture_usage as capture_pi_usage
+from lee_llm_router.resolver import PROMPT_PLACEHOLDER, Resolution
+from lee_llm_router.staffing.catalog import Route as StaffingRoute
+from lee_llm_router.staffing.catalog import StaffingCatalog
+from lee_llm_router.staffing.eligibility import (
+    EligibilityRow,
+    StaffingEligibilityError,
+    evaluate_eligibility,
+)
+from lee_llm_router.watchdog import DEFAULT_MAX_MINUTES, DEFAULT_STALL_MINUTES
+
+__all__ = [
+    "DEFAULT_POLL_SECONDS",
+    "DEFAULT_RUN_TIMEOUT_SECONDS",
+    "DispatchOutcome",
+    "RunDispatchError",
+    "RunSelectionError",
+    "SELECTION_BASIS_EXPLAIN_CHEAPEST_ELIGIBLE",
+    "SELECTION_BASIS_EXPLICIT",
+    "SELECTION_EXIT_CODE",
+    "SelectionOutcome",
+    "build_dispatch_command",
+    "dispatch_route",
+    "run_json_record",
+    "run_summary_lines",
+    "select_route",
+    "selection_record",
+]
+
+SELECTION_EXIT_CODE = 3
+"""Process exit code for every selection refusal (mirrors ``catalog explain``)."""
+
+SELECTION_BASIS_EXPLICIT = "explicit"
+"""Selection basis when the caller named the route with ``--route``."""
+
+SELECTION_BASIS_EXPLAIN_CHEAPEST_ELIGIBLE = "explain_cheapest_eligible"
+"""Selection basis for role/class selection: first eligible route in the
+``catalog explain --json`` marginal-price order."""
+
+DEFAULT_RUN_TIMEOUT_SECONDS: float | None = None
+"""Default wall-clock ceiling: none, so the dispatch boundary default applies
+(:data:`lee_llm_router.watchdog.DEFAULT_MAX_MINUTES`)."""
+
+DEFAULT_POLL_SECONDS = 0.5
+"""Watchdog polling cadence forwarded to the dispatch boundary."""
+
+_TIMEOUT_EXIT_CODE = 124
+"""Exit code the dispatch boundary reports for a ceiling timeout."""
+
+# Injected boundaries default to the real subprocess and clock so the CLI
+# path is real; tests monkeypatch these module names for fake subprocesses.
+_DEFAULT_POPEN: Callable[..., Any] = subprocess.Popen
+_DEFAULT_CLOCK: Callable[[], float] = time.monotonic
+_DEFAULT_SLEEP: Callable[[float], None] = time.sleep
+
+#: Route harness -> provider class wired for ``run`` dispatch (P1-5a).
+#: ``pi_cli`` is deliberately instantiated directly (it is a command builder,
+#: not a registered completion provider); the rest mirror the committed
+#: harness mappings in :data:`lee_llm_router.crews.WORKER_ENV_PREFIX_PROVIDERS`.
+_HARNESS_PROVIDER_CLASSES: dict[str, type] = {
+    "pi": PiCLIProvider,
+    "codex": CodexCLIProvider,
+    "claude": ClaudeCodeCLIProvider,
+    "agy": AntigravityCLIProvider,
+    "opencode": OpenCodeCLIProvider,
+    "omp": OmpCLIProvider,
+}
+
+#: Route harness -> registered provider name, for provenance records only.
+_HARNESS_PROVIDER_NAMES: dict[str, str] = {
+    harness: provider_cls.name
+    for harness, provider_cls in _HARNESS_PROVIDER_CLASSES.items()
+}
+
+#: Funding channel -> Pi backend provider id, the exact reverse of the
+#: committed :data:`lee_llm_router.crews.HARNESS_PROVIDER_CHANNELS` mapping
+#: (openai-codex -> openai-sub, openrouter -> openrouter,
+#: opencode-go -> opencode-go, anthropic -> anthropic-sub). No id is invented.
+_CHANNEL_TO_PI_PROVIDER_ID: dict[str, str] = {
+    channel: provider for provider, channel in HARNESS_PROVIDER_CHANNELS.items()
+}
+
+_CODEX_GOVERNED_CONFIG: dict[str, str] = {"json_flag": "--json"}
+"""P1-4b future note: governed ``run`` capture forces Codex to emit the
+JSONL usage receipt stream that ``codex_cli.capture_usage`` parses."""
+
+#: Governed ``run`` capture reuses the committed Claude stream-json config
+#: (:data:`CLAUDE_GOVERNED_CONFIG`) verbatim, so ``claude -p`` emits the
+#: result event that ``codex_cli.capture_claude_usage`` parses.
+
+
+class RunSelectionError(Exception):
+    """A ``run`` selection refusal: nothing launched, the CLI exits 3.
+
+    Mirrors :class:`lee_llm_router.resolver.ResolutionError`: a plain
+    refusal carrying the process exit code and a stable machine ``kind``
+    (``excluded``, ``unknown_route``, ``no_eligible``, ``invalid_class``,
+    ``invalid_date``), not a provider failure.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        exit_code: int = SELECTION_EXIT_CODE,
+        kind: str,
+        cause: Exception | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.exit_code = exit_code
+        self.kind = kind
+        self.cause = cause
+
+
+class RunDispatchError(LLMRouterError):
+    """Raised when the selected route's harness cannot be dispatched.
+
+    Chains into :class:`LLMRouterError` with
+    :attr:`FailureType.PROVIDER_ERROR`; nothing has been launched when it
+    is raised before the subprocess boundary.
+    """
+
+    def __init__(self, message: str, *, cause: Exception | None = None) -> None:
+        super().__init__(message, failure_type=FailureType.PROVIDER_ERROR, cause=cause)
+
+
+# ---------------------------------------------------------------------------
+# Typed results
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SelectionOutcome:
+    """One selected route plus the explain evidence behind the selection.
+
+    ``basis`` is :data:`SELECTION_BASIS_EXPLICIT` or
+    :data:`SELECTION_BASIS_EXPLAIN_CHEAPEST_ELIGIBLE`; ``excluded`` carries
+    every excluded route's id and its exact explain reasons joined with
+    ``"; "`` — explain evidence preserved verbatim, never re-judged.
+    """
+
+    route: StaffingRoute
+    basis: str
+    reason: str
+    explain_ref: str
+    excluded: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
+class DispatchOutcome:
+    """One completed subprocess dispatch of the selected route.
+
+    ``argv`` is the final child argv (prompt substituted, no placeholder
+    left); ``exit_code`` is the child's exit code, or ``124`` on a ceiling
+    timeout (``timed_out`` True); ``stdout``/``stderr`` are the captured
+    streams decoded with ``errors="replace"``; ``usage`` is the schema-valid
+    attempt-record v2 usage mapping from the accepted harness capture
+    function.
+    """
+
+    argv: tuple[str, ...]
+    exit_code: int
+    stdout: str
+    stderr: str
+    duration_seconds: float
+    timed_out: bool
+    usage: dict[str, Any]
+
+
+# ---------------------------------------------------------------------------
+# Selection
+# ---------------------------------------------------------------------------
+
+
+def _marginal_price_sort_key(row: EligibilityRow) -> tuple[int, float, float, str]:
+    """Marginal-price order: priced rows ascend, unpriced last, id tie-break.
+
+    Exactly the committed ``catalog explain`` display key
+    (``doctor._explain_sort_key``): the display ordering the
+    ``catalog explain --json`` report presents, so role/class selection
+    picks the same first eligible route the report shows first.
+    """
+    pricing = row.pricing
+    if pricing is None:
+        return (1, 0.0, 0.0, row.route_id)
+    return (
+        0,
+        pricing.marginal_input_usd_per_token,
+        pricing.marginal_output_usd_per_token,
+        row.route_id,
+    )
+
+
+def _excluded_summaries(
+    rows: tuple[EligibilityRow, ...],
+) -> tuple[tuple[str, str], ...]:
+    """Explain-evidence excluded summaries: ``(route_id, joined reasons)``.
+
+    Reasons are the exact explain reasons joined with ``"; "`` in row
+    order; excluded routes always carry at least one reason.
+    """
+    return tuple(
+        (row.route_id, "; ".join(row.reasons)) for row in rows if not row.eligible
+    )
+
+
+def _normalize_at_date(at_date: date | str) -> date:
+    """Normalize ``at_date`` to a :class:`datetime.date`, failing closed."""
+    if isinstance(at_date, date):
+        return at_date
+    try:
+        return date.fromisoformat(at_date)
+    except (TypeError, ValueError) as exc:
+        raise RunSelectionError(
+            f"at_date: not an ISO date (YYYY-MM-DD): {at_date!r}",
+            kind="invalid_date",
+            cause=exc,
+        ) from exc
+
+
+def select_route(
+    catalog: StaffingCatalog,
+    availability: AvailabilitySnapshot,
+    *,
+    role: str,
+    oracle_type: str,
+    size_band: str,
+    language: str,
+    domain_tags: tuple[str, ...] | list[str] = (),
+    class_key: str,
+    at_date: date | str,
+    route_id: str | None = None,
+    author_route_id: str | None = None,
+    openrouter_snapshot_path: str | Path | None = None,
+    rate_table_path: str | Path | None = None,
+) -> SelectionOutcome:
+    """Select exactly one route, or refuse with nothing launched.
+
+    Both bases evaluate eligibility over exactly the ``catalog explain``
+    path — :func:`evaluate_eligibility` with the committed catalog, the
+    supplied availability snapshot, dated terms at ``at_date``, and
+    marginal pricing. No other checks, probabilities, or ladders apply.
+
+    Args:
+        catalog: The loaded staffing catalog (read-only).
+        availability: An already-normalised availability snapshot.
+        role: Class role (from the ``--class`` string; ``run`` has no
+            separate role flag in explicit mode).
+        oracle_type: Class oracle type.
+        size_band: Class size band.
+        language: Class language.
+        domain_tags: Class domain-tag set.
+        class_key: The canonical five-segment class string; must equal the
+            canonical rendering of the structured fields (enforced by the
+            eligibility evaluation).
+        at_date: Date for the dated-terms check (ISO string or date).
+        route_id: Explicit ``--route`` selection. The route must exist and
+            be currently eligible; otherwise :class:`RunSelectionError`
+            with exit code 3 and the exact explain reason.
+        author_route_id: Optional author route id, forwarded to the
+            eligibility evaluation (review/judge independence). ``run``
+            itself never supplies one.
+        openrouter_snapshot_path: Injectable pinned OpenRouter snapshot
+            path (defaults to the committed pinned file).
+        rate_table_path: Injectable agent-orch rate-table path.
+
+    Returns:
+        The :class:`SelectionOutcome` for the single selected route, with
+        the selection basis, reason, explain reference, and every excluded
+        route id/reason preserved from the same evaluation.
+
+    Raises:
+        RunSelectionError: When the class arguments are invalid, the
+            explicit route id matches no catalog route, the explicit route
+            is not currently eligible, or no route is eligible for
+            role/class selection. ``exit_code`` is always 3.
+    """
+    when = _normalize_at_date(at_date)
+    try:
+        rows = evaluate_eligibility(
+            catalog,
+            role=role,
+            oracle_type=oracle_type,
+            size_band=size_band,
+            language=language,
+            domain_tags=tuple(domain_tags),
+            class_key=class_key,
+            author_route_id=author_route_id,
+            availability=availability,
+            at_date=when,
+            openrouter_snapshot_path=openrouter_snapshot_path,
+            rate_table_path=rate_table_path,
+        )
+    except StaffingEligibilityError as exc:
+        raise RunSelectionError(str(exc), kind="invalid_class", cause=exc) from exc
+
+    excluded = _excluded_summaries(rows)
+    explain_ref = (
+        f"catalog explain --role {role} --class {class_key} "
+        f"--at {when.isoformat()} --json"
+    )
+
+    if route_id is not None:
+        row = next((r for r in rows if r.route_id == route_id), None)
+        if row is None:
+            raise RunSelectionError(
+                f"--route {route_id!r} does not match any route_id in the "
+                "routes catalog",
+                kind="unknown_route",
+            )
+        route = next(r for r in catalog.routes.routes if r.route_id == route_id)
+        if not row.eligible:
+            raise RunSelectionError(
+                f"explicit route {route_id!r} is not eligible for class "
+                f"{class_key!r} at {when.isoformat()}: {'; '.join(row.reasons)}",
+                kind="excluded",
+            )
+        return SelectionOutcome(
+            route=route,
+            basis=SELECTION_BASIS_EXPLICIT,
+            reason=(
+                f"explicit --route {route_id} is eligible for class "
+                f"{class_key} at {when.isoformat()}"
+            ),
+            explain_ref=explain_ref,
+            excluded=excluded,
+        )
+
+    eligible = sorted(
+        (row for row in rows if row.eligible), key=_marginal_price_sort_key
+    )
+    if not eligible:
+        raise RunSelectionError(
+            f"no eligible route for class {class_key!r} at {when.isoformat()}; "
+            f"{len(excluded)} routes excluded",
+            kind="no_eligible",
+        )
+    selected = eligible[0]
+    route = next(r for r in catalog.routes.routes if r.route_id == selected.route_id)
+    return SelectionOutcome(
+        route=route,
+        basis=SELECTION_BASIS_EXPLAIN_CHEAPEST_ELIGIBLE,
+        reason=(
+            f"first eligible route in catalog explain marginal-price order "
+            f"for class {class_key} at {when.isoformat()}"
+        ),
+        explain_ref=explain_ref,
+        excluded=excluded,
+    )
+
+
+def selection_record(outcome: SelectionOutcome) -> dict[str, Any]:
+    """The attempt-record v2 ``selection`` object for one selection outcome.
+
+    Exactly the four schema fields (``basis``, ``reason``, ``explain_ref``,
+    ``excluded``); excluded entries carry exactly ``route_id`` and
+    ``reason``. Explain evidence only — never a new selection judgment.
+    """
+    return {
+        "basis": outcome.basis,
+        "reason": outcome.reason,
+        "explain_ref": outcome.explain_ref,
+        "excluded": [
+            {"route_id": route_id, "reason": reason}
+            for route_id, reason in outcome.excluded
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Dispatch
+# ---------------------------------------------------------------------------
+
+
+def _pi_provider_id_for_channel(channel: str) -> str:
+    """The Pi backend provider id for a funding channel, from committed data.
+
+    The exact reverse of the committed
+    :data:`lee_llm_router.crews.HARNESS_PROVIDER_CHANNELS` mapping; no id
+    is invented for an unmapped channel (fail closed).
+    """
+    provider_id = _CHANNEL_TO_PI_PROVIDER_ID.get(channel)
+    if provider_id is None:
+        raise RunDispatchError(
+            f"no committed Pi provider id for channel {channel!r} "
+            "(crews.HARNESS_PROVIDER_CHANNELS has no reverse entry)"
+        )
+    return provider_id
+
+
+def build_dispatch_command(route: StaffingRoute) -> list[str]:
+    """Build the route's dispatch argv through its harness provider.
+
+    The argv comes from the route harness provider's ``build_command`` —
+    never from the catalog ``dispatch_template`` shell string and never
+    shell-quoted or interpolated. The final element is the literal
+    ``{prompt}`` placeholder for harnesses that take the prompt as argv;
+    stdin-delivery harnesses (``omp``) end without it and receive the
+    prompt on stdin at the subprocess boundary.
+
+    Pi config carries the channel's committed provider id (e.g.
+    ``openrouter``); Codex config forces ``json_flag: --json`` so the
+    governed capture receives the JSONL usage receipt; Claude config
+    reuses the committed ``CLAUDE_GOVERNED_CONFIG``
+    (``--output-format stream-json``) for the same reason.
+
+    Raises:
+        RunDispatchError: When the route's harness has no wired provider,
+            or a Pi route's channel has no committed provider id.
+    """
+    harness = route.harness
+    provider_cls = _HARNESS_PROVIDER_CLASSES.get(harness)
+    if provider_cls is None:
+        raise RunDispatchError(
+            f"harness {harness!r} has no provider wired for run dispatch"
+        )
+    provider = provider_cls()
+    if harness == "pi":
+        config: dict[str, Any] = {
+            "provider": _pi_provider_id_for_channel(route.channel)
+        }
+    elif harness == "codex":
+        config = dict(_CODEX_GOVERNED_CONFIG)
+    elif harness == "claude":
+        config = dict(CLAUDE_GOVERNED_CONFIG)
+    else:
+        config = {}
+    return provider.build_command(config, model=route.model, effort=route.effort)
+
+
+def _usage_for_harness(harness: str, stdout_text: str) -> dict[str, Any]:
+    """Schema-valid v2 usage from the harness's accepted capture function.
+
+    Pi and Codex have accepted P1-4a/P1-4b capture parsers and Claude the
+    committed P1-4c governed capture; every other wired harness records
+    ``unavailable`` with a specific reason. No parser estimates tokens
+    from text, context length, cost, or elapsed time.
+    """
+    if harness == "pi":
+        return capture_pi_usage(stdout_text)
+    if harness == "codex":
+        return capture_codex_usage(stdout_text)
+    if harness == "claude":
+        return capture_claude_usage(stdout_text)
+    return {
+        "basis": "unavailable",
+        "unavailable_reason": (
+            f"no usage capture parser wired for harness {harness!r}"
+        ),
+        "input_tokens": None,
+        "output_tokens": None,
+        "cached_input_tokens": None,
+        "reasoning_tokens": None,
+        "total_tokens": None,
+    }
+
+
+def _dispatch_resolution(route: StaffingRoute, argv: list[str]) -> Resolution:
+    """Build the dispatch-boundary resolution for one selected route."""
+    return Resolution(
+        crew="run",
+        role="run",
+        mode="run",
+        worker_id=route.route_id,
+        provider=_HARNESS_PROVIDER_NAMES.get(route.harness, route.harness),
+        model=route.model,
+        effort=route.effort,
+        channel=route.channel,
+        headroom="",
+        headroom_remaining_fraction=None,
+        pace_ratio=None,
+        reason="staffing run dispatch",
+        authorized_by=None,
+        route_id=route.route_id,
+        dispatch_command=list(argv),
+        prompt_delivery=("argv" if PROMPT_PLACEHOLDER in argv else "stdin"),
+        worker_command=route.dispatch_template,
+        snapshot_observed_at=None,
+        snapshot_stale=False,
+    )
+
+
+def dispatch_route(
+    route: StaffingRoute,
+    prompt: str,
+    *,
+    workdir: str | Path | None = None,
+    timeout_seconds: float | None = DEFAULT_RUN_TIMEOUT_SECONDS,
+    stall_minutes: float = DEFAULT_STALL_MINUTES,
+    popen: Callable[..., Any] | None = None,
+    clock: Callable[[], float] | None = None,
+    sleep: Callable[[float], None] | None = None,
+    poll_seconds: float = DEFAULT_POLL_SECONDS,
+    stderr: TextIO | None = None,
+) -> DispatchOutcome:
+    """Dispatch the selected route once through the watchdog boundary.
+
+    The route's provider ``build_command`` argv carries the packet prompt
+    (argv substitution, or stdin delivery when the harness has no
+    placeholder), the child's ``cwd`` is the workdir when supplied, and
+    nothing is ever shell-quoted or interpolated. The single launch is
+    supervised by :func:`lee_llm_router.dispatch.run_dispatch` (stall
+    watchdog + wall-clock ceiling); there is no retry and no escalation.
+
+    Args:
+        route: The selected catalog route.
+        prompt: The prompt text taken verbatim from the packet.
+        workdir: Optional child working directory; must exist.
+        timeout_seconds: Wall-clock ceiling in seconds; ``None`` uses the
+            boundary default (:data:`DEFAULT_MAX_MINUTES` minutes).
+        stall_minutes: Silence minutes before a stall is flagged (a stall
+            never kills; only the ceiling does).
+        popen: Injected process spawner (tests).
+        clock: Injected monotonic clock (tests).
+        sleep: Injected sleep callable (tests).
+        poll_seconds: Watchdog polling cadence.
+        stderr: Stream for watchdog warnings (defaults to ``sys.stderr``).
+
+    Returns:
+        The :class:`DispatchOutcome` with the final argv, captured
+        stdout/stderr, exit code, wall-clock duration, timeout flag, and
+        the schema-valid usage from the harness's accepted capture
+        function.
+
+    Raises:
+        RunDispatchError: When the harness has no wired provider, a Pi
+            route's channel has no committed provider id, the workdir does
+            not exist, or the timeout is not positive.
+        LLMRouterError: When the harness capture parser fails closed on
+            contradictory usage evidence.
+    """
+    harness = route.harness
+    argv = build_dispatch_command(route)
+
+    if workdir is not None:
+        workdir_path = Path(workdir)
+        if not workdir_path.is_dir():
+            raise RunDispatchError(f"workdir is not a directory: {workdir_path}")
+
+    if timeout_seconds is None:
+        max_minutes: float = DEFAULT_MAX_MINUTES
+    else:
+        if timeout_seconds <= 0:
+            raise RunDispatchError(
+                f"timeout must be a positive number of seconds, got "
+                f"{timeout_seconds!r}"
+            )
+        max_minutes = float(timeout_seconds) / 60.0
+
+    popen_fn = popen if popen is not None else _DEFAULT_POPEN
+    clock_fn = clock if clock is not None else _DEFAULT_CLOCK
+    sleep_fn = sleep if sleep is not None else _DEFAULT_SLEEP
+
+    if workdir is not None:
+        base_popen = popen_fn
+        cwd = str(Path(workdir))
+
+        def popen_with_cwd(child_argv: list[str], **kwargs: Any) -> Any:
+            return base_popen(child_argv, cwd=cwd, **kwargs)
+
+        popen_fn = popen_with_cwd
+
+    resolution = _dispatch_resolution(route, argv)
+    stdout_buf = bytearray()
+    stderr_buf = bytearray()
+
+    started = clock_fn()
+    exit_code = run_dispatch(
+        resolution,
+        prompt,
+        stall_minutes=stall_minutes,
+        max_minutes=max_minutes,
+        popen=popen_fn,
+        clock=clock_fn,
+        sleep=sleep_fn,
+        poll_seconds=poll_seconds,
+        sink=stdout_buf.extend,
+        err_sink=stderr_buf.extend,
+        stderr=stderr,
+    )
+    duration = clock_fn() - started
+
+    stdout_text = bytes(stdout_buf).decode("utf-8", errors="replace")
+    return DispatchOutcome(
+        argv=tuple(argv),
+        exit_code=exit_code,
+        stdout=stdout_text,
+        stderr=bytes(stderr_buf).decode("utf-8", errors="replace"),
+        duration_seconds=duration,
+        timed_out=(exit_code == _TIMEOUT_EXIT_CODE),
+        usage=_usage_for_harness(harness, stdout_text),
+    )
+
+
+def run_json_record(
+    outcome: SelectionOutcome, dispatch: DispatchOutcome
+) -> dict[str, Any]:
+    """The ``run --json`` summary object for one selection-plus-dispatch.
+
+    P1-5a scope boundary: this is the dispatch-and-selection summary, not
+    the final ledger attempt record. It carries the attempt-record v2
+    ``route`` identity, the ``selection`` evidence, the schema-valid v2
+    ``usage`` mapping captured from the harness, and the wall-clock and
+    captured-stream dispatch facts. Later phases add ``attempt_id``,
+    oracle verdict, cost, provenance, validation, and the single ledger
+    append; nothing here touches the ledger or invents a verdict.
+    """
+    return {
+        "schema_version": 2,
+        "record_kind": "router_run",
+        "route": {
+            "model": outcome.route.model,
+            "effort": outcome.route.effort,
+            "harness": outcome.route.harness,
+            "channel": outcome.route.channel,
+        },
+        "selection": selection_record(outcome),
+        "usage": dispatch.usage,
+        "wall_clock_ms": max(0, round(dispatch.duration_seconds * 1000.0)),
+        "dispatch": {
+            "argv": list(dispatch.argv),
+            "exit_code": dispatch.exit_code,
+            "timed_out": dispatch.timed_out,
+            "duration_seconds": dispatch.duration_seconds,
+            "stdout": dispatch.stdout,
+            "stderr": dispatch.stderr,
+        },
+    }
+
+
+def run_summary_lines(
+    outcome: SelectionOutcome, dispatch: DispatchOutcome
+) -> list[str]:
+    """The compact plain-text ``run`` summary (one fact per line).
+
+    Mirrors the ``--json`` summary object: selected route and basis, the
+    dispatch exit and wall clock, and the authoritative usage basis with
+    its reported counters (``-`` when unknown). Never prints the packet
+    prompt or the full captured stdout/stderr.
+    """
+    route = outcome.route
+    model = route.model if route.effort is None else f"{route.model}/{route.effort}"
+    lines = [
+        f"route: {route.route_id} ({route.harness} {model} via {route.channel})",
+        f"selection: {outcome.basis} — {outcome.reason}",
+        f"dispatch: exit {dispatch.exit_code}"
+        + (" (ceiling timeout)" if dispatch.timed_out else "")
+        + f", wall {dispatch.duration_seconds:.1f}s",
+    ]
+    usage = dispatch.usage
+    if usage.get("basis") == "unavailable":
+        lines.append(f"usage: unavailable ({usage.get('unavailable_reason')})")
+    else:
+        counters = " ".join(
+            f"{name}={usage.get(field)}"
+            for field, name in (
+                ("input_tokens", "in"),
+                ("output_tokens", "out"),
+                ("cached_input_tokens", "cached"),
+                ("reasoning_tokens", "reasoning"),
+                ("total_tokens", "total"),
+            )
+        )
+        lines.append(f"usage: {usage.get('basis')} ({usage.get('source')}) {counters}")
+    return lines

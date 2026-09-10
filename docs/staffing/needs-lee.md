@@ -333,3 +333,23 @@ router commit `b5ed4b5`; Phase 1 has not begun.
 - OpenCode Go is currently `TOO FAST` / `likely_exhausted`; it is excluded from
   dispatch. Reviews use the explain-eligible OpenRouter DeepSeek fallback until
   availability changes. This is governed by D209 and is not missing authority.
+- P1-5a design question after two author rounds did not converge: explicit
+  `doctor run --route ID` must prove the route currently eligible through the
+  same class-sensitive eligibility path as `catalog explain`, but the approved
+  syntax makes `--route ID` mutually exclusive with `--role R --class C`.
+  Which class context governs explicit-route eligibility: require `--class`
+  alongside `--route`, derive a stored/default class, or define an explicit
+  route check that intentionally omits class policy? No third same-route
+  author attempt was made.
+
+  Resolved by Chief in `chief-answers-p1-1.md`: `--role` and `--class` are
+  always required; optional `--route` is an explicit override checked under
+  that same role/class context. The corrected-contract attempt is authorized
+  as fresh, not a third retry under the superseded contract.
+
+## Resolved by Chief, Phase 1 round 1 (2026-09-10)
+
+See `docs/staffing/chief-answers-p1-1.md`: `run` always takes `--role` and `--class`;
+`--route ID` pins the choice and is checked for eligibility under the same role/class path as
+explain; ineligible explicit route exits 3 with the reason. Continue P1-5a with the corrected
+contract quoted.
