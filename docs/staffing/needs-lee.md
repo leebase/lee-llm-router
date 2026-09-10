@@ -322,3 +322,14 @@ and 2 live and accepted them, with the `--at` tier display recorded as Phase 1's
 This moves both former phase-gate blocking items (the unsourced role-floor vocabulary map and
 the missing reviewer/author comparison input) to Resolved. The reviewed implementation is in
 router commit `b5ed4b5`; Phase 1 has not begun.
+
+## Phase 1 — 2026-09-10
+
+- No authority blocker at P1-0. D209 rulings 1–8 resolve field placement,
+  selection, live-proof alternatives, and the $10 ceiling. Safe implementation
+  assumption recorded in `phase1-contracts.md`: D209's flat field names are
+  represented inside the existing `usage`, `cost`, and new `selection` objects
+  rather than duplicated at top level, as the sprint plan explicitly requires.
+- OpenCode Go is currently `TOO FAST` / `likely_exhausted`; it is excluded from
+  dispatch. Reviews use the explain-eligible OpenRouter DeepSeek fallback until
+  availability changes. This is governed by D209 and is not missing authority.
