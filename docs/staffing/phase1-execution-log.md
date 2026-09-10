@@ -209,6 +209,21 @@ OpenRouter metered total is $0.329930258 plus unknown pre-P1-4a text-mode
 attempts; Luna subscription execution totals a separate $0.209281200
 list/marginal estimate.
 
+## P1-4e — OpenCode usage capture
+
+| Packet | Role | Explain / selection | Excluded summary | Route | Start / end | Exit | Usage / cost | Result |
+|---|---|---|---|---|---|---:|---|---|
+| P1-4e GLM | impl | explained `impl/deterministic/none/s/python`; first authority-available metered rung | Go likely-exhausted; proof subscriptions reserved; never-automatic/policy exclusions | `pi-z-ai-glm-5-3-flash-openrouter` | about 17:14 / 17:24 | watchdog, zero output | provider-reported; input 57180, output 5780, cached 866816, reasoning 2713, total 929776; $0.005733500 | `platform_timeout`; no split useful |
+| P1-4e Luna | impl | fresh explain; Luna eligible; parent GLM, `platform_timeout` | same, cheaper rung failed | `pi-gpt-5-6-luna-xhigh-openai-sub` | about 17:25 / 17:35 | watchdog | provider-reported; input 442752, output 24527, cached 3985408, reasoning 13814, total 4452687; subscription estimate $0.088487100 | large partial but no tests; handoff only |
+| P1-4e Sol | impl | fresh explain; final Sol High rung eligible; parent Luna, `platform_timeout` | same; cheaper rungs exhausted | `codex-gpt-5-6-sol-high-openai-sub` | about 17:36 / 17:46 | watchdog during final checks | `usage.basis: unavailable`; terminal `turn.completed` absent after watchdog; no cost | retained only evidence-proved parser; 44 focused/63 relevant passed; supervisor full 1134 passed/1 skip, Black/Ruff clean |
+| P1-4e review | review | explained with Sol author; Go excluded; independent DeepSeek eligible | GPT independence; Go likely-exhausted; Gemini reserved | `pi-deepseek-deepseek-v4-flash-openrouter` | about 17:48 / 17:51 | 0 | provider-reported; input 83013, output 12184, cached 713216, reasoning 7430, total 808413; $0.009020004 | PASS; 0 blocking; 4 hardening |
+
+P1-4e accepted after three author ladder attempts and one review. OpenCode now
+uses opt-in `--format json`, parses authoritative `step_finish` usage, and
+accepts a worker artifact only with explicit provider-copy provenance. Phase 1
+OpenRouter metered total is $0.382932125 plus unknown pre-P1-4a text-mode
+attempts; Luna subscription execution totals $0.363461550 estimated.
+
 ## P1-1 — Effective tier in explain
 
 | Packet | Role | Explain / selection | Excluded summary | Route | Start / end | Exit | Usage / cost | Result |
