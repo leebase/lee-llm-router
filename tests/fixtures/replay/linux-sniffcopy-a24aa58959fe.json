@@ -1,0 +1,7 @@
+{
+  "case_id": "linux-sniffcopy-a24aa58959fe",
+  "class_key": "impl/deterministic/infra-env/m/c",
+  "oracle_type": "deterministic",
+  "failure_class": "platform_timeout",
+  "expected_action": "retry_same_route_after_platform_repair"
+}

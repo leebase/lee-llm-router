@@ -1,0 +1,7 @@
+{
+  "case_id": "job-search-starburst-exit-143",
+  "class_key": "impl/human/none/s/mixed",
+  "oracle_type": "human",
+  "failure_class": "platform_env",
+  "expected_action": "retry_same_route_after_platform_repair"
+}

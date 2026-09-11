@@ -1,0 +1,4 @@
+# The repo-root .gitignore ignores *.json and only un-ignores tests/fixtures/*.json
+# (one level deep). These replay fixtures are test data and must be tracked,
+# so re-include them here (same convention as tests/fixtures/availability/).
+!*.json

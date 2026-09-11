@@ -1,0 +1,7 @@
+{
+  "case_id": "revenue-e3fbeb9f3c4c",
+  "class_key": "impl/judge/authority/s/markdown",
+  "oracle_type": "judge",
+  "failure_class": "unaccounted_spend",
+  "expected_action": "reconcile_then_retry"
+}

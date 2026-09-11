@@ -1,0 +1,7 @@
+{
+  "case_id": "snowflake-elt-478250b5f6a1",
+  "class_key": "impl/deterministic/ui-browser/m/mixed",
+  "oracle_type": "deterministic",
+  "failure_class": "platform_env",
+  "expected_action": "retry_same_route_after_platform_repair"
+}

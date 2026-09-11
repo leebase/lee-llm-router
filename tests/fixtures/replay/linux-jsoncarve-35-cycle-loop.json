@@ -1,0 +1,7 @@
+{
+  "case_id": "linux-jsoncarve-35-cycle-loop",
+  "class_key": "plan/judge/authority/l/yaml-config",
+  "oracle_type": "judge",
+  "failure_class": "spec_rejected",
+  "expected_action": "return_to_planner"
+}
