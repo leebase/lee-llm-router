@@ -20,9 +20,12 @@ lee-llm-router run --role ROLE --class CLASS --packet FILE
   [--route ROUTE_ID] [--supervisor-route ROUTE_ID]
   [--author-route ROUTE_ID] [--oracle CMD] [--workdir DIR]
   [--class-derivation FILE]
+  --owned-paths PATH [--owned-paths PATH ...]
   [--parent ATTEMPT_ID] [--escalation-reason R] [--timeout S]
   [--at DATE] [--availability-file PATH] [--catalog-dir PATH]
   [--openrouter-snapshot PATH] [--rate-table PATH] [--json]
+
+lee-llm-router census [--json]
 ```
 
 `staff --json` returns the compact staffing block plus the selected route,

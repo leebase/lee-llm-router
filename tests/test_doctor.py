@@ -1723,3 +1723,111 @@ def test_staff_packet_options_do_not_change_existing_mode_contracts(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert len(captured.err.splitlines()) == 1
+
+
+# ---------------------------------------------------------------------------
+# census (P3-4 / D213 ruling 4): live-run listing and stale cleanup
+# ---------------------------------------------------------------------------
+
+
+def _census_registry_env(monkeypatch: pytest.MonkeyPatch, tmp_path) -> str:
+    """Redirect the per-host run registry to a scratch directory."""
+    registry = str(tmp_path / "run-registry")
+    monkeypatch.setenv("LEE_LLM_ROUTER_RUN_REGISTRY_DIR", registry)
+    return registry
+
+
+def test_census_cli_empty_registry_reports_nothing_live(tmp_path, monkeypatch, capsys):
+    from lee_llm_router.doctor import main
+
+    _census_registry_env(monkeypatch, tmp_path)
+    with pytest.raises(SystemExit) as exc_info:
+        main(["census", "--json"])
+    assert exc_info.value.code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {"live": [], "cleaned": []}
+
+
+def test_census_cli_lists_live_run_and_cleans_stale_pid_with_note(
+    tmp_path, monkeypatch, capsys
+):
+    """census lists genuinely live rows, cleans stale pids, notes each."""
+    import os
+
+    from lee_llm_router.doctor import main
+    from lee_llm_router.staffing.census import register_run
+
+    registry = _census_registry_env(monkeypatch, tmp_path)
+    live = register_run(
+        route_id="codex-gpt-5-6-sol-low-openai-sub",
+        packet_id="sha256:live-packet",
+        owned_paths=[str(tmp_path / "owned-tree")],
+        pid=os.getpid(),  # genuinely this process: census must keep it
+        registry_dir=registry,
+    )
+    # A pid far beyond every platform's pid_max cannot exist.
+    stale = register_run(
+        route_id="pi-z-ai-glm-5-3-flash-openrouter",
+        packet_id="sha256:stale-packet",
+        owned_paths=[str(tmp_path / "other-tree")],
+        pid=999999999,
+        registry_dir=registry,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["census", "--json"])
+    assert exc_info.value.code == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert [row["pid"] for row in payload["live"]] == [os.getpid()]
+    live_row = payload["live"][0]
+    assert live_row["route_id"] == "codex-gpt-5-6-sol-low-openai-sub"
+    assert live_row["packet_id"] == "sha256:live-packet"
+    assert live_row["owned_paths"] == [str(tmp_path / "owned-tree")]
+    assert live_row["registry_path"] == str(live.path)
+
+    assert len(payload["cleaned"]) == 1
+    cleaned = payload["cleaned"][0]
+    assert cleaned["pid"] == 999999999
+    assert "no longer exists" in cleaned["reason"]
+    assert cleaned["registry_path"] == str(stale.path)
+
+    assert live.path is not None and live.path.exists()
+    assert stale.path is not None and not stale.path.exists()
+
+
+def test_census_cli_text_output_cleans_stale_with_note(tmp_path, monkeypatch, capsys):
+    from lee_llm_router.doctor import main
+    from lee_llm_router.staffing.census import register_run
+
+    registry = _census_registry_env(monkeypatch, tmp_path)
+    register_run(
+        route_id="route-a",
+        packet_id="sha256:stale",
+        owned_paths=[str(tmp_path / "tree")],
+        pid=999999999,
+        registry_dir=registry,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["census"])
+    assert exc_info.value.code == 0
+    out = capsys.readouterr().out
+    assert "0 live run(s), 1 stale record(s) cleaned" in out
+    assert "cleaned stale record pid 999999999" in out
+    assert "no longer exists" in out
+
+
+def test_census_cli_corrupt_registry_record_exits_3(tmp_path, monkeypatch, capsys):
+    from lee_llm_router.doctor import main
+
+    registry = _census_registry_env(monkeypatch, tmp_path)
+    from pathlib import Path
+
+    Path(registry).mkdir(parents=True, exist_ok=True)
+    (Path(registry) / "broken.json").write_text("{not json", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["census"])
+    assert exc_info.value.code == 3
+    assert "not valid JSON" in capsys.readouterr().err

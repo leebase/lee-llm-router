@@ -37,6 +37,11 @@ from lee_llm_router.providers.omp_cli import OMP_USAGE_SOURCE
 from lee_llm_router.providers.opencode_cli import OPENCODE_USAGE_SOURCE
 from lee_llm_router.staffing import load_staffing_catalog
 from lee_llm_router.staffing.catalog import Route as StaffingRoute
+from lee_llm_router.staffing.census import (
+    ProcessIdentity,
+    census_registry,
+    register_run,
+)
 from lee_llm_router.staffing.json_int import int_from_decimal, int_to_decimal
 from lee_llm_router.staffing.run import (
     Resolution,
@@ -233,13 +238,17 @@ def scratch_state(monkeypatch, tmp_path):
     """Point every stateful ledger/env override at scratch paths.
 
     Every stateful path is scratch-only; successful dispatches append only to
-    the attempt ledger and pre-dispatch refusals create neither file.
+    the attempt ledger and pre-dispatch refusals create neither file. The
+    live-run registry (P3-4) is likewise redirected to a scratch per-test
+    directory so no CLI test can touch real user state.
     """
     events = tmp_path / "events.jsonl"
     attempts = tmp_path / "attempts.jsonl"
+    registry = tmp_path / "run-registry"
     monkeypatch.setenv("LEE_LLM_ROUTER_EVENTS_FILE", str(events))
     monkeypatch.setenv("LEE_LLM_ROUTER_ATTEMPTS_FILE", str(attempts))
-    return {"events": events, "attempts": attempts}
+    monkeypatch.setenv("LEE_LLM_ROUTER_RUN_REGISTRY_DIR", str(registry))
+    return {"events": events, "attempts": attempts, "registry": registry}
 
 
 # ---------------------------------------------------------------------------
@@ -384,7 +393,7 @@ class SequencedLaunchRecorder:
     def __call__(self, argv: list[str], **kwargs: Any) -> FakeProcess:
         self.calls.append((list(argv), dict(kwargs)))
         spec = self.specs[len(self.processes)]
-        if isinstance(spec, Exception):
+        if isinstance(spec, BaseException):
             raise spec
         proc = FakeProcess(argv, **spec, **kwargs)
         self.processes.append(proc)
@@ -423,6 +432,7 @@ def _run_cli(
     parent: str | None = None,
     escalation_reason: str | None = None,
     timeout: float | None = None,
+    owned_paths: Sequence[str] | None = None,
     extra: Sequence[str] = (),
     launcher: LaunchRecorder | SequencedLaunchRecorder | None = None,
     clock: AdvancingClock | None = None,
@@ -473,6 +483,10 @@ def _run_cli(
         argv += ["--escalation-reason", escalation_reason]
     if timeout is not None:
         argv += ["--timeout", str(timeout)]
+    # P3-4: every run registers its owned paths; the packet file is the
+    # deterministic default owned path for tests that do not care.
+    for owned in owned_paths if owned_paths is not None else [str(packet_path)]:
+        argv += ["--owned-paths", str(owned)]
     argv += list(extra)
     if json_output:
         argv.append("--json")
@@ -3925,3 +3939,267 @@ def test_run_refuses_mismatched_class_derivation_before_launch(
     assert launcher.processes == []
     assert not scratch_state["attempts"].exists()
     assert "must match --class" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# P3-4: live run registry (--owned-paths, refusal, deregistration)
+# ---------------------------------------------------------------------------
+
+FAKE_LIVE_PID = 424242
+"""A pid that only exists inside the fake identity seams below."""
+
+FAKE_START_TIME = 777
+"""Linux start time recorded by the fake identity seams."""
+
+
+def _wire_fake_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fake process identities: the test process and one fake live pid.
+
+    Every identity read reports the same fake start time, so a registered
+    record is consistently judged live; any other pid is dead.
+    """
+    from lee_llm_router.staffing import census as census_mod
+
+    own_pid = os.getpid()
+
+    def alive(pid: int) -> bool:
+        return pid == own_pid or pid == FAKE_LIVE_PID
+
+    def identity(pid: int) -> census_mod.ProcessIdentity:
+        return census_mod.ProcessIdentity(
+            kind="linux_start_time", start_time=FAKE_START_TIME
+        )
+
+    monkeypatch.setattr(census_mod, "_PID_ALIVE", alive)
+    monkeypatch.setattr(census_mod, "_PROCESS_IDENTITY", identity)
+
+
+def _register_fixture_run(registry_dir: Path, owned: Sequence[str]):
+    """Pre-register one fake live run for intersection/refusal tests."""
+    return register_run(
+        route_id=CODEX_ROUTE,
+        packet_id="sha256:fixture-run",
+        owned_paths=list(owned),
+        pid=FAKE_LIVE_PID,
+        identity=ProcessIdentity(kind="linux_start_time", start_time=FAKE_START_TIME),
+        registry_dir=registry_dir,
+    )
+
+
+def test_run_refuses_intersecting_live_run_and_launches_nothing(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """A live run owning the packet's path refuses the second run: exit 3,
+    nothing launched, nothing appended, and the live record is untouched."""
+    _wire_fake_identity(monkeypatch)
+    registry = scratch_state["registry"]
+    pre = _register_fixture_run(registry, owned=[str(packet)])
+    launcher = LaunchRecorder(exit_code=0)
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        launcher=launcher,
+    )
+    assert code == 3
+    assert launcher.processes == []
+    assert not scratch_state["attempts"].exists()
+    assert "intersect" in captured.err
+    assert str(FAKE_LIVE_PID) in captured.err
+    assert pre.path is not None and pre.path.exists()
+    # The live record is still listed after the refusal.
+    result = census_registry(registry_dir=registry)
+    assert [r.pid for r in result.live] == [FAKE_LIVE_PID]
+
+
+def test_run_accepts_disjoint_live_run(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state, tmp_path
+):
+    """A live run owning a different path does not refuse: the run launches,
+    records, and deregisters itself, leaving only the other run live."""
+    _wire_fake_identity(monkeypatch)
+    registry = scratch_state["registry"]
+    _register_fixture_run(registry, owned=[str(tmp_path / "other-tree")])
+    launcher = LaunchRecorder(exit_code=0)
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        launcher=launcher,
+    )
+    assert code == 0
+    _assert_output_matches_single_append(captured, scratch_state)
+    assert len(launcher.processes) == 1
+    result = census_registry(registry_dir=registry)
+    assert [r.pid for r in result.live] == [FAKE_LIVE_PID]
+
+
+def test_run_deregisters_on_failed_dispatch_exit(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """A worker exit 1 still appends the truthful record and deregisters."""
+    _wire_fake_identity(monkeypatch)
+    registry = scratch_state["registry"]
+    launcher = LaunchRecorder(exit_code=1)
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        launcher=launcher,
+    )
+    assert code == 1
+    payload = _assert_output_matches_single_append(captured, scratch_state)
+    assert payload["verified_success"] is False
+    result = census_registry(registry_dir=registry)
+    assert result.live == ()
+    assert result.cleaned == ()
+
+
+def test_run_deregisters_on_ceiling_timeout(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """A killed ceiling timeout records the truth and leaves no live row."""
+    _wire_fake_identity(monkeypatch)
+    launcher = LaunchRecorder(never_exits=True)
+    clock = AdvancingClock(step=60.0)
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        timeout=5,
+        launcher=launcher,
+        clock=clock,
+    )
+    assert code == 124
+    payload = _assert_output_matches_single_append(captured, scratch_state)
+    assert payload["failure_class"] == "platform_timeout"
+    result = census_registry(registry_dir=scratch_state["registry"])
+    assert result.live == ()
+
+
+def test_run_deregisters_on_popener_exception(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """An exception escaping the launch boundary still deregisters."""
+    _wire_fake_identity(monkeypatch)
+    launcher = SequencedLaunchRecorder([ValueError("boom")])
+    with pytest.raises(ValueError, match="boom"):
+        _run_cli(
+            monkeypatch,
+            capsys,
+            catalog_dir=catalog_dir,
+            snapshot_path=snapshot,
+            packet_path=packet,
+            launcher=launcher,
+        )
+    result = census_registry(registry_dir=scratch_state["registry"])
+    assert result.live == ()
+
+
+def test_run_deregisters_on_interrupt(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """KeyboardInterrupt escaping dispatch still deregisters, unmasked."""
+    _wire_fake_identity(monkeypatch)
+    launcher = SequencedLaunchRecorder([KeyboardInterrupt()])
+    with pytest.raises(KeyboardInterrupt):
+        _run_cli(
+            monkeypatch,
+            capsys,
+            catalog_dir=catalog_dir,
+            snapshot_path=snapshot,
+            packet_path=packet,
+            launcher=launcher,
+        )
+    result = census_registry(registry_dir=scratch_state["registry"])
+    assert result.live == ()
+
+
+def test_run_deregisters_when_oracle_setup_fails_after_worker(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """Oracle failure: record persisted, exit 3, no live registry row left."""
+    from lee_llm_router.staffing import run as run_mod
+    from lee_llm_router.staffing.run import RunDispatchError
+
+    def broken_oracle(*_a: Any, **_k: Any) -> Any:
+        raise RunDispatchError("oracle could not start")
+
+    monkeypatch.setattr(run_mod, "run_oracle", broken_oracle)
+    _wire_fake_identity(monkeypatch)
+    launcher = LaunchRecorder(exit_code=0)
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        extra=("--oracle", "true"),
+        launcher=launcher,
+    )
+    assert code == 3
+    payload = _assert_output_matches_single_append(captured, scratch_state)
+    assert payload["verdict"] == "fail"
+    result = census_registry(registry_dir=scratch_state["registry"])
+    assert result.live == ()
+
+
+def test_run_requires_owned_paths_before_launch(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """Missing --owned-paths is an argparse exit 2; nothing runs or records."""
+    launcher = LaunchRecorder()
+    monkeypatch.setattr("lee_llm_router.staffing.run._DEFAULT_POPEN", launcher)
+    argv = [
+        "run",
+        "--role",
+        IMPL_ROLE,
+        "--class",
+        IMPL_CLASS,
+        "--packet",
+        str(packet),
+        "--catalog-dir",
+        str(catalog_dir),
+        "--availability-file",
+        str(snapshot),
+        "--json",
+    ]
+    with pytest.raises(SystemExit) as exc_info:
+        cli_main(argv)
+    assert exc_info.value.code == 2
+    capsys.readouterr()
+    assert launcher.processes == []
+    assert not scratch_state["attempts"].exists()
+    assert not any(scratch_state["registry"].glob("*.json"))
+
+
+def test_run_refuses_blank_owned_path_before_launch(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """A blank --owned-paths value is refused with exit 3, launches nothing."""
+    launcher = LaunchRecorder()
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        owned_paths=["   "],
+        launcher=launcher,
+    )
+    assert code == 3
+    assert launcher.processes == []
+    assert "owned paths invalid" in captured.err
+    assert not scratch_state["attempts"].exists()
+    assert not any(scratch_state["registry"].glob("*.json"))

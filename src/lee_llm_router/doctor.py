@@ -16,12 +16,14 @@ Commands:
                                   [--catalog-dir PATH]
                                   [--author-route ROUTE_ID] [--json]
     lee-llm-router run --role ROLE --class CLASS --packet FILE
+                       --owned-paths PATH [--owned-paths PATH ...]
                        [--route ROUTE_ID] [--supervisor-route ROUTE_ID]
                        [--author-route ROUTE_ID]
                        [--oracle CMD] [--workdir DIR]
                        [--parent ATTEMPT_ID --escalation-reason R]
                        [--timeout S] [--at DATE] [--availability-file PATH]
                        [--catalog-dir PATH] [--json]
+    lee-llm-router census [--json]
     lee-llm-router classify-failure [--record FILE] [--json]
                           [--exit-code N] [--timed-out]
                           [--stdout TEXT] [--stderr TEXT] [--error TEXT]
@@ -1454,8 +1456,22 @@ def _run_run(args: argparse.Namespace) -> int:
     Exit codes: 0 when the child exited 0; the child's exit code otherwise
     (124 on a ceiling timeout); 3 for every refusal before or around the
     launch (argument pairing, packet/workdir problems, catalog or snapshot
-    errors, selection refusals, dispatch wiring errors) — a refused run
-    launches nothing.
+    errors, selection refusals, owned-path/registry refusals, dispatch
+    wiring errors) — a refused run launches nothing.
+
+    P3-4 (D213 ruling 4) adds the live-run registry: ``--owned-paths PATH``
+    is repeatable and required (empty owned paths are refused because they
+    cannot prove disjointness). Before launch the run atomically registers
+    pid, route, packet id, the normalized owned paths, and its start under
+    the per-host state directory; when any live registry record owns an
+    intersecting owned path (equality or ancestor/descendant), the run is
+    refused with exit 3 and launches nothing. The record carries a Linux
+    start-time process identity when available (pid reuse is detected, not
+    trusted) with a conservative portable fallback. Deregistration happens
+    on every boundary after registration — normal exit, governed failure,
+    exception, ceiling timeout, interrupt — best-effort, never masking the
+    attempt record's truth. Concurrent runs are permitted only for disjoint
+    owned paths.
     """
     import json
     from datetime import date
@@ -1465,6 +1481,12 @@ def _run_run(args: argparse.Namespace) -> int:
     from lee_llm_router.providers.base import LLMRouterError
     from lee_llm_router.staffing import (
         load_staffing_catalog,
+    )
+    from lee_llm_router.staffing.census import (
+        RunRegistryError,
+        deregister_run,
+        normalize_owned_paths,
+        register_run,
     )
     from lee_llm_router.staffing.json_int import dump_json
     from lee_llm_router.staffing.ledger import append_attempt
@@ -1628,96 +1650,227 @@ def _run_run(args: argparse.Namespace) -> int:
         except LLMRouterError as exc:
             return fail(f"oracle command invalid: {exc}", as_json=as_json)
 
+    # P3-4 (D213 ruling 4): register this run in the live registry before
+    # launch. Owned paths are normalized against --workdir, and an empty
+    # owned-path set is refused because it cannot prove disjointness. The
+    # check-and-register is atomic: when any live record owns an intersecting
+    # path the run is refused here, launches nothing, and appends nothing.
     try:
-        dispatch = dispatch_route(
-            outcome.route,
-            prompt,
+        owned_paths = normalize_owned_paths(
+            list(getattr(args, "owned_paths", None) or []),
             workdir=args.workdir,
-            timeout_seconds=args.timeout,
         )
-    except LLMRouterError as exc:
-        return fail(f"dispatch failed: {exc}", as_json=as_json)
-
-    oracle = None
-    oracle_setup_error: str | None = None
-    if oracle_argv is not None:
-        try:
-            oracle = run_oracle(
-                oracle_argv,
-                workdir=args.workdir,
-                timeout_seconds=oracle_timeout_seconds(
-                    args.timeout, dispatch.duration_seconds
-                ),
-            )
-        except RunDispatchError as exc:
-            # Astra final-review finding 6: the worker has completed, so a
-            # governed oracle setup failure must never drop it. The failure
-            # is recorded as failed oracle evidence (launch/setup error,
-            # no exit code) and exactly one schema-valid attempt preserving
-            # both the worker evidence and the oracle failure is appended
-            # below; the governed failure is then returned (exit 3).
-            oracle_setup_error = str(exc)
-            oracle = OracleOutcome(
-                argv=tuple(oracle_argv),
-                exit_code=None,
-                stdout="",
-                stderr="",
-                duration_seconds=0.0,
-                timed_out=False,
-                error=str(exc),
-            )
-
-    class_record = {
-        "class_key": class_string,
-        "role": class_role,
-        "oracle_type": oracle_type,
-        "domain_tags": list(domain_tags),
-        "size_band": size_band,
-        "language": language,
-    }
+    except RunRegistryError as exc:
+        return fail(f"owned paths invalid: {exc}", as_json=as_json)
     try:
-        record = build_attempt_record(
-            outcome,
-            dispatch,
-            oracle,
+        registration = register_run(
+            route_id=outcome.route.route_id,
             packet_id=packet_id_for_text(prompt),
-            class_record=class_record,
-            availability=availability,
-            at_date=at_date,
-            oracle_cmd=getattr(args, "oracle", None),
-            parent_attempt_id=parent,
-            escalation_reason=escalation_reason,
-            supervisor_route=outcome.supervisor_route,
-            attempt_id=getattr(args, "attempt_id", None),
-            class_derivation=class_derivation,
+            owned_paths=owned_paths,
+            workdir=args.workdir,
         )
-    except (LLMRouterError, OSError, TypeError, ValueError) as exc:
-        return fail(f"attempt record could not be built: {exc}", as_json=as_json)
+    except RunRegistryError as exc:
+        return fail(f"run registry refused: {exc}", as_json=as_json)
 
-    # append_attempt performs the one schema validation immediately before
-    # its one O_APPEND write. There is no pre-write repair or retry path.
+    def _execute_registered() -> int:
+        """Dispatch, record, and print — every exit deregisters the run."""
+        try:
+            dispatch = dispatch_route(
+                outcome.route,
+                prompt,
+                workdir=args.workdir,
+                timeout_seconds=args.timeout,
+            )
+        except LLMRouterError as exc:
+            return fail(f"dispatch failed: {exc}", as_json=as_json)
+
+        oracle = None
+        oracle_setup_error: str | None = None
+        if oracle_argv is not None:
+            try:
+                oracle = run_oracle(
+                    oracle_argv,
+                    workdir=args.workdir,
+                    timeout_seconds=oracle_timeout_seconds(
+                        args.timeout, dispatch.duration_seconds
+                    ),
+                )
+            except RunDispatchError as exc:
+                # Astra final-review finding 6: the worker has completed, so
+                # a governed oracle setup failure must never drop it. The
+                # failure is recorded as failed oracle evidence
+                # (launch/setup error, no exit code) and exactly one
+                # schema-valid attempt preserving both the worker evidence
+                # and the oracle failure is appended below; the governed
+                # failure is then returned (exit 3).
+                oracle_setup_error = str(exc)
+                oracle = OracleOutcome(
+                    argv=tuple(oracle_argv),
+                    exit_code=None,
+                    stdout="",
+                    stderr="",
+                    duration_seconds=0.0,
+                    timed_out=False,
+                    error=str(exc),
+                )
+
+        class_record = {
+            "class_key": class_string,
+            "role": class_role,
+            "oracle_type": oracle_type,
+            "domain_tags": list(domain_tags),
+            "size_band": size_band,
+            "language": language,
+        }
+        try:
+            record = build_attempt_record(
+                outcome,
+                dispatch,
+                oracle,
+                packet_id=packet_id_for_text(prompt),
+                class_record=class_record,
+                availability=availability,
+                at_date=at_date,
+                oracle_cmd=getattr(args, "oracle", None),
+                parent_attempt_id=parent,
+                escalation_reason=escalation_reason,
+                supervisor_route=outcome.supervisor_route,
+                attempt_id=getattr(args, "attempt_id", None),
+                class_derivation=class_derivation,
+            )
+        except (LLMRouterError, OSError, TypeError, ValueError) as exc:
+            return fail(f"attempt record could not be built: {exc}", as_json=as_json)
+
+        # append_attempt performs the one schema validation immediately
+        # before its one O_APPEND write. There is no pre-write repair or
+        # retry path.
+        try:
+            append_attempt(record)
+        except (LLMRouterError, OSError, TypeError, ValueError) as exc:
+            return fail(f"attempt record could not be appended: {exc}", as_json=as_json)
+
+        if as_json:
+            # One compact JSON object is both the command result and the
+            # exact object encoded by append_attempt (the ledger adds only
+            # its newline). This holds on the governed oracle-setup-failure
+            # path too: the result is the persisted record; the failure is
+            # reported on stderr. The bounded serializer keeps every huge
+            # token counter an exact JSON integer, byte-identical to the
+            # appended ledger line.
+            print(dump_json(record))
+        else:
+            for line in run_summary_lines(outcome, dispatch, oracle, record=record):
+                print(line)
+        if oracle_setup_error is None:
+            return dispatch.exit_code
+        # The one attempt record is already persisted; return the governed
+        # failure for the oracle that could not run (never a fake success).
+        print(f"run: oracle failed: {oracle_setup_error}", file=sys.stderr)
+        return 3
+
+    # Deregistration covers every boundary after registration — normal
+    # return, governed failure exit, exception, ceiling timeout, and
+    # interrupt — and is best-effort: a cleanup failure is a stderr warning
+    # that never masks the attempt record's truth or the real exit code.
     try:
-        append_attempt(record)
-    except (LLMRouterError, OSError, TypeError, ValueError) as exc:
-        return fail(f"attempt record could not be appended: {exc}", as_json=as_json)
+        return _execute_registered()
+    finally:
+        cleanup_note = deregister_run(registration)
+        if cleanup_note is not None:
+            print(f"run: registry cleanup warning: {cleanup_note}", file=sys.stderr)
 
-    if as_json:
-        # One compact JSON object is both the command result and the exact
-        # object encoded by append_attempt (the ledger adds only its newline).
-        # This holds on the governed oracle-setup-failure path too: the result
-        # is the persisted record; the failure is reported on stderr. The
-        # bounded serializer keeps every huge token counter an exact JSON
-        # integer, byte-identical to the appended ledger line.
-        print(dump_json(record))
-    else:
-        for line in run_summary_lines(outcome, dispatch, oracle, record=record):
-            print(line)
-    if oracle_setup_error is None:
-        return dispatch.exit_code
-    # The one attempt record is already persisted; return the governed
-    # failure for the oracle that could not run (never a fake success).
-    print(f"run: oracle failed: {oracle_setup_error}", file=sys.stderr)
-    return 3
+
+# ---------------------------------------------------------------------------
+# census (P3-4): live-run registry listing and stale cleanup (D213 ruling 4)
+# ---------------------------------------------------------------------------
+
+
+def _run_census(args: argparse.Namespace) -> int:
+    """Run ``census``: list live runs, clean stale registry records.
+
+    Contract (D213 ruling 4,
+    ``docs/staffing/phase3-contracts.md`` §D213 rulings): ``lee-llm-router
+    census [--json]`` lists every genuinely live run registered by ``run``
+    (pid, identity, route, packet id, owned paths, start) under the per-host
+    state directory, and cleans stale pid records with a note. A record is
+    stale when its pid no longer exists, or when the pid exists but its
+    current Linux start time differs from the recorded one (pid reuse);
+    records whose staleness cannot be proven are conservatively kept. The
+    pass is race-safe: cleanup holds the same exclusive registry lock as
+    registration and removes only evaluated stale records by their unique
+    registry id, so it can never delete a fresh replacement record for a
+    reused pid. An unreadable or shape-invalid record fails closed (exit 3)
+    rather than being silently skipped.
+    """
+    import json
+
+    from lee_llm_router.staffing.census import (
+        RunRegistryError,
+        census_record_json,
+        census_registry,
+    )
+
+    try:
+        result = census_registry()
+    except (RunRegistryError, OSError) as exc:
+        print(f"census: {exc}", file=sys.stderr)
+        return 3
+
+    if getattr(args, "json", False):
+        print(
+            json.dumps(
+                {
+                    "live": [census_record_json(record) for record in result.live],
+                    "cleaned": [
+                        {
+                            "pid": entry.record.pid,
+                            "reason": entry.reason,
+                            "registry_path": (
+                                str(entry.record.path)
+                                if entry.record.path is not None
+                                else None
+                            ),
+                        }
+                        for entry in result.cleaned
+                    ],
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    print(
+        f"census: {len(result.live)} live run(s), "
+        f"{len(result.cleaned)} stale record(s) cleaned"
+    )
+    for record in result.live:
+        identity = record.identity
+        identity_text = (
+            "identity unavailable"
+            if identity is None
+            else (
+                f"{identity.kind}"
+                + (
+                    f" start={identity.start_time}"
+                    if identity.start_time is not None
+                    else ""
+                )
+            )
+        )
+        print(
+            f"  pid {record.pid}  started {record.started_at}  "
+            f"route {record.route_id}  ({identity_text})"
+        )
+        print(f"    packet {record.packet_id}")
+        for path in record.owned_paths:
+            print(f"    owned: {path}")
+    for entry in result.cleaned:
+        path_text = str(entry.record.path) if entry.record.path else "-"
+        print(
+            f"  cleaned stale record pid {entry.record.pid} "
+            f"({entry.reason}): {path_text}"
+        )
+    return 0
 
 
 def _run_staff(args: argparse.Namespace) -> int:
@@ -2271,6 +2424,23 @@ def main(argv: list[str] | None = None):
         help="Path to the packet file whose text is dispatched verbatim",
     )
     run_parser.add_argument(
+        "--owned-paths",
+        action="append",
+        required=True,
+        dest="owned_paths",
+        metavar="PATH",
+        help=(
+            "File or directory this run owns; repeatable, at least one is "
+            "required (P3-4, D213 ruling 4). Relative paths are normalized "
+            "against --workdir (or the process working directory). Before "
+            "launch the run atomically registers pid, route, packet id, "
+            "these normalized paths, and its start in the live per-host "
+            "registry; a run whose owned paths intersect a live run's "
+            "(equality or ancestor/descendant) is refused with exit 3 and "
+            "launches nothing"
+        ),
+    )
+    run_parser.add_argument(
         "--class-derivation",
         default=None,
         metavar="FILE",
@@ -2403,6 +2573,17 @@ def main(argv: list[str] | None = None):
         help="Emit a JSON summary object instead of plain text",
     )
     run_parser.set_defaults(func=_run_run)
+
+    census_parser = subparsers.add_parser(
+        "census",
+        help="List live runs and clean stale records in the run registry",
+    )
+    census_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a JSON object with 'live' rows and 'cleaned' stale records",
+    )
+    census_parser.set_defaults(func=_run_census)
 
     staff_parser = subparsers.add_parser(
         "staff",

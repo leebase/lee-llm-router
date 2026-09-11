@@ -65,3 +65,23 @@ usage basis and knowable cost, verdict, findings, next action, and escalation.
 - Accepted behavior derives only from explicit packet facts and the reviewed
   `classes.yaml` keyword table, never from model preference. Black, Ruff, and
   diff check are clean. P3-3 metered spend `$0.1195206294`.
+
+## P3-4 — Live-run registry and census
+
+- Named-crew GLM/Pi authored the registry, owned-path run gate, census CLI,
+  and tests. Its worker exited 0 but the first oracle exposed three test-only
+  defects; supervisor repaired the complete set. Receipt: 4,068,368
+  provider-reported tokens / `$0.08108128` metered.
+- The accepted registry atomically checks and registers normalized nonempty
+  paths under a per-host lock, detects equality and ancestor/descendant
+  intersections, records pid plus Linux start-time identity where available,
+  refuses before launch, and deregisters on every post-registration boundary.
+  `census` lists live rows and removes proven stale rows with reasons.
+- Initial DeepSeek review passed 219 tests. Supervisor inspection found one
+  contract-blocking fallback race: a fresh non-`fcntl` lock could be unlinked
+  at the acquisition deadline. The repair fails closed on fresh locks and
+  takes over only a lock older than the documented stale threshold. DeepSeek
+  re-review passed the 221-test oracle. Receipts: 1,254,883 /
+  `$0.0278569536` and 5,084,744 / `$0.0978310704`, provider-reported metered.
+- Post-review live census is empty; all router workers deregistered. Black,
+  Ruff, and diff check clean. P3-4 metered spend `$0.206769304`.
