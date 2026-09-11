@@ -34,6 +34,7 @@ Commands:
     lee-llm-router template
     lee-llm-router trace --last N
     lee-llm-router evidence rollup
+    lee-llm-router evidence import --benchmark PATH [--csv PATH]
     lee-llm-router export-source --dest <path> [--force]
 """
 
@@ -1202,6 +1203,31 @@ def _run_evidence_rollup(_args: argparse.Namespace) -> int:
         return 3
 
     print(render_rollup(summary))
+    return 0
+
+
+def _run_evidence_import(args: argparse.Namespace) -> int:
+    """Import SHA-pinned per-run benchmark v6 evidence."""
+    from lee_llm_router.staffing.import_evidence import (
+        EvidenceImportError,
+        import_benchmark_evidence,
+    )
+    from lee_llm_router.staffing.ledger import AttemptLedgerError, ShortWriteError
+
+    try:
+        summary = import_benchmark_evidence(args.benchmark, csv_path=args.csv)
+    except (EvidenceImportError, AttemptLedgerError, ShortWriteError, OSError) as exc:
+        message = " ".join(str(exc).split())
+        print(f"evidence import: {message}", file=sys.stderr)
+        return 3
+    for issue in summary.issues:
+        identity = f" run_id={issue.run_id}" if issue.run_id else ""
+        print(
+            f"evidence import: skipped row {issue.row_number}{identity}: "
+            f"{issue.reason}",
+            file=sys.stderr,
+        )
+    print(f"imported={summary.imported} skipped={summary.skipped}")
     return 0
 
 
@@ -2663,6 +2689,26 @@ def main(argv: list[str] | None = None) -> None:
         help="Aggregate validated attempt records by route and class",
     )
     evidence_rollup_parser.set_defaults(func=_run_evidence_rollup)
+    evidence_import_parser = evidence_sub.add_parser(
+        "import",
+        help="Import per-run benchmark v6 evidence into the attempt ledger",
+    )
+    # This source-specific option is intentionally isolated so the agent-orch
+    # half can add its own mutually exclusive source without changing the
+    # benchmark importer.
+    evidence_import_parser.add_argument(
+        "--benchmark",
+        required=True,
+        metavar="PATH",
+        help="Path to the benchmark v6 staffing-evidence sidecar",
+    )
+    evidence_import_parser.add_argument(
+        "--csv",
+        default=None,
+        metavar="PATH",
+        help="Override source CSV path (must match the sidecar SHA-256)",
+    )
+    evidence_import_parser.set_defaults(func=_run_evidence_import)
 
     template_parser = subparsers.add_parser(
         "template",

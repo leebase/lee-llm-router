@@ -236,6 +236,22 @@ now captures assistant terminal usage while excluding repeated agent-end state;
 missing evidence stays unavailable. Phase 1 OpenRouter metered total is
 $0.410730659 plus unknown pre-P1-4a text-mode attempts.
 
+## P1-7a — benchmark v6 import
+
+| Attempt | Role | Explain / selection | Excluded summary | Route | Result | Usage / cost |
+|---|---|---|---|---|---|---|
+| P1-7 combined | impl | `impl/deterministic/none/m/python`; GLM first authority-available after reserving Gemini/Anthropic proofs | Go likely-exhausted; never-automatic/policy exclusions; proof subscriptions reserved | `pi-z-ai-glm-5-3-flash-openrouter` | 590s watchdog, zero repo output; Rule-B split by source | provider_reported: input 5,213, output 1,066, cached 76,032, reasoning 977, total 82,311; governed non-cached $0.000657475 |
+| P1-7a split retry | impl | fresh explain; same governed selection | same | `pi-z-ai-glm-5-3-flash-openrouter` | 590s watchdog, zero repo output; `parent_attempt_id: P1-7-combined`; `escalation_reason: platform_timeout` | provider_reported: input 1,648, output 2,850, cached 92,224, reasoning 2,807, total 96,722; governed non-cached $0.000836100 |
+| P1-7a Luna | impl | fresh explain; Luna Pi XHigh eligible | cheap route failed after required split | `pi-gpt-5-6-luna-xhigh-openai-sub` | 590s watchdog, zero repo output; `parent_attempt_id: P1-7a-split`; `escalation_reason: platform_timeout` | provider_reported: input 1,071, output 5,570, cached 219,648, reasoning 5,530, total 226,289; subscription execution estimate $0.005173650 |
+| P1-7a Sol | impl | fresh explain; final Sol High rung eligible | lower ladder rungs failed | `codex-gpt-5-6-sol-high-openai-sub` | completed; real v6 scratch smoke 93 imported/9 unknown skipped; re-import 0; 1172 passed/1 skip; Black/Ruff clean | observed terminal Codex JSON: input 6,063,980, cached 5,920,768, output 28,355, reasoning 10,368; subscription execution estimate $0.854961000 |
+| P1-7a review | review | fresh explain with Sol author; independent DeepSeek fallback selected | Go likely-exhausted; Gemini reserved; author independence | `pi-deepseek-deepseek-v4-flash-openrouter` | PASS; 0 blockers, 2 non-blocking hardening, 1 future concern | provider_reported: input 613, output 1,715, cached 87,040, reasoning 201, total 89,368; governed non-cached $0.000339612 |
+
+P1-7a accepted after four author attempts and one review. Supervisor read the
+complete owned diff and found no out-of-scope changes. Non-blocking findings:
+malformed sidecar metadata can surface an internal `_RowError`; one usage-status
+diagnostic is imprecise. Future concern: agent-orch CLI wiring must replace the
+currently required benchmark option with a mutually exclusive source choice.
+
 ## P1-1 — Effective tier in explain
 
 | Packet | Role | Explain / selection | Excluded summary | Route | Start / end | Exit | Usage / cost | Result |

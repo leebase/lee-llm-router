@@ -1,0 +1,81 @@
+{
+  "schema_version": "benchmark.staffing-evidence/2",
+  "generated_at": "2026-09-09T15:00:00Z",
+  "source_csv": {
+    "path": "benchmark-v6-runs.csv",
+    "sha256": "7d8201137cfb98c02f8fa43151633376eede0044d589e5ed307ec4ca91a97227"
+  },
+  "rows": [
+    {
+      "task_key": "router-change@v1",
+      "class": {
+        "class_key": "impl/deterministic/none/m/python",
+        "role": "impl",
+        "oracle_type": "deterministic",
+        "domain_tags": [],
+        "size_band": "m",
+        "language": "python"
+      },
+      "worker": {
+        "model": "gpt-5.6-luna",
+        "model_family": "luna",
+        "harness": "pi",
+        "effort": "xhigh"
+      },
+      "run_ids": [
+        "fixture-run-accepted",
+        "fixture-run-malformed"
+      ],
+      "run_usage": [
+        {
+          "run_id": "fixture-run-accepted",
+          "usage_input_tokens": 101,
+          "usage_output_tokens": 202,
+          "usage_cached_input_tokens": 33,
+          "usage_reasoning_tokens": null,
+          "usage_total_tokens": 303
+        },
+        {
+          "run_id": "fixture-run-malformed",
+          "usage_input_tokens": null,
+          "usage_output_tokens": 99,
+          "usage_cached_input_tokens": 0,
+          "usage_reasoning_tokens": null,
+          "usage_total_tokens": 99
+        }
+      ]
+    },
+    {
+      "task_key": "review-change@v1",
+      "class": {
+        "class_key": "review/judge/data-schema/m/python",
+        "role": "review",
+        "oracle_type": "judge",
+        "domain_tags": [
+          "data-schema"
+        ],
+        "size_band": "m",
+        "language": "python"
+      },
+      "worker": {
+        "model": "gpt-6-astra",
+        "model_family": "astra",
+        "harness": "codex",
+        "effort": "low"
+      },
+      "run_ids": [
+        "fixture-run-rejected"
+      ],
+      "run_usage": [
+        {
+          "run_id": "fixture-run-rejected",
+          "usage_input_tokens": 44,
+          "usage_output_tokens": 55,
+          "usage_cached_input_tokens": 0,
+          "usage_reasoning_tokens": 11,
+          "usage_total_tokens": 110
+        }
+      ]
+    }
+  ]
+}
