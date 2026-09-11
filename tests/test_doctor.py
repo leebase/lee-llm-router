@@ -1421,3 +1421,207 @@ def test_doctor_catalog_with_crews_and_config_exits_0(tmp_path, capsys):
     assert "OK catalog:" in out
     assert "OK crews:" in out
     assert "All checks passed" in out
+
+
+# ---------------------------------------------------------------------------
+# classify-failure (P3-1): deterministic D213 ruling 3 classification CLI
+# ---------------------------------------------------------------------------
+
+FAILURE_FIXTURES = FIXTURES / "staffing" / "failure-classify"
+
+
+@pytest.mark.parametrize(
+    ("class_name", "fixture_name"),
+    [
+        ("platform_timeout", "platform_timeout"),
+        ("platform_env", "platform_env"),
+        ("unaccounted_spend", "unaccounted_spend"),
+        ("oracle_failed", "oracle_failed"),
+        ("unknown", "unknown"),
+        ("spec_rejected", "spec_rejected"),
+        ("capability_rejected", "capability_rejected"),
+    ],
+)
+def test_classify_failure_cli_record_fixture_prints_class(
+    capsys, class_name, fixture_name
+):
+    """Every class has an exact evidence fixture the CLI classifies verbatim."""
+    from lee_llm_router.doctor import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "classify-failure",
+                "--record",
+                str(FAILURE_FIXTURES / f"{fixture_name}.json"),
+            ]
+        )
+    assert exc_info.value.code == 0
+
+    out = capsys.readouterr().out
+    if fixture_name == "unknown":
+        # The unknown fixture's prose names both judgment classes; neither may
+        # be inferred from text (D213 ruling 3).
+        assert out.strip() == "unknown"
+    else:
+        assert out.strip() == fixture_name
+
+
+@pytest.mark.parametrize(
+    ("class_name", "fixture_name"),
+    [
+        ("platform_timeout", "platform_timeout"),
+        ("platform_env", "platform_env"),
+        ("unaccounted_spend", "unaccounted_spend"),
+        ("oracle_failed", "oracle_failed"),
+        ("unknown", "unknown"),
+        ("spec_rejected", "spec_rejected"),
+        ("capability_rejected", "capability_rejected"),
+        (None, "none"),
+    ],
+)
+def test_classify_failure_cli_json_record_fixture(capsys, class_name, fixture_name):
+    """--json emits the exact compact {"failure_class": ...} object."""
+    from lee_llm_router.doctor import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "classify-failure",
+                "--record",
+                str(FAILURE_FIXTURES / f"{fixture_name}.json"),
+                "--json",
+            ]
+        )
+    assert exc_info.value.code == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {"failure_class": class_name}
+
+
+def test_classify_failure_cli_explicit_flags_and_none_text(capsys):
+    """Explicit evidence flags classify without a record; no failure prints none."""
+    from lee_llm_router.doctor import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["classify-failure", "--exit-code", "124", "--verdict", "fail"])
+    assert exc_info.value.code == 0
+    assert capsys.readouterr().out.strip() == "platform_timeout"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["classify-failure", "--verdict", "pass"])
+    assert exc_info.value.code == 0
+    assert capsys.readouterr().out.strip() == "none"
+
+
+def test_classify_failure_cli_json_none(capsys):
+    from lee_llm_router.doctor import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["classify-failure", "--json", "--verdict", "pass"])
+    assert exc_info.value.code == 0
+    assert json.loads(capsys.readouterr().out) == {"failure_class": None}
+
+
+def test_classify_failure_cli_explicit_judgment_with_review_verdict(capsys):
+    """spec_rejected enters only through explicit --judgment after review."""
+    from lee_llm_router.doctor import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "classify-failure",
+                "--verdict",
+                "fail",
+                "--judgment",
+                "spec_rejected",
+                "--review-verdict",
+                "fail",
+            ]
+        )
+    assert exc_info.value.code == 0
+    assert capsys.readouterr().out.strip() == "spec_rejected"
+
+
+def test_classify_failure_cli_judgment_never_inferred_from_text(capsys):
+    """Prose naming a judgment class never classifies as spec_rejected."""
+    from lee_llm_router.doctor import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "classify-failure",
+                "--verdict",
+                "fail",
+                "--stderr",
+                "the reviewer wrote: spec rejected, capability rejected",
+            ]
+        )
+    assert exc_info.value.code == 0
+    assert capsys.readouterr().out.strip() == "oracle_failed"
+
+
+def test_classify_failure_cli_judgment_without_review_verdict_exits_3(capsys):
+    from lee_llm_router.doctor import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["classify-failure", "--judgment", "capability_rejected"])
+    assert exc_info.value.code == 3
+    err = capsys.readouterr().err
+    assert err.startswith("classify-failure:")
+    assert "review verdict" in err
+
+
+def test_classify_failure_cli_judgment_with_pass_review_exits_3(capsys):
+    from lee_llm_router.doctor import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "classify-failure",
+                "--judgment",
+                "spec_rejected",
+                "--review-verdict",
+                "pass",
+            ]
+        )
+    assert exc_info.value.code == 3
+    assert "cannot justify" in capsys.readouterr().err
+
+
+def test_classify_failure_cli_unknown_judgment_value_exits_3(capsys):
+    from lee_llm_router.doctor import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "classify-failure",
+                "--judgment",
+                "platform_env",
+                "--review-verdict",
+                "fail",
+            ]
+        )
+    assert exc_info.value.code == 3
+    assert "explicit judgment admits only" in capsys.readouterr().err
+
+
+def test_classify_failure_cli_unreadable_record_exits_3(tmp_path, capsys):
+    from lee_llm_router.doctor import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["classify-failure", "--record", str(tmp_path / "absent.json")])
+    assert exc_info.value.code == 3
+    err = capsys.readouterr().err
+    assert err.startswith("classify-failure: record file cannot be read:")
+
+
+def test_classify_failure_cli_malformed_record_exits_3(tmp_path, capsys):
+    from lee_llm_router.doctor import main
+
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+    with pytest.raises(SystemExit) as exc_info:
+        main(["classify-failure", "--record", str(bad)])
+    assert exc_info.value.code == 3
+    assert "not valid JSON" in capsys.readouterr().err

@@ -1,0 +1,7 @@
+{
+  "schema_version": 2,
+  "record_kind": "router_run",
+  "verdict": "fail",
+  "exit_code": 127,
+  "stderr": "codex: command not found"
+}

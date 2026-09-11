@@ -1,0 +1,9 @@
+{
+  "schema_version": 2,
+  "record_kind": "router_run",
+  "verdict": "fail",
+  "exit_code": 124,
+  "timed_out": true,
+  "oracle_cmd": "pytest -q",
+  "oracle_exit_code": null
+}

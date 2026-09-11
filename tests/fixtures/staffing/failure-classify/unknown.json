@@ -1,0 +1,7 @@
+{
+  "schema_version": 2,
+  "record_kind": "router_run",
+  "verdict": "unverified",
+  "exit_code": 1,
+  "stderr": "process exited 1; the review prose mentions spec rejected and capability rejected"
+}

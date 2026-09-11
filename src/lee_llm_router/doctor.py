@@ -22,6 +22,14 @@ Commands:
                        [--parent ATTEMPT_ID --escalation-reason R]
                        [--timeout S] [--at DATE] [--availability-file PATH]
                        [--catalog-dir PATH] [--json]
+    lee-llm-router classify-failure [--record FILE] [--json]
+                          [--exit-code N] [--timed-out]
+                          [--stdout TEXT] [--stderr TEXT] [--error TEXT]
+                          [--oracle-exit-code N] [--oracle-timed-out]
+                          [--oracle-error TEXT] [--oracle-cmd CMD]
+                          [--accounting-status STATUS] [--usage-basis BASIS]
+                          [--unaccounted-spend] [--verdict TEXT]
+                          [--judgment CLASS] [--review-verdict TEXT]
     lee-llm-router template
     lee-llm-router trace --last N
     lee-llm-router evidence rollup
@@ -1789,6 +1797,94 @@ def _run_staff(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# classify-failure (P3-1): deterministic D213 ruling 3 failure classification
+# ---------------------------------------------------------------------------
+
+
+def _run_classify_failure(args: argparse.Namespace) -> int:
+    """Run ``classify-failure``: classify one attempt's evidence (D213 ruling 3).
+
+    Contract: ``lee-llm-router classify-failure [--record FILE] [--json]``
+    plus explicit evidence flags (``--exit-code``, ``--timed-out``,
+    ``--stdout``, ``--stderr``, ``--error``, ``--oracle-exit-code``,
+    ``--oracle-timed-out``, ``--oracle-error``, ``--oracle-cmd``,
+    ``--accounting-status``, ``--usage-basis``, ``--unaccounted-spend``,
+    ``--verdict``, ``--judgment``, ``--review-verdict``). The classification
+    itself is made entirely by
+    :func:`lee_llm_router.staffing.failure.classify_failure` — the CLI only
+    parses arguments and forwards them; it never infers a class itself.
+    Deterministic classes are ``platform_timeout``, ``platform_env``,
+    ``unaccounted_spend``, ``oracle_failed``, and ``unknown``.
+    ``spec_rejected``/``capability_rejected`` enter only through an explicit
+    ``--judgment`` that names a review verdict (``--review-verdict`` or a
+    record field); they are never inferred from text.
+
+    Output: the failure class string, or ``none`` when no failure occurred
+    (text) / ``{"failure_class": null}`` (JSON). A classification refusal —
+    unreadable record, or an invalid judgment (unknown value, missing or
+    contradictory review verdict) — prints one concise stderr line and exits
+    3, matching the ``staff``/``run`` refusal convention. A successful
+    classification exits 0 whether or not a failure was found.
+    """
+    import json
+    from pathlib import Path
+
+    from lee_llm_router.staffing.failure import (
+        FailureClassificationError,
+        classify_failure,
+    )
+
+    def fail(message: str) -> int:
+        print(f"classify-failure: {message}", file=sys.stderr)
+        return 3
+
+    record: dict[str, Any] | None = None
+    if args.record is not None:
+        record_path = Path(args.record).expanduser()
+        try:
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError) as exc:
+            return fail(f"record file cannot be read: {exc}")
+        except json.JSONDecodeError as exc:
+            return fail(f"record file is not valid JSON: {record_path}: {exc}")
+        if not isinstance(record, dict):
+            return fail(f"record file must contain one JSON object: {record_path}")
+
+    try:
+        failure_class = classify_failure(
+            record,
+            exit_code=args.exit_code,
+            timed_out=args.timed_out,
+            stdout=args.stdout or "",
+            stderr=args.stderr or "",
+            error=args.error,
+            oracle_exit_code=args.oracle_exit_code,
+            oracle_timed_out=args.oracle_timed_out,
+            oracle_error=args.oracle_error,
+            oracle_cmd=args.oracle_cmd,
+            accounting_status=args.accounting_status,
+            usage_basis=args.usage_basis,
+            metered_route=args.metered_route,
+            unaccounted_spend=args.unaccounted_spend,
+            verdict=args.verdict,
+            judgment=args.judgment,
+            review_verdict=args.review_verdict,
+        )
+    except FailureClassificationError as exc:
+        return fail(str(exc))
+    except (TypeError, ValueError) as exc:
+        return fail(f"invalid classification input: {exc}")
+
+    if args.json:
+        print(json.dumps({"failure_class": failure_class}, separators=(",", ":")))
+    elif failure_class is None:
+        print("none")
+    else:
+        print(failure_class)
+    return 0
+
+
 def main(argv: list[str] | None = None):
     import argparse
 
@@ -2299,6 +2395,147 @@ def main(argv: list[str] | None = None):
         help="Emit the structured JSON payload instead of the compact block",
     )
     staff_parser.set_defaults(func=_run_staff)
+
+    classify_failure_parser = subparsers.add_parser(
+        "classify-failure",
+        help="Deterministically classify one attempt's failure evidence",
+    )
+    classify_failure_parser.add_argument(
+        "--record",
+        default=None,
+        metavar="FILE",
+        help=(
+            "Read evidence from one JSON attempt-record file (e.g. a ledger "
+            "line); explicit flags override the record's fields"
+        ),
+    )
+    classify_failure_parser.add_argument(
+        "--exit-code",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Worker dispatch exit code (124 = ceiling timeout)",
+    )
+    classify_failure_parser.add_argument(
+        "--timed-out",
+        action="store_true",
+        dest="timed_out",
+        help="The worker dispatch hit its watchdog ceiling",
+    )
+    classify_failure_parser.add_argument(
+        "--stdout",
+        default=None,
+        metavar="TEXT",
+        help="Worker stdout text (platform signatures are matched against it)",
+    )
+    classify_failure_parser.add_argument(
+        "--stderr",
+        default=None,
+        metavar="TEXT",
+        help="Worker stderr text (platform signatures are matched against it)",
+    )
+    classify_failure_parser.add_argument(
+        "--error",
+        default=None,
+        metavar="TEXT",
+        help="Worker error message",
+    )
+    classify_failure_parser.add_argument(
+        "--oracle-exit-code",
+        type=int,
+        default=None,
+        dest="oracle_exit_code",
+        metavar="N",
+        help="Oracle exit code (124 = timeout)",
+    )
+    classify_failure_parser.add_argument(
+        "--oracle-timed-out",
+        action="store_true",
+        dest="oracle_timed_out",
+        help="The oracle hit its timeout budget",
+    )
+    classify_failure_parser.add_argument(
+        "--oracle-error",
+        default=None,
+        dest="oracle_error",
+        metavar="TEXT",
+        help="Oracle launch or setup error",
+    )
+    classify_failure_parser.add_argument(
+        "--oracle-cmd",
+        default=None,
+        dest="oracle_cmd",
+        metavar="CMD",
+        help="The oracle command that was run, if any",
+    )
+    classify_failure_parser.add_argument(
+        "--accounting-status",
+        default=None,
+        dest="accounting_status",
+        metavar="STATUS",
+        help=(
+            "Usage accounting status (measured, unaccounted, not_applicable); "
+            "unaccounted classifies as unaccounted_spend"
+        ),
+    )
+    classify_failure_parser.add_argument(
+        "--usage-basis",
+        default=None,
+        dest="usage_basis",
+        metavar="BASIS",
+        help=(
+            "Usage basis (e.g. unavailable); unavailable usage on a metered "
+            "route classifies as unaccounted_spend"
+        ),
+    )
+    classify_failure_parser.add_argument(
+        "--metered-route",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        dest="metered_route",
+        help="Attest whether the route is metered when no record route is supplied",
+    )
+    classify_failure_parser.add_argument(
+        "--unaccounted-spend",
+        action="store_true",
+        dest="unaccounted_spend",
+        help="Unaccounted spend was directly observed",
+    )
+    classify_failure_parser.add_argument(
+        "--verdict",
+        default=None,
+        metavar="TEXT",
+        help="Attempt verdict (pass, fail, or unverified)",
+    )
+    classify_failure_parser.add_argument(
+        "--judgment",
+        default=None,
+        metavar="CLASS",
+        help=(
+            "Explicit supervisor judgment: spec_rejected or "
+            "capability_rejected; requires a review verdict and is never "
+            "inferred from text"
+        ),
+    )
+    classify_failure_parser.add_argument(
+        "--review-verdict",
+        default=None,
+        dest="review_verdict",
+        metavar="TEXT",
+        help=(
+            "Review verdict justifying --judgment (e.g. fail); a passing "
+            "review verdict cannot justify a failure judgment"
+        ),
+    )
+    classify_failure_parser.add_argument(
+        "--json",
+        action="store_true",
+        help=(
+            'Emit a compact JSON object ({"failure_class": ...}) instead of '
+            "the plain class string"
+        ),
+    )
+    classify_failure_parser.set_defaults(func=_run_classify_failure)
 
     evidence_parser = subparsers.add_parser(
         "evidence",

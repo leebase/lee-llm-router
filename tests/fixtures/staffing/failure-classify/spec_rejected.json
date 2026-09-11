@@ -1,0 +1,7 @@
+{
+  "schema_version": 2,
+  "record_kind": "router_run",
+  "verdict": "fail",
+  "judgment": "spec_rejected",
+  "review_verdict": "fail"
+}
