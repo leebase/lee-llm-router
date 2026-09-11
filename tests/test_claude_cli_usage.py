@@ -220,7 +220,7 @@ def test_single_json_object_result_event_with_model_usage():
         "output_tokens": 25,
         "cached_input_tokens": 60,
         "reasoning_tokens": None,
-        "total_tokens": 185,
+        "total_tokens": 190,
     }
 
 
@@ -240,7 +240,7 @@ def test_jsonl_stream_uses_the_last_result_event():
 
     assert result["basis"] == "provider_reported"
     assert result["input_tokens"] == 100
-    assert result["total_tokens"] == 185
+    assert result["total_tokens"] == 190
 
 
 def test_model_rows_are_summed_once_and_top_level_usage_is_not_added():
@@ -259,8 +259,9 @@ def test_model_rows_are_summed_once_and_top_level_usage_is_not_added():
 
     result = capture_claude_usage(output)
 
-    # 100 + 7 input, 25 + 3 output, 60 cached: the top-level usage object
-    # (500/500) is never added on top of the summed model rows.
+    # 100 + 7 input, 25 + 3 output, 60 cached, 5 cache creation:
+    # the top-level usage object (500/500) is never added on top of the
+    # summed model rows.
     assert result == {
         "basis": "provider_reported",
         "source": CLAUDE_USAGE_SOURCE,
@@ -268,14 +269,17 @@ def test_model_rows_are_summed_once_and_top_level_usage_is_not_added():
         "output_tokens": 28,
         "cached_input_tokens": 60,
         "reasoning_tokens": None,
-        "total_tokens": 195,
+        "total_tokens": 200,
     }
 
 
 def test_cache_read_reports_zero_when_a_row_reports_zero():
     output = _result_event(
         modelUsage={
-            "claude-opus-5": _model_usage_row(cacheReadInputTokens=0),
+            "claude-opus-5": _model_usage_row(
+                cacheReadInputTokens=0,
+                cacheCreationInputTokens=0,
+            ),
         },
     )
 
@@ -311,9 +315,9 @@ def test_top_level_usage_fallback_camel_aliases_and_cached_reads():
 
     result = capture_claude_usage(output)
 
-    # Cache reads map to cached_input_tokens and count toward the
-    # observed-component total; cache creation has no v2 field and is
-    # omitted entirely.
+    # Cache reads map to cached_input_tokens and cache creation contributes
+    # to total_tokens (10 + 4 + 3 + 2 = 19); cache creation has no v2 field
+    # of its own.
     assert result == {
         "basis": "provider_reported",
         "source": CLAUDE_USAGE_SOURCE,
@@ -321,7 +325,7 @@ def test_top_level_usage_fallback_camel_aliases_and_cached_reads():
         "output_tokens": 4,
         "cached_input_tokens": 3,
         "reasoning_tokens": None,
-        "total_tokens": 17,
+        "total_tokens": 19,
     }
 
 
@@ -617,3 +621,361 @@ def test_returned_usages_are_schema_valid():
         "unavailable_reason",
         *UNAVAILABLE_COUNTERS,
     }
+
+
+# ---------------------------------------------------------------------------
+# Astra Claude usage aggregation regression tests
+# ---------------------------------------------------------------------------
+
+
+def test_reproducer_partial_cache_evidence_preserves_null_not_invented_zero():
+    """Reproducer 1: two modelUsage rows, only first has cache count.
+
+    Missing cache count in row 2 must not be treated as zero (which previously
+    yielded numeric 5); truth is preserved as unavailable/null (both
+    cached_input_tokens and total_tokens stay None).
+    """
+    output = _result_event(
+        modelUsage={
+            "claude-opus-5": {
+                "inputTokens": 100,
+                "outputTokens": 20,
+                "cacheReadInputTokens": 5,
+            },
+            "claude-haiku-4": {
+                "inputTokens": 50,
+                "outputTokens": 10,
+            },
+        }
+    )
+
+    result = capture_claude_usage(output)
+
+    assert result == {
+        "basis": "provider_reported",
+        "source": CLAUDE_USAGE_SOURCE,
+        "input_tokens": 150,
+        "output_tokens": 30,
+        "cached_input_tokens": None,
+        "reasoning_tokens": None,
+        "total_tokens": None,
+    }
+
+
+def test_reproducer_partial_cache_evidence_with_authoritative_row_totals():
+    """Reproducer 1 with authoritative row totalTokens preserves reported total."""
+    output = _result_event(
+        modelUsage={
+            "claude-opus-5": {
+                "inputTokens": 100,
+                "outputTokens": 20,
+                "cacheReadInputTokens": 5,
+                "totalTokens": 125,
+            },
+            "claude-haiku-4": {
+                "inputTokens": 50,
+                "outputTokens": 10,
+                "totalTokens": 60,
+            },
+        }
+    )
+
+    result = capture_claude_usage(output)
+
+    assert result == {
+        "basis": "provider_reported",
+        "source": CLAUDE_USAGE_SOURCE,
+        "input_tokens": 150,
+        "output_tokens": 30,
+        "cached_input_tokens": None,
+        "reasoning_tokens": None,
+        "total_tokens": 185,
+    }
+
+
+def test_reproducer_cache_creation_counted_in_total():
+    """Reproducer 2: row input=100 output=20 cache-read=5 cache-creation=2.
+
+    Total must be 127; previously computed 125 omitting cache-creation=2.
+    """
+    output = _result_event(
+        modelUsage={
+            "claude-opus-5": {
+                "inputTokens": 100,
+                "outputTokens": 20,
+                "cacheReadInputTokens": 5,
+                "cacheCreationInputTokens": 2,
+            }
+        }
+    )
+
+    result = capture_claude_usage(output)
+
+    assert result == {
+        "basis": "provider_reported",
+        "source": CLAUDE_USAGE_SOURCE,
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "cached_input_tokens": 5,
+        "reasoning_tokens": None,
+        "total_tokens": 127,
+    }
+
+
+def test_reproducer_cache_creation_contradictory_total_raises():
+    """Reproducer 2 contradiction: row reports total=125 omitting cache-creation=2."""
+    output = _result_event(
+        modelUsage={
+            "claude-opus-5": {
+                "inputTokens": 100,
+                "outputTokens": 20,
+                "cacheReadInputTokens": 5,
+                "cacheCreationInputTokens": 2,
+                "totalTokens": 125,
+            }
+        }
+    )
+
+    with pytest.raises(LLMRouterError) as exc_info:
+        capture_claude_usage(output)
+    assert exc_info.value.failure_type == FailureType.CONTRACT_VIOLATION
+    assert "total contradicts its components" in str(exc_info.value)
+
+
+def test_reproducer_cache_creation_matching_total_succeeds():
+    """Reproducer 2 with matching totalTokens=127 succeeds."""
+    output = _result_event(
+        modelUsage={
+            "claude-opus-5": {
+                "inputTokens": 100,
+                "outputTokens": 20,
+                "cacheReadInputTokens": 5,
+                "cacheCreationInputTokens": 2,
+                "totalTokens": 127,
+            }
+        }
+    )
+
+    result = capture_claude_usage(output)
+
+    assert result["total_tokens"] == 127
+    assert result["cached_input_tokens"] == 5
+
+
+def test_normal_multi_row_aggregation_with_all_cache_components():
+    """Normal multi-row aggregation where every row reports cache read and creation."""
+    output = _result_event(
+        modelUsage={
+            "claude-opus-5": {
+                "inputTokens": 100,
+                "outputTokens": 20,
+                "cacheReadInputTokens": 5,
+                "cacheCreationInputTokens": 2,
+            },
+            "claude-haiku-4": {
+                "inputTokens": 50,
+                "outputTokens": 10,
+                "cacheReadInputTokens": 3,
+                "cacheCreationInputTokens": 1,
+            },
+        }
+    )
+
+    result = capture_claude_usage(output)
+
+    assert result == {
+        "basis": "provider_reported",
+        "source": CLAUDE_USAGE_SOURCE,
+        "input_tokens": 150,
+        "output_tokens": 30,
+        "cached_input_tokens": 8,
+        "reasoning_tokens": None,
+        "total_tokens": 191,
+    }
+
+
+def test_normal_multi_row_aggregation_cache_reads_only():
+    """Normal multi-row aggregation where all rows report cache read, none write."""
+    output = _result_event(
+        modelUsage={
+            "claude-opus-5": {
+                "inputTokens": 100,
+                "outputTokens": 20,
+                "cacheReadInputTokens": 5,
+            },
+            "claude-haiku-4": {
+                "inputTokens": 50,
+                "outputTokens": 10,
+                "cacheReadInputTokens": 3,
+            },
+        }
+    )
+
+    result = capture_claude_usage(output)
+
+    assert result == {
+        "basis": "provider_reported",
+        "source": CLAUDE_USAGE_SOURCE,
+        "input_tokens": 150,
+        "output_tokens": 30,
+        "cached_input_tokens": 8,
+        "reasoning_tokens": None,
+        "total_tokens": 188,
+    }
+
+
+def test_normal_multi_row_aggregation_no_cache_components():
+    """Normal multi-row aggregation where no rows report cache components."""
+    output = _result_event(
+        modelUsage={
+            "claude-opus-5": {
+                "inputTokens": 100,
+                "outputTokens": 20,
+            },
+            "claude-haiku-4": {
+                "inputTokens": 50,
+                "outputTokens": 10,
+            },
+        }
+    )
+
+    result = capture_claude_usage(output)
+
+    assert result == {
+        "basis": "provider_reported",
+        "source": CLAUDE_USAGE_SOURCE,
+        "input_tokens": 150,
+        "output_tokens": 30,
+        "cached_input_tokens": None,
+        "reasoning_tokens": None,
+        "total_tokens": 180,
+    }
+
+
+def test_multi_row_partial_cache_creation_withholds_total():
+    """Multi-row with complete cache reads but partial creation withholds total."""
+    output = _result_event(
+        modelUsage={
+            "claude-opus-5": {
+                "inputTokens": 100,
+                "outputTokens": 20,
+                "cacheReadInputTokens": 5,
+                "cacheCreationInputTokens": 2,
+            },
+            "claude-haiku-4": {
+                "inputTokens": 50,
+                "outputTokens": 10,
+                "cacheReadInputTokens": 3,
+            },
+        }
+    )
+
+    result = capture_claude_usage(output)
+
+    assert result == {
+        "basis": "provider_reported",
+        "source": CLAUDE_USAGE_SOURCE,
+        "input_tokens": 150,
+        "output_tokens": 30,
+        "cached_input_tokens": 8,
+        "reasoning_tokens": None,
+        "total_tokens": None,
+    }
+
+
+def test_top_level_usage_contradictory_total_raises():
+    """Top-level usage fallback raises when totalTokens contradicts components."""
+    output = _result_event(
+        usage={
+            "inputTokens": 100,
+            "outputTokens": 20,
+            "cacheReadInputTokens": 5,
+            "cacheCreationInputTokens": 2,
+            "totalTokens": 125,
+        }
+    )
+
+    with pytest.raises(LLMRouterError) as exc_info:
+        capture_claude_usage(output)
+    assert exc_info.value.failure_type == FailureType.CONTRACT_VIOLATION
+    assert "total contradicts its components" in str(exc_info.value)
+
+
+def test_result_event_contradictory_top_level_total_raises():
+    """Result event top-level totalTokens contradicts modelUsage total."""
+    output = _result_event(
+        totalTokens=999,
+        modelUsage={
+            "claude-opus-5": {
+                "inputTokens": 100,
+                "outputTokens": 20,
+                "cacheReadInputTokens": 5,
+                "cacheCreationInputTokens": 2,
+            }
+        },
+    )
+
+    with pytest.raises(LLMRouterError) as exc_info:
+        capture_claude_usage(output)
+    assert exc_info.value.failure_type == FailureType.CONTRACT_VIOLATION
+    assert "total contradicts its components" in str(exc_info.value)
+
+
+def test_invalid_total_tokens_raises():
+    """Invalid totalTokens counter (negative, bool, float) raises."""
+    output = _result_event(
+        usage={"inputTokens": 10, "outputTokens": 4, "totalTokens": -1}
+    )
+
+    with pytest.raises(LLMRouterError) as exc_info:
+        capture_claude_usage(output)
+    assert exc_info.value.failure_type == FailureType.CONTRACT_VIOLATION
+
+
+def test_regression_usages_are_schema_valid():
+    """Validate all regression result shapes against attempt-record v2 schema."""
+    validator = _usage_validator()
+    repro1 = capture_claude_usage(
+        _result_event(
+            modelUsage={
+                "claude-opus-5": {
+                    "inputTokens": 100,
+                    "outputTokens": 20,
+                    "cacheReadInputTokens": 5,
+                },
+                "claude-haiku-4": {"inputTokens": 50, "outputTokens": 10},
+            }
+        )
+    )
+    repro2 = capture_claude_usage(
+        _result_event(
+            modelUsage={
+                "claude-opus-5": {
+                    "inputTokens": 100,
+                    "outputTokens": 20,
+                    "cacheReadInputTokens": 5,
+                    "cacheCreationInputTokens": 2,
+                }
+            }
+        )
+    )
+    normal_multi = capture_claude_usage(
+        _result_event(
+            modelUsage={
+                "claude-opus-5": {
+                    "inputTokens": 100,
+                    "outputTokens": 20,
+                    "cacheReadInputTokens": 5,
+                    "cacheCreationInputTokens": 2,
+                },
+                "claude-haiku-4": {
+                    "inputTokens": 50,
+                    "outputTokens": 10,
+                    "cacheReadInputTokens": 3,
+                    "cacheCreationInputTokens": 1,
+                },
+            }
+        )
+    )
+    for mapping in (repro1, repro2, normal_multi):
+        validator.validate(mapping)

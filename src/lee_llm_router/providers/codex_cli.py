@@ -860,6 +860,7 @@ _CLAUDE_CACHE_WRITE_KEYS = (
     "cacheCreationInputTokens",
     "cache_write_input_tokens",
 )
+_CLAUDE_TOTAL_KEYS = ("total_tokens", "totalTokens")
 
 
 def _claude_unavailable_usage(reason: str) -> dict[str, Any]:
@@ -956,31 +957,37 @@ def _claude_cache_counters(
     mapping: dict[str, Any],
     *,
     subject: str,
-) -> tuple[int, bool]:
-    """Validate the cache-read evidence of one Claude usage mapping.
+) -> tuple[int | None, int | None, int | None]:
+    """Validate optional cache and total evidence of one Claude usage mapping.
 
     Cache reads map to ``cached_input_tokens``. Cache-creation figures
-    are validated but never surfaced: the attempt-record v2 usage schema
-    has no such field, so they are omitted entirely.
+    contribute to ``total_tokens`` and contradiction checking but are
+    never surfaced as a schema field in the attempt-record v2 usage
+    mapping. A reported total figure is validated as a nonnegative
+    integer and checked against contributing components.
 
     Args:
         mapping: The ``modelUsage`` row or top-level ``usage`` mapping.
         subject: Human-readable evidence description for error messages.
 
     Returns:
-        ``(cache_read_total, cache_read_reported)``.
+        ``(cached_read, cache_write, total)`` where each component is a
+        nonnegative integer when present, or ``None`` when absent.
 
     Raises:
         LLMRouterError: With ``FailureType.CONTRACT_VIOLATION`` when a
-            present cache counter is not a nonnegative integer.
+            present counter is not a nonnegative integer or alias keys
+            conflict.
     """
     cached_value = _consistent_claude_usage_value((mapping,), _CLAUDE_CACHED_KEYS)
     cache_write_value = _consistent_claude_usage_value(
         (mapping,), _CLAUDE_CACHE_WRITE_KEYS
     )
+    total_value = _consistent_claude_usage_value((mapping,), _CLAUDE_TOTAL_KEYS)
     for name, value in (
         ("cacheReadInputTokens", cached_value),
         ("cacheCreationInputTokens", cache_write_value),
+        ("totalTokens", total_value),
     ):
         if value is not None and not _nonnegative_int(value):
             raise LLMRouterError(
@@ -988,9 +995,7 @@ def _claude_cache_counters(
                 "nonnegative integer",
                 failure_type=FailureType.CONTRACT_VIOLATION,
             )
-    if cached_value is None:
-        return 0, False
-    return cached_value, True
+    return cached_value, cache_write_value, total_value
 
 
 def _usage_from_claude_model_usage(model_usage: dict[str, Any]) -> dict[str, Any]:
@@ -1000,8 +1005,12 @@ def _usage_from_claude_model_usage(model_usage: dict[str, Any]) -> dict[str, Any
     ``outputTokens`` (snake aliases accepted). A row missing either
     fails closed as ``unavailable`` evidence; a row reporting an invalid
     value (bool, negative, fractional) raises. Cache reads map to
-    ``cached_input_tokens`` and cache creation is omitted. The top-level
-    result ``usage`` object is never added on top of ``modelUsage``.
+    ``cached_input_tokens`` and cache creation contributes to
+    ``total_tokens`` (omitted from schema fields). If an optional cache
+    component is absent in any contributing row, it is not assumed to
+    be zero: ``cached_input_tokens`` stays null, and ``total_tokens``
+    stays null unless authoritatively reported. The top-level result
+    ``usage`` object is never added on top of ``modelUsage``.
 
     Args:
         model_usage: The result event's ``modelUsage`` mapping.
@@ -1014,13 +1023,22 @@ def _usage_from_claude_model_usage(model_usage: dict[str, Any]) -> dict[str, Any
     Raises:
         LLMRouterError: With ``FailureType.CONTRACT_VIOLATION`` when a
             row is not an object, a required counter is present but
-            invalid, an optional cache counter is present but invalid,
-            or alias keys conflict.
+            invalid, an optional cache counter or total is present but
+            invalid, total contradicts components, or alias keys
+            conflict.
     """
     input_tokens = 0
     output_tokens = 0
-    cached_tokens = 0
-    cached_reported = False
+    cached_tokens_sum = 0
+    cache_write_tokens_sum = 0
+    reported_total_sum = 0
+
+    cached_read_presence = 0
+    cache_write_presence = 0
+    row_total_presence = 0
+
+    num_rows = len(model_usage)
+
     for model_id, row in model_usage.items():
         if not isinstance(row, dict):
             raise LLMRouterError(
@@ -1041,22 +1059,71 @@ def _usage_from_claude_model_usage(model_usage: dict[str, Any]) -> dict[str, Any
                 "must report nonnegative integer inputTokens/outputTokens",
                 failure_type=FailureType.CONTRACT_VIOLATION,
             )
-        row_cached, row_cached_reported = _claude_cache_counters(
+        cached_val, cache_write_val, row_total_val = _claude_cache_counters(
             row,
             subject=f"modelUsage row for model {model_id!r}",
         )
+        expected_row_total = (
+            input_value + output_value + (cached_val or 0) + (cache_write_val or 0)
+        )
+        if row_total_val is not None and row_total_val != expected_row_total:
+            raise LLMRouterError(
+                f"Claude result modelUsage row for model {model_id!r} "
+                "total contradicts its components",
+                failure_type=FailureType.CONTRACT_VIOLATION,
+            )
+
         input_tokens += input_value
         output_tokens += output_value
-        cached_tokens += row_cached
-        cached_reported = cached_reported or row_cached_reported
+
+        if cached_val is not None:
+            cached_tokens_sum += cached_val
+            cached_read_presence += 1
+
+        if cache_write_val is not None:
+            cache_write_tokens_sum += cache_write_val
+            cache_write_presence += 1
+
+        if row_total_val is not None:
+            reported_total_sum += row_total_val
+            row_total_presence += 1
+
+    if cached_read_presence == num_rows:
+        aggregate_cached_tokens: int | None = cached_tokens_sum
+    else:
+        aggregate_cached_tokens = None
+
+    cache_read_partial = 0 < cached_read_presence < num_rows
+    cache_write_partial = 0 < cache_write_presence < num_rows
+
+    if not cache_read_partial and not cache_write_partial:
+        calculated_total: int | None = (
+            input_tokens
+            + output_tokens
+            + (cached_tokens_sum if cached_read_presence == num_rows else 0)
+            + (cache_write_tokens_sum if cache_write_presence == num_rows else 0)
+        )
+    else:
+        calculated_total = None
+
+    if row_total_presence == num_rows:
+        if calculated_total is not None and reported_total_sum != calculated_total:
+            raise LLMRouterError(
+                "Claude result aggregate total contradicts its components",
+                failure_type=FailureType.CONTRACT_VIOLATION,
+            )
+        total_tokens = reported_total_sum
+    else:
+        total_tokens = calculated_total
+
     return {
         "basis": "provider_reported",
         "source": CLAUDE_USAGE_SOURCE,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
-        "cached_input_tokens": cached_tokens if cached_reported else None,
+        "cached_input_tokens": aggregate_cached_tokens,
         "reasoning_tokens": None,
-        "total_tokens": input_tokens + output_tokens + cached_tokens,
+        "total_tokens": total_tokens,
     }
 
 
@@ -1065,7 +1132,9 @@ def _usage_from_claude_result_usage(usage: dict[str, Any]) -> dict[str, Any]:
 
     Fallback path used only when ``modelUsage`` is absent. Snake/camel
     aliases are reconciled; missing input or output counts fail closed
-    as ``unavailable`` while present-but-invalid values raise.
+    as ``unavailable`` while present-but-invalid values raise. Cache
+    reads map to ``cached_input_tokens`` and cache creation contributes
+    to ``total_tokens``.
 
     Args:
         usage: The result event's ``usage`` mapping.
@@ -1075,8 +1144,8 @@ def _usage_from_claude_result_usage(usage: dict[str, Any]) -> dict[str, Any]:
 
     Raises:
         LLMRouterError: With ``FailureType.CONTRACT_VIOLATION`` when a
-            present counter is not a nonnegative integer or alias keys
-            conflict.
+            present counter is not a nonnegative integer, total
+            contradicts components, or alias keys conflict.
     """
     input_value = _consistent_claude_usage_value((usage,), _CLAUDE_INPUT_KEYS)
     output_value = _consistent_claude_usage_value((usage,), _CLAUDE_OUTPUT_KEYS)
@@ -1090,18 +1159,29 @@ def _usage_from_claude_result_usage(usage: dict[str, Any]) -> dict[str, Any]:
             "input/output token counts",
             failure_type=FailureType.CONTRACT_VIOLATION,
         )
-    cached_tokens, cached_reported = _claude_cache_counters(
+    cached_value, cache_write_value, total_value = _claude_cache_counters(
         usage,
         subject="usage",
     )
+    expected_total = (
+        input_value
+        + output_value
+        + (cached_value if cached_value is not None else 0)
+        + (cache_write_value if cache_write_value is not None else 0)
+    )
+    if total_value is not None and total_value != expected_total:
+        raise LLMRouterError(
+            "Claude result usage total contradicts its components",
+            failure_type=FailureType.CONTRACT_VIOLATION,
+        )
     return {
         "basis": "provider_reported",
         "source": CLAUDE_USAGE_SOURCE,
         "input_tokens": input_value,
         "output_tokens": output_value,
-        "cached_input_tokens": cached_tokens if cached_reported else None,
+        "cached_input_tokens": cached_value,
         "reasoning_tokens": None,
-        "total_tokens": input_value + output_value + cached_tokens,
+        "total_tokens": total_value if total_value is not None else expected_total,
     }
 
 
@@ -1120,10 +1200,13 @@ def capture_claude_usage(output: str) -> dict[str, Any]:
     ``unavailable`` rather than falling through. Only when the
     ``modelUsage`` key is absent entirely does a top-level ``usage``
     object with snake/camel aliases become the fallback. Cache reads
-    map to ``cached_input_tokens``; cache creation
-    is validated but omitted because the v2 usage schema has no such
-    field. ``total_tokens`` is the observed-component sum (input +
-    output + reported cache reads). Contradictory terminal evidence
+    map to ``cached_input_tokens``; cache creation contributes to
+    ``total_tokens`` (omitted from schema fields). ``total_tokens`` is
+    the observed-component sum (input + output + cache reads + cache
+    creation). When an optional cache component is absent in any
+    contributing row, it is not assumed to be zero:
+    ``cached_input_tokens`` stays null, and ``total_tokens`` stays null
+    unless authoritatively reported. Contradictory terminal evidence
     fails closed; missing, malformed, or unrelated output fails closed
     as ``unavailable`` with a specific reason. No token figure is ever
     estimated from text, context length, cost, or elapsed time.
@@ -1154,8 +1237,8 @@ def capture_claude_usage(output: str) -> dict[str, Any]:
             result event's ``modelUsage`` or ``usage`` field is not an
             object, a ``modelUsage`` row is not an object, a present
             token counter is not a nonnegative integer (bool, negative,
-            or fractional), or alias keys for one counter family
-            conflict.
+            or fractional), total contradicts components, or alias
+            keys for one counter family conflict.
     """
     events, unusable_reason = _parse_claude_events(output)
     result_event = next(
@@ -1192,20 +1275,44 @@ def capture_claude_usage(output: str) -> dict[str, Any]:
             return _claude_unavailable_usage(
                 "Claude result event modelUsage was present but empty"
             )
-        return _usage_from_claude_model_usage(model_usage)
+        usage_result = _usage_from_claude_model_usage(model_usage)
+    else:
+        raw_usage = result_event.get("usage")
+        if raw_usage is not None and not isinstance(raw_usage, dict):
+            raise LLMRouterError(
+                "Claude result usage field must be an object",
+                failure_type=FailureType.CONTRACT_VIOLATION,
+            )
+        if isinstance(raw_usage, dict):
+            usage_result = _usage_from_claude_result_usage(raw_usage)
+        else:
+            return _claude_unavailable_usage(
+                "Claude result event carried no modelUsage or usage token evidence"
+            )
 
-    raw_usage = result_event.get("usage")
-    if raw_usage is not None and not isinstance(raw_usage, dict):
-        raise LLMRouterError(
-            "Claude result usage field must be an object",
-            failure_type=FailureType.CONTRACT_VIOLATION,
-        )
-    if isinstance(raw_usage, dict):
-        return _usage_from_claude_result_usage(raw_usage)
+    event_total = _consistent_claude_usage_value((result_event,), _CLAUDE_TOTAL_KEYS)
+    if event_total is not None:
+        if not _nonnegative_int(event_total):
+            raise LLMRouterError(
+                "Claude result event field 'totalTokens' must be a nonnegative integer",
+                failure_type=FailureType.CONTRACT_VIOLATION,
+            )
+        if (
+            usage_result.get("basis") == "provider_reported"
+            and usage_result.get("total_tokens") is not None
+            and event_total != usage_result["total_tokens"]
+        ):
+            raise LLMRouterError(
+                "Claude result event total contradicts its components",
+                failure_type=FailureType.CONTRACT_VIOLATION,
+            )
+        if (
+            usage_result.get("basis") == "provider_reported"
+            and usage_result.get("total_tokens") is None
+        ):
+            usage_result["total_tokens"] = event_total
 
-    return _claude_unavailable_usage(
-        "Claude result event carried no modelUsage or usage token evidence"
-    )
+    return usage_result
 
 
 def _snippet(text: str, limit: int = 200) -> str:
