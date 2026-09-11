@@ -8,9 +8,10 @@ Commands:
                           [--availability-file <path>] [--benchmark-file <path>]
                           [--events-file <path>]
     lee-llm-router staff --role ROLE --class CLASS [--mode auto|crew NAME|bind ROUTE]
-    lee-llm-router shims install (--dry-run | --apply) [--force] [--harness <tag>]
-                                 [--project <path>]
-    lee-llm-router shims diff [--harness <tag>] [--project <path>]
+    lee-llm-router shims install (--dry-run | --apply) [--command crew|supervise]
+                                 [--force] [--harness <tag>] [--project <path>]
+    lee-llm-router shims diff [--command crew|supervise] [--harness <tag>]
+                              [--project <path>]
     lee-llm-router catalog explain --role ROLE --class CLASS
                                   [--at DATE] [--availability-file PATH]
                                   [--catalog-dir PATH]
@@ -969,6 +970,7 @@ def _run_shims_install(args: argparse.Namespace) -> int:
             force=getattr(args, "force", False),
             harnesses=getattr(args, "harness", None),
             project=getattr(args, "project", None),
+            command=getattr(args, "shim_command", "crew"),
         )
     except shims.ShimUsageError as exc:
         print(f"shims install: {exc}", file=sys.stderr)
@@ -982,6 +984,7 @@ def _run_shims_diff(args: argparse.Namespace) -> int:
         return shims.diff_shims(
             harnesses=getattr(args, "harness", None),
             project=getattr(args, "project", None),
+            command=getattr(args, "shim_command", "crew"),
         )
     except shims.ShimUsageError as exc:
         print(f"shims diff: {exc}", file=sys.stderr)
@@ -2396,6 +2399,14 @@ def main(argv: list[str] | None = None):
         help="Print actions and rendered shim contents without writing",
     )
     shims_install_parser.add_argument(
+        "--command",
+        dest="shim_command",
+        choices=("crew", "supervise"),
+        default="crew",
+        metavar="COMMAND",
+        help="Managed command to install (default: crew)",
+    )
+    shims_install_parser.add_argument(
         "--apply",
         action="store_true",
         help="Write shims to their target paths",
@@ -2423,6 +2434,14 @@ def main(argv: list[str] | None = None):
     shims_diff_parser = shims_sub.add_parser(
         "diff",
         help="Show diff between installed shims and rendered templates",
+    )
+    shims_diff_parser.add_argument(
+        "--command",
+        dest="shim_command",
+        choices=("crew", "supervise"),
+        default="crew",
+        metavar="COMMAND",
+        help="Managed command to compare (default: crew)",
     )
     shims_diff_parser.add_argument(
         "--harness",

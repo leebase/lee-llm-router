@@ -1,0 +1,200 @@
+---
+description: Supervise one plan through the lee-llm-router staffing router (D213 ruling 1; router commands only)
+{frontmatter_extra}---
+<!-- lee-llm-router shim v1 sha256={marker_hash} -->
+
+Supervise the execution of one plan through the lee-llm-router staffing
+router. This command has exactly two argument forms, chosen from the
+arguments:
+
+1. `/supervise <plan-path> crew NAME` — staff every packet with the saved
+   crew `NAME` via `staff --mode crew NAME`.
+2. `/supervise <plan-path> auto` — staff every packet in auto mode from the
+   conservative packet-class derivation. If the second argument is omitted,
+   use this form.
+
+## Hard command boundary
+
+The numbered loop below may call only these six router commands:
+
+- `lee-llm-router staff`
+- `lee-llm-router run`
+- `lee-llm-router classify-failure`
+- `lee-llm-router next-action`
+- `lee-llm-router census`
+- `lee-llm-router evidence rollup`
+
+It must not invoke providers directly: never run `claude`, `codex`, `agy`,
+`opencode`, `omp`, `pi`, or any other provider binary, never construct a
+provider dispatch outside `lee-llm-router run`, and never bypass an
+exclusion or the never-automatic policy. Every worker and reviewer dispatch
+goes through `lee-llm-router run`, which registers the run and writes its
+schema-v2 attempt record to the per-host ledger.
+
+## Numbered execution loop
+
+1. **Read the plan.** Read the plan at `<plan-path>` in full before any
+   other action. Use only facts the plan establishes; never fabricate task
+   facts. If the plan is missing or unreadable, stop and ask the user.
+
+2. **Packetize under Rule B.** Split the plan into small bounded work
+   packets. Every packet states: objective; exact files or resources owned;
+   forbidden files or resources; expected artifact and where to write it;
+   required evidence; stop/escalation condition. Every packet has exact
+   owned paths and a finite oracle: a named test/validator command, or a
+   named reviewer, never "it looks right". A packet that cannot state its
+   owned-file list in one line is too big — split it into multiple packets.
+
+3. **Confirm a clear mutation surface.** Run exactly:
+
+       lee-llm-router census --json
+
+   Parallel work is permitted only for disjoint owned paths: write the
+   owned-path list per packet and confirm the intersection is empty before
+   any parallel dispatch. If a live run already owns intersecting paths,
+   wait for it to finish or shrink the packet; never co-own paths.
+
+4. **Derive the class per packet.** Write each packet as a Markdown file
+   and run exactly:
+
+       lee-llm-router staff --from-packet <packet-path> --json
+
+   Save each JSON result as that packet's class-derivation evidence. The
+   derivation is conservative: language comes from owned-path extensions
+   (`mixed` for multiple); size comes from declared file/line estimates and
+   is `l` if undeclared; the oracle is `deterministic` only for a named
+   test/validator, else `judge` for a named reviewer, else `none`; domain
+   tags are only explicit `classes.yaml` keyword-table matches; the role
+   comes from the packet kind. Overrides are recorded on the attempt; never
+   invent them.
+
+5. **Staff each packet as requested.** Form 1 — run exactly:
+
+       lee-llm-router staff --mode crew <name>
+
+   Form 2 — run exactly:
+
+       lee-llm-router staff --mode auto --role <role> --class <class> --json
+
+   filling `<role>` and `<class>` from the derivation. Read the staffing
+   block's selection basis, reason, exclusions, and reviewer disclosures
+   before dispatching.
+
+6. **Dispatch the packet.** Run exactly:
+
+       lee-llm-router run --role <role> --class <class> --packet <packet-path> --supervisor-route <supervisor-route-id> --owned-paths <owned-path> [--owned-paths <owned-path> ...] --class-derivation <derivation-json-path> --oracle <oracle-cmd> --json
+
+   `--supervisor-route` attests your own route identity. `--owned-paths`
+   repeats every exact path this packet owns — nothing more.
+   `--class-derivation` carries the step-4 evidence. Pass `--oracle` with
+   the packet's finite oracle whenever it is a deterministic command; for a
+   judge-oracle packet the named reviewer is step 11. Dispatch parallel
+   packets only when their owned paths are disjoint.
+
+7. **Personally verify the oracle.** A worker's summary is never evidence.
+   Run the oracle yourself, read the full candidate diff (`git status
+   --short`, `git diff --stat`, `git diff`), and inspect the artifacts.
+   Only evidence you generated or read directly can support acceptance.
+
+8. **Classify every failure.** For a failed or unverified attempt run
+   exactly:
+
+       lee-llm-router classify-failure --record <attempt-record-path> --json
+
+   then exactly:
+
+       lee-llm-router next-action --input <classify-json-path>
+
+   `spec_rejected` and `capability_rejected` enter only through an explicit
+   `--judgment` after your review; never infer them from prose.
+
+9. **Repair once, then escalate.** Remediation follows `next-action`: one
+   same-route capability repair precedes escalation. If that repair fails,
+   escalate using the staffing block's ladder, reviewer, and authority
+   disclosures: stop the worker, audit the actual repository state,
+   preserve useful work, write a handoff of verified facts only, and move
+   up a tier. A replacement inherits facts, not the failed worker's story.
+
+10. **Ledger every attempt.** Every dispatch — work, repair, escalation,
+    review — is an attempt record in the per-host ledger. Never edit or
+    discard ledger lines; cite exact attempt ids in the final report.
+    Summarize with:
+
+        lee-llm-router evidence rollup
+
+11. **Independent review.** For every candidate you intend to accept,
+    staff an independent reviewer with the worker's route excluded as the
+    author (`--author-route <worker-route-id>` on both staff and run) and
+    dispatch exactly:
+
+        lee-llm-router run --role review --class <review-class> --packet <review-packet-path> --author-route <worker-route-id> --supervisor-route <supervisor-route-id> --owned-paths <owned-path> [--owned-paths <owned-path> ...] --json
+
+    Classify its findings: contract-blocking defects, non-blocking
+    hardening, or future concerns; blocking findings cite the violated
+    requirement and a reproducer. Re-derive any classification that would
+    drive a change; never feed review labels straight into remediation.
+
+12. **Inspect every diff.** After every worker run that had repository
+    access, compare what changed against the packet's owned paths —
+    including untracked files. A worker that leaves any file outside its
+    owned paths has violated scope, however harmless.
+
+13. **Continue to convergence.** Ordinary review findings are work, not
+    permission to stop: keep fixing and independently re-reviewing until
+    0 High / 0 Medium. After each review round, loop back to step 6 with
+    the remediation packet. Never end while a worker is running or at a
+    packet boundary.
+
+14. **Report.** Finish with the staffing block for every packet plus exact
+    ledger evidence: attempt ids, routes, selection basis and reason, usage
+    basis, verdicts, and next actions — copied from the ledger records,
+    not narrated. The ledger, not its narrative, proves every attempt.
+
+## Genuine stops (D209)
+
+Do not stop at packet boundaries or while a worker is running. A genuine
+stop requires an authority boundary, unresolved contradiction, missing
+credential, material irreversible risk, or an external dependency that
+makes useful progress impossible, after reconciling D204–D213.
+
+## Operating rules (D209)
+
+- **Usage truth.** No usage is invented. Provider-reported, observed,
+  calculated, and unavailable facts stay distinct; subscription equivalents
+  never count as metered spend.
+- **Findings classification.** The supervisor reads every candidate diff
+  and classifies review findings as contract-blocking defects, non-blocking
+  hardening, or future concerns. Blocking findings cite the violated
+  requirement and a reproducer.
+- **Rule B packet shape.** Every packet states: objective; exact files or
+  resources owned; forbidden files or resources; expected artifact and
+  where to write it; required evidence; stop/escalation condition.
+- **Disjoint parallelism.** Concurrent packets must have disjoint owned
+  paths. Maintain exactly one authoritative integration owner: the
+  supervisor.
+- **No-invented-policy.** Exclusions and never-automatic policy are never
+  bypassed; selection is `explicit` or `explain_cheapest_eligible`; never
+  invent a policy the staffing block does not state, and never report usage
+  the ledger did not record.
+
+## Doctrine guardrails (quoted verbatim)
+
+Source: governed-execution-engine-docs,
+`docs/supervised-agent-operating-doctrine.md`. Each guardrail below is
+quoted exactly, not paraphrased, and labeled with its rule.
+
+- **Rule A — Agent confinement is verified, not instructed.** "A prompt is a request, not a sandbox."
+- **Rule B — Prefer small bounded work packets.** "A packet that cannot state its owned-file list in one line is too big."
+- **Rule C — Stop and escalate on spec deviation.** "Do not silently improvise an alternative architecture."
+- **Rule D — The supervisor reviews evidence, not worker summaries.** "Worker summaries are consistently more confident than the underlying work."
+- **Rule E — Staffing ladder (empirical, not a model ranking).** "Before assigning, ask: *what oracle proves this correct?*"
+- **Rule F — Escalation triggers, and what to do at them.** "Escalate the tier on evidence, not on a fixed defect count."
+- **Rule G — A replacement worker inherits facts, not the failed worker's story.** "A stalled worker's narrative is the least reliable artifact in the system: it describes intent, at the moment the work stopped being trustworthy."
+- **Rule H — Parallelism requires disjoint mutation ownership.** "Two agents holding the same mutable file produce a diff no one can attribute, and a candidate no one can freeze."
+- **Rule I — Read-only research parallelises well; its conclusions still need judgment.** "Fan-out is cheap and effective for *finding* things and unreliable for *classifying* them."
+- **Rule J — Review until convergence; "more findings" is not a stopping condition.** "The supervisor stops as genuinely blocked only if the same release blocker survives two consecutive evidence-backed remediation attempts without material progress."
+- **Rule K — A failed cheap-worker execution is not a failed architecture.** "Worker capability, implementation quality, and architecture validity are three separate hypotheses."
+
+This command supervises through the router only. It never dispatches a
+provider directly, never reports usage the ledger did not record, and ends
+only with the staffing blocks and ledger evidence above.

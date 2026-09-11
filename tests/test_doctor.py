@@ -22,6 +22,44 @@ FIXTURES = Path(__file__).parent / "fixtures"
 PI_HARNESS = FIXTURES / "pi_harness.py"
 
 
+def test_doctor_shims_command_selector_forwards_supervise(
+    tmp_path, monkeypatch, capsys
+):
+    """The doctor CLI accepts and forwards the managed shim command."""
+    from lee_llm_router import shims
+    from lee_llm_router.doctor import main
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    home.mkdir()
+    project.mkdir()
+    monkeypatch.setenv(shims.ENV_SHIM_HOME, str(home))
+
+    target = shims.target_path_for_harness(
+        "opencode", project=project, home=home, command="supervise"
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        main(
+            [
+                "shims",
+                "install",
+                "--dry-run",
+                "--command",
+                "supervise",
+                "--harness",
+                "opencode",
+                "--project",
+                str(project),
+            ]
+        )
+
+    assert excinfo.value.code == 0
+    output = capsys.readouterr().out
+    assert f"target: {target}" in output
+    assert "description: Supervise one plan" in output
+    assert not target.exists()
+
+
 def test_doctor_valid_config_exit_0():
     """Mock-only config has no env var or binary requirements - zero errors."""
     errors, warnings = check_config(str(FIXTURES / "llm_test.yaml"))

@@ -97,6 +97,176 @@ def test_rendered_body_run_offer_is_offered_not_executed(shim_env):
         assert sorted(run_lines) == sorted([RUN_OFFER_LINE, RUN_OFFER_ROUTE_LINE])
 
 
+def test_crew_default_selection_is_byte_identical_to_explicit_crew(shim_env, capsys):
+    """The omitted command remains exactly the legacy ``crew`` command."""
+    home, project = shim_env
+    default_targets = shims.get_targets(project=project, home=home)
+    crew_targets = shims.get_targets(
+        project=project, home=home, command=shims.CREW_COMMAND
+    )
+
+    assert default_targets == crew_targets
+    for default, explicit in zip(default_targets, crew_targets):
+        assert default.content == explicit.content
+        assert default.body == explicit.body
+        assert default.path == explicit.path
+
+    with pytest.raises(SystemExit) as excinfo:
+        main(
+            [
+                "shims",
+                "install",
+                "--dry-run",
+                "--project",
+                str(project),
+            ]
+        )
+    assert excinfo.value.code == 0
+    default_output = capsys.readouterr().out
+
+    with pytest.raises(SystemExit) as excinfo:
+        main(
+            [
+                "shims",
+                "install",
+                "--dry-run",
+                "--command",
+                "crew",
+                "--project",
+                str(project),
+            ]
+        )
+    assert excinfo.value.code == 0
+    assert capsys.readouterr().out == default_output
+
+
+def test_shims_supervise_cli_lifecycle_all_targets(shim_env, capsys):
+    """Exercise the supervise command selector through its full lifecycle."""
+    home, project = shim_env
+    targets = shims.get_targets(
+        project=project, home=home, command=shims.SUPERVISE_COMMAND
+    )
+
+    # The dry-run must select supervise targets and must not create anything.
+    with pytest.raises(SystemExit) as excinfo:
+        main(
+            [
+                "shims",
+                "install",
+                "--dry-run",
+                "--command",
+                "supervise",
+                "--project",
+                str(project),
+            ]
+        )
+    assert excinfo.value.code == 0
+    dry_run_output = capsys.readouterr().out
+    for target in targets:
+        assert f"target: {target.path}" in dry_run_output
+        assert "action: create" in dry_run_output
+        assert target.body in dry_run_output
+        assert not target.path.exists()
+        assert not target.path.parent.exists()
+
+    # Apply creates only the selected command's four targets.
+    with pytest.raises(SystemExit) as excinfo:
+        main(
+            [
+                "shims",
+                "install",
+                "--apply",
+                "--command",
+                "supervise",
+                "--project",
+                str(project),
+            ]
+        )
+    assert excinfo.value.code == 0
+    apply_output = capsys.readouterr().out
+    for target in targets:
+        assert f"create: {target.path}" in apply_output
+        assert target.path.read_text(encoding="utf-8") == target.content
+        assert not target.path.with_name("crew.md").exists()
+
+    # A second apply is a no-op for every target.
+    with pytest.raises(SystemExit) as excinfo:
+        main(
+            [
+                "shims",
+                "install",
+                "--apply",
+                "--command",
+                "supervise",
+                "--project",
+                str(project),
+            ]
+        )
+    assert excinfo.value.code == 0
+    unchanged_output = capsys.readouterr().out
+    for target in targets:
+        assert f"unchanged: {target.path}" in unchanged_output
+
+    # Clean diff is empty.  Drift is checked independently for all four
+    # harness targets, proving --command reaches both the renderer and diff.
+    with pytest.raises(SystemExit) as excinfo:
+        main(
+            [
+                "shims",
+                "diff",
+                "--command",
+                "supervise",
+                "--project",
+                str(project),
+            ]
+        )
+    assert excinfo.value.code == 0
+    assert capsys.readouterr().out == ""
+
+    for target in targets:
+        target.path.write_text(
+            target.path.read_text(encoding="utf-8") + "\n# drift\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(SystemExit) as excinfo:
+            main(
+                [
+                    "shims",
+                    "diff",
+                    "--command",
+                    "supervise",
+                    "--harness",
+                    target.harness,
+                    "--project",
+                    str(project),
+                ]
+            )
+        assert excinfo.value.code == 1
+        drift_output = capsys.readouterr().out
+        assert f"--- {target.path}" in drift_output
+        assert f"+++ {target.path} (rendered)" in drift_output
+        assert "# drift" in drift_output
+
+        with pytest.raises(SystemExit) as excinfo:
+            main(
+                [
+                    "shims",
+                    "install",
+                    "--apply",
+                    "--force",
+                    "--command",
+                    "supervise",
+                    "--harness",
+                    target.harness,
+                    "--project",
+                    str(project),
+                ]
+            )
+        assert excinfo.value.code == 0
+        capsys.readouterr()
+        assert target.path.read_text(encoding="utf-8") == target.content
+
+
 def test_shims_install_dry_run(shim_env, capsys):
     """Dry-run prints four paths and four full bodies and creates nothing."""
     home, project = shim_env

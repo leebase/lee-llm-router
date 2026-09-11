@@ -8,10 +8,13 @@ harness, and prove parity of the returned blocks modulo harness-irrelevant
 facts, that no event is written, and that nothing is dispatched.
 """
 
+# ruff: noqa: E501 -- exact doctrine/template strings are intentionally literal.
+
 from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -166,6 +169,131 @@ def test_four_harness_staff_parity_subprocess(tmp_path, monkeypatch):
     # The crew text output is the saved crew block.
     crew_first = outputs["crew"][targets[0].harness]
     assert crew_first.startswith(f"staff crew {CREW} ")
+
+
+DOCTRINE_QUOTES = (
+    '**Rule A — Agent confinement is verified, not instructed.** "A prompt is a request, not a sandbox."',
+    '**Rule B — Prefer small bounded work packets.** "A packet that cannot state its owned-file list in one line is too big."',
+    '**Rule C — Stop and escalate on spec deviation.** "Do not silently improvise an alternative architecture."',
+    '**Rule D — The supervisor reviews evidence, not worker summaries.** "Worker summaries are consistently more confident than the underlying work."',
+    '**Rule E — Staffing ladder (empirical, not a model ranking).** "Before assigning, ask: *what oracle proves this correct?*"',
+    '**Rule F — Escalation triggers, and what to do at them.** "Escalate the tier on evidence, not on a fixed defect count."',
+    "**Rule G — A replacement worker inherits facts, not the failed worker's story.** \"A stalled worker's narrative is the least reliable artifact in the system: it describes intent, at the moment the work stopped being trustworthy.\"",
+    '**Rule H — Parallelism requires disjoint mutation ownership.** "Two agents holding the same mutable file produce a diff no one can attribute, and a candidate no one can freeze."',
+    '**Rule I — Read-only research parallelises well; its conclusions still need judgment.** "Fan-out is cheap and effective for *finding* things and unreliable for *classifying* them."',
+    '**Rule J — Review until convergence; "more findings" is not a stopping condition.** "The supervisor stops as genuinely blocked only if the same release blocker survives two consecutive evidence-backed remediation attempts without material progress."',
+    '**Rule K — A failed cheap-worker execution is not a failed architecture.** "Worker capability, implementation quality, and architecture validity are three separate hypotheses."',
+)
+
+PERMITTED_ROUTER_COMMANDS = {
+    "staff",
+    "run",
+    "classify-failure",
+    "next-action",
+    "census",
+    "evidence",
+}
+
+
+def test_supervise_bodies_are_parity_checked_against_d213(tmp_path, monkeypatch):
+    """Every supervise target carries the same governed protocol body."""
+    tmp_home = tmp_path / "home"
+    tmp_project = tmp_path / "project"
+    tmp_home.mkdir(parents=True, exist_ok=True)
+    tmp_project.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv(shims.ENV_SHIM_HOME, str(tmp_home))
+
+    targets = shims.get_targets(
+        project=tmp_project,
+        home=tmp_home,
+        command=shims.SUPERVISE_COMMAND,
+    )
+    assert len(targets) == 4
+
+    # This template needs no harness-specific body token, so the stronger
+    # form of the D213 parity rule applies: complete managed bodies match.
+    assert all(target.body == targets[0].body for target in targets)
+    assert all(
+        target.body_below_marker == targets[0].body_below_marker for target in targets
+    )
+
+    expected_signatures = (
+        "lee-llm-router staff --from-packet <packet-path> --json",
+        "lee-llm-router staff --mode crew <name>",
+        "lee-llm-router staff --mode auto --role <role> --class <class> --json",
+        "lee-llm-router run --role <role> --class <class> --packet <packet-path> "
+        "--supervisor-route <supervisor-route-id> --owned-paths <owned-path> "
+        "[--owned-paths <owned-path> ...] --class-derivation "
+        "<derivation-json-path> --oracle <oracle-cmd> --json",
+        "lee-llm-router classify-failure --record <attempt-record-path> --json",
+        "lee-llm-router next-action --input <classify-json-path>",
+        "lee-llm-router census --json",
+        "lee-llm-router evidence rollup",
+    )
+    review_signature = (
+        "lee-llm-router run --role review --class <review-class> --packet "
+        "<review-packet-path> --author-route <worker-route-id> "
+        "--supervisor-route <supervisor-route-id> --owned-paths <owned-path> "
+        "[--owned-paths <owned-path> ...] --json"
+    )
+
+    for target in targets:
+        body = target.body_below_marker
+        for quote in DOCTRINE_QUOTES:
+            assert (
+                body.count(quote) == 1
+            ), f"{target.harness} missing or changing doctrine quote: {quote}"
+
+        command_names = set(re.findall(r"`lee-llm-router ([a-z-]+)", body))
+        command_names.update(
+            re.findall(r"^\s+lee-llm-router ([a-z-]+)", body, flags=re.MULTILINE)
+        )
+        assert command_names == PERMITTED_ROUTER_COMMANDS
+
+        for signature in expected_signatures:
+            assert signature in body
+        assert review_signature in body
+
+        # Provider names may be discussed as prohibited binaries, but no
+        # provider invocation or legacy router dispatch may be present.
+        for forbidden in (
+            "lee-llm-router resolve",
+            "lee-llm-router dispatch",
+            "agy ",
+            "codex exec",
+            "claude -p",
+            "opencode run",
+            "omp -p",
+        ):
+            assert forbidden not in body
+        assert not re.search(
+            r"(?m)^\s*(?:claude|codex|agy|opencode|omp|pi)(?:\s|$)", body
+        )
+
+        compact = " ".join(body.split())
+        assert (
+            "A packet that cannot state its owned-file list in one line is too big."
+            in compact
+        )
+        assert (
+            "Provider-reported, observed, calculated, and unavailable facts stay distinct"
+            in compact
+        )
+        assert "subscription equivalents never count as metered spend" in compact
+        assert (
+            "contract-blocking defects, non-blocking hardening, or future concerns"
+            in compact
+        )
+        assert (
+            "keep fixing and independently re-reviewing until 0 High / 0 Medium"
+            in compact
+        )
+        assert "staffing block for every packet plus exact ledger evidence" in compact
+        assert (
+            "attempt ids, routes, selection basis and reason, usage basis, verdicts, and next actions"
+            in compact
+        )
+        assert "The ledger, not its narrative, proves every attempt." in compact
 
 
 def test_shims_rendered_body_offers_run_never_executes(tmp_path, monkeypatch):

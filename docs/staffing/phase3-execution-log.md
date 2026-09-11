@@ -100,3 +100,24 @@ usage basis and knowable cost, verdict, findings, next action, and escalation.
 - DeepSeek/Pi review with GLM excluded passed, 0 blockers; 164 focused passed,
   Black/Ruff/diff clean. Receipt: 710,471 provider-reported tokens /
   `$0.0177000432` metered. P3-2 metered spend `$0.0461000532`.
+
+## P3-5 — `/supervise` four-harness skill
+
+- Named-crew GLM/Pi authored the template/library seam; 347,778
+  provider-reported tokens / `$0.01419601` metered. Supervisor inspection
+  found a blocker: no CLI could select the new command and no new tests
+  existed. The same-route repair changed nothing (165,019 tokens /
+  `$0.00442148` metered), so the packet escalated for non-convergence.
+- Luna XHigh/Pi wired `shims install|diff --command supervise`, added the
+  lifecycle/parity/quote/allowlist tests, and timed out at 590 s after leaving
+  a usable candidate: 2,798,873 provider-reported subscription tokens /
+  `$0.1105432` list-equivalent, not metered. Supervisor corrected one false
+  parity assertion; 158 focused tests and Black/Ruff passed.
+- DeepSeek/Pi reviewed with the Luna/Sol family excluded and passed the
+  literal scratch install/diff and test gate; 7,318,770 provider-reported
+  tokens / `$0.1350536208` metered. Blocking 0; no accepted hardening or
+  future finding.
+- Live dry-run named four `create` targets. D213/D189-authorized apply created
+  `/supervise` for Claude Code, Codex, Chief OMP, and OpenCode. Immediate
+  `shims diff --command supervise` and default `/crew` diff both exited 0;
+  `/crew` remains unchanged. P3-5 metered spend `$0.1536711108`.
