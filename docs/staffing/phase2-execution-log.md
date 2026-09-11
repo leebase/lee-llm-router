@@ -154,3 +154,29 @@ dispatches record the same fields as `run`.
   `$0.054584700280`). P2-5: 4 author attempts + 2 reviews. Newly metered
   OpenRouter spend `$0.211772705548`; running knowable OpenRouter total
   `$0.330730800520`. Subscription execution equivalents remain separate.
+
+## P2-8 — Four-harness staffing shims
+
+- Implementation explain for `impl/deterministic/none/xs/python` selected
+  eligible first-rung `pi-z-ai-glm-5-3-flash-openrouter`; exclusions retained
+  the standard likely-exhausted 7, never-automatic 4, role-scope 1, and
+  unpriced/pricing 1 summary. GLM completed within its ceiling, changing only
+  the shim module/template and shim/parity tests: 33 finalized events,
+  656,603 provider-reported tokens / `$0.016567535`.
+- Supervisor read the complete diff and made two localized test-truth repairs:
+  wrapped two owned-file lint violations and wired parity subprocesses to the
+  scratch event/attempt paths they claimed to inspect. Related gate 40 passed;
+  Black/Ruff clean. The one template now maps `/crew auto` to a task-derived,
+  already-planned canonical role/class and `/crew NAME` to the exact saved
+  crew; both print `staff` blocks, never dispatch, and only offer `run`.
+- Review explain used `review/judge/none/xs/python` with `--author-route
+  pi-z-ai-glm-5-3-flash-openrouter`; DeepSeek/Pi remained eligible and
+  independent. Read-only review exercised the rendered instructions, actual
+  CLI spellings, safe marker update/refusal path, and subprocess parity, then
+  returned PASS — zero findings: 77 events, 3,244,168 tokens /
+  `$0.078711216834`.
+- D189-authorized live apply updated all four managed targets without force:
+  Claude Code, Codex, OMP under the Chief project, and OpenCode. Immediate
+  `shims diff` exited 0 with no drift. Full repository gate: 1,602 passed/1
+  skipped. P2-8 newly metered spend `$0.095278751834`; running knowable
+  OpenRouter total `$0.426009552354`.

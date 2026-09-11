@@ -30,10 +30,10 @@ HARNESS_FORMS: dict[str, str] = {
 
 HARNESS_FRONTMATTER_EXTRA: dict[str, str] = {
     "claude-code": (
-        "argument-hint: <crew> <role>\n" "allowed-tools: Bash(lee-llm-router:*)\n"
+        "argument-hint: auto|NAME\n" "allowed-tools: Bash(lee-llm-router:*)\n"
     ),
-    "codex": "argument-hint: <crew> <role>\n",
-    "omp": "argument-hint: <crew> <role>\n",
+    "codex": "argument-hint: auto|NAME\n",
+    "omp": "argument-hint: auto|NAME\n",
     "opencode": "",
 }
 

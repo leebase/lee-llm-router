@@ -1,4 +1,12 @@
-"""Tests for harness shims parity across all four targets (Sprint 4 P32)."""
+"""Tests for harness shims parity across all four targets (Sprint 4 P32, P2-8).
+
+The generated shims are resolve-only: ``/crew auto`` and ``/crew NAME`` run
+``lee-llm-router staff``, display the returned block, never dispatch or
+invoke a provider, and only offer (never execute) a ``run`` command. These
+tests execute the exact staff commands each rendered shim carries, for every
+harness, and prove parity of the returned blocks modulo harness-irrelevant
+facts, that no event is written, and that nothing is dispatched.
+"""
 
 from __future__ import annotations
 
@@ -11,142 +19,157 @@ from pathlib import Path
 
 from lee_llm_router import shims
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+CATALOG_DIR = REPO_ROOT / "config" / "staffing"
+AVAILABILITY_FILE = REPO_ROOT / "tests" / "fixtures" / "availability" / "healthy.json"
+AT = "2026-10-01"
+CLASS_KEY = "impl/deterministic/none/s/python"
+ROLE = "impl"
+CREW = "luna-sol"
 
-def test_four_harness_parity_resolve_subprocess(tmp_path, monkeypatch):
-    """Render all four shims, extract resolve line, run as subprocess, assert parity."""
+
+def _extract_staff_lines(body: str, harness: str) -> tuple[str, str]:
+    """Extract the exact auto and crew staff command lines from a shim body."""
+    auto_lines = [
+        line.strip()
+        for line in body.splitlines()
+        if line.strip()
+        == ("lee-llm-router staff --mode auto --role <role> --class <class>")
+    ]
+    crew_lines = [
+        line.strip()
+        for line in body.splitlines()
+        if line.strip() == "lee-llm-router staff --mode crew <name>"
+    ]
+    assert (
+        len(auto_lines) == 1
+    ), f"Expected exactly one auto staff line for {harness}, got {auto_lines}"
+    assert (
+        len(crew_lines) == 1
+    ), f"Expected exactly one crew staff line for {harness}, got {crew_lines}"
+    return auto_lines[0], crew_lines[0]
+
+
+def _run_staff(argv: list[str], events_file: Path) -> subprocess.CompletedProcess:
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": "/usr/bin:/bin",
+            "PYTHONPATH": str(REPO_ROOT / "src"),
+            "LEE_LLM_ROUTER_EVENTS_FILE": str(events_file),
+            "LEE_LLM_ROUTER_ATTEMPTS_FILE": str(events_file.with_suffix(".attempts")),
+        }
+    )
+    cmd = [sys.executable, "-m", "lee_llm_router.doctor", *argv]
+    return subprocess.run(
+        cmd,
+        cwd=str(REPO_ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _substitute(line: str) -> list[str]:
+    """Fill the shim command placeholders the way the harness would."""
+    return shlex.split(
+        line.replace("<role>", ROLE)
+        .replace("<class>", CLASS_KEY)
+        .replace("<name>", CREW)
+    )
+
+
+def _staff_args(
+    substituted: list[str], events_file: Path, *, json_mode: bool
+) -> list[str]:
+    argv = [
+        *substituted[1:],
+        "--at",
+        AT,
+        "--availability-file",
+        str(AVAILABILITY_FILE),
+        "--catalog-dir",
+        str(CATALOG_DIR),
+    ]
+    if json_mode:
+        argv.append("--json")
+    return argv
+
+
+def test_four_harness_staff_parity_subprocess(tmp_path, monkeypatch):
+    """Run each shim's auto and crew staff commands; parity + no event writes."""
     tmp_home = tmp_path / "home"
     tmp_project = tmp_path / "project"
     tmp_home.mkdir(parents=True, exist_ok=True)
     tmp_project.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv(shims.ENV_SHIM_HOME, str(tmp_home))
 
-    repo_root = Path(__file__).resolve().parent.parent
-    crews_file = repo_root / "tests" / "fixtures" / "crews.yaml"
-    availability_file = (
-        repo_root / "tests" / "fixtures" / "availability" / "healthy.json"
-    )
-    events_file = tmp_path / "events.jsonl"
-
     targets = shims.get_targets(project=tmp_project, home=tmp_home)
     assert len(targets) == 4
 
-    crew = "test-flex"
-    role = "envision"
-
-    outputs: list[str] = []
-    target_harnesses: list[str] = []
+    outputs: dict[str, dict[str, str]] = {}
+    events_files: dict[str, Path] = {}
 
     for target in targets:
-        target_harnesses.append(target.harness)
+        auto_line, crew_line = _extract_staff_lines(target.body, target.harness)
+        events_file = tmp_path / f"events-{target.harness}.jsonl"
+        events_file.touch()
 
-        # Extract the exact line matching:
-        # 'lee-llm-router resolve $ARGUMENTS --mode flex --harness <tag> --json'
-        matching_lines = [
-            line.strip()
-            for line in target.body.splitlines()
-            if line.strip()
-            == (
-                f"lee-llm-router resolve $ARGUMENTS --mode flex "
-                f"--harness {target.harness} --json"
+        for label, line, mode in (
+            ("auto", auto_line, "json"),
+            ("auto-text", auto_line, "text"),
+            ("crew", crew_line, "text"),
+        ):
+            substituted = _substitute(line)
+            assert substituted[0] == "lee-llm-router"
+            assert substituted[1] == "staff"
+            argv = _staff_args(substituted, events_file, json_mode=(mode == "json"))
+            proc = _run_staff(argv, events_file)
+            assert proc.returncode == 0, (
+                f"staff command for {target.harness} ({label}) failed with exit "
+                f"{proc.returncode}:\nstdout: {proc.stdout}\nstderr: {proc.stderr}"
             )
-        ]
-        assert len(matching_lines) == 1, (
-            f"Expected exactly one resolve line in body for {target.harness}, "
-            f"found: {matching_lines}"
-        )
-        resolve_line = matching_lines[0]
+            outputs.setdefault(label, {})[target.harness] = proc.stdout
 
-        # Substitute $ARGUMENTS with <crew> <role> the way the harness would
-        substituted_line = resolve_line.replace("$ARGUMENTS", f"{crew} {role}")
-
-        # Split into tokens and ensure command begins with lee-llm-router
-        cmd_tokens = shlex.split(substituted_line)
-        assert cmd_tokens[0] == "lee-llm-router"
-        assert cmd_tokens[1] == "resolve"
-
-        # Build subprocess command running python -m lee_llm_router.doctor
-        # with fixture and tmp ledger appended
-        sub_cmd = [
-            sys.executable,
-            "-m",
-            "lee_llm_router.doctor",
-            *cmd_tokens[1:],
-            "--crews-file",
-            str(crews_file),
-            "--availability-file",
-            str(availability_file),
-            "--events-file",
-            str(events_file),
-        ]
-
-        env = os.environ.copy()
-        env["PYTHONPATH"] = str(repo_root / "src")
-
-        proc = subprocess.run(
-            sub_cmd,
-            cwd=str(repo_root),
-            env=env,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert proc.returncode == 0, (
-            f"Command {sub_cmd} for harness {target.harness} failed with exit code "
-            f"{proc.returncode}:\nstdout: {proc.stdout}\nstderr: {proc.stderr}"
-        )
-        outputs.append(proc.stdout)
-
-    assert len(outputs) == 4
-
-    # The four JSON outputs are byte-identical after deleting ts, harness, event_path
-    cleaned_dicts = []
-    for out in outputs:
-        data = json.loads(out)
-        data.pop("ts", None)
-        data.pop("harness", None)
-        data.pop("event_path", None)
-        cleaned_dicts.append(data)
-
-    for i in range(1, len(cleaned_dicts)):
+        # Nothing dispatched: no provider invocation happened and no event
+        # was written for this harness's commands.
         assert (
-            cleaned_dicts[i] == cleaned_dicts[0]
-        ), f"Cleaned JSON for {targets[i].harness} differed from {targets[0].harness}"
+            events_file.read_text(encoding="utf-8") == ""
+        ), f"staff commands for {target.harness} wrote events"
+        events_files[target.harness] = events_file
 
-    cleaned_bytes = [
-        json.dumps(d, indent=2, sort_keys=True).encode("utf-8") for d in cleaned_dicts
-    ]
-    for i in range(1, len(cleaned_bytes)):
-        assert cleaned_bytes[i] == cleaned_bytes[0], (
-            f"Byte-serialized JSON for {targets[i].harness} differed from "
-            f"{targets[0].harness}"
-        )
+    # The four harnesses produce equivalent blocks: every output for a form
+    # is byte-identical modulo harness-irrelevant facts (there are none —
+    # staff commands carry no harness tag), so outputs are byte-identical.
+    for label, per_harness in outputs.items():
+        values = list(per_harness.values())
+        assert len(values) == 4
+        for i in range(1, len(values)):
+            assert values[i] == values[0], (
+                f"{label} output for harness {targets[i].harness} differed from "
+                f"{targets[0].harness}"
+            )
 
-    # The events file holds exactly four lines whose harness values are
-    # exactly {'claude-code', 'codex', 'omp', 'opencode'} and whose route_id
-    # values are all equal
-    assert events_file.exists(), f"Events file {events_file} does not exist"
-    event_lines = [
-        line.strip()
-        for line in events_file.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
-    assert (
-        len(event_lines) == 4
-    ), f"Expected exactly four event records, found {len(event_lines)}"
+    # The auto JSON output is the structured staffing block: the block facts
+    # match the text block modulo whitespace/harness-irrelevant facts.
+    auto_payloads = {h: json.loads(out) for h, out in outputs["auto"].items()}
+    for i in range(1, len(auto_payloads)):
+        harness = targets[i].harness
+        assert auto_payloads[harness] == auto_payloads[targets[0].harness]
+    first = auto_payloads[targets[0].harness]
+    assert first["mode"] == "auto"
+    assert first["role"] == ROLE
+    assert first["class_key"] == CLASS_KEY
+    assert first["selected_route"], "auto block must name a selected route"
 
-    records = [json.loads(line) for line in event_lines]
-    recorded_harnesses = {rec["harness"] for rec in records}
-    assert recorded_harnesses == {"claude-code", "codex", "omp", "opencode"}
-
-    route_ids = [rec["route_id"] for rec in records]
-    assert (
-        len(set(route_ids)) == 1
-    ), f"Expected all route_id values to be equal, got {route_ids}"
-    assert route_ids[0], "route_id must not be empty"
+    # The crew text output is the saved crew block.
+    crew_first = outputs["crew"][targets[0].harness]
+    assert crew_first.startswith(f"staff crew {CREW} ")
 
 
-def test_shims_rendered_body_recommends_never_runs(tmp_path, monkeypatch):
-    """Assert every rendered body contains no provider command and offers dispatch."""
+def test_shims_rendered_body_offers_run_never_executes(tmp_path, monkeypatch):
+    """Every rendered body: no provider command, no dispatch, run offered only."""
     tmp_home = tmp_path / "home"
     tmp_project = tmp_path / "project"
     tmp_home.mkdir(parents=True, exist_ok=True)
@@ -156,23 +179,45 @@ def test_shims_rendered_body_recommends_never_runs(tmp_path, monkeypatch):
     targets = shims.get_targets(project=tmp_project, home=tmp_home)
     assert len(targets) == 4
 
-    forbidden_commands = ("agy", "codex exec", "claude -p", "opencode run", "omp -p")
+    forbidden_substrings = (
+        "lee-llm-router resolve",
+        "lee-llm-router dispatch",
+        "agy ",
+        "codex exec",
+        "claude -p",
+        "opencode run",
+        "omp -p",
+    )
+    offer_lines = (
+        "lee-llm-router run --role <role> --class <class> --packet <path>",
+        "lee-llm-router run --route <route-id> --role <role> --class <class> "
+        "--packet <path>",
+    )
 
     for target in targets:
         body = target.body
 
-        # Provider binary names must not appear as commands in the rendered body
-        for forbidden in forbidden_commands:
+        for forbidden in forbidden_substrings:
             assert forbidden not in body, (
-                f"Rendered body for harness {target.harness!r} contains forbidden "
-                f"command {forbidden!r}"
+                f"Rendered body for harness {target.harness!r} contains "
+                f"forbidden {forbidden!r}"
             )
 
-        # Body contains the dispatch offer line
-        expected_dispatch_line = (
-            f"lee-llm-router dispatch --crew <crew> --role <role> --mode flex "
-            f"--harness {target.harness} --prompt-file <path>"
-        )
+        # Both run offer lines appear exactly once each.
+        for offer in offer_lines:
+            assert body.count(offer) == 1, (
+                f"Rendered body for harness {target.harness!r} must offer "
+                f"{offer!r} exactly once"
+            )
+
+        # The run commands are offered, not executed: no line instructs the
+        # harness to run them (they are bare offer lines after an explicit
+        # offer/do-not-execute sentence).
+        assert "offer — do not execute — the dispatch command" in body
+
+        # staff commands for both forms appear exactly once each.
         assert (
-            expected_dispatch_line in body
-        ), f"Rendered body for harness {target.harness!r} missing dispatch offer line"
+            body.count("lee-llm-router staff --mode auto --role <role> --class <class>")
+            == 1
+        )
+        assert body.count("lee-llm-router staff --mode crew <name>") == 1

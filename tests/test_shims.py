@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-import re
-import sys
-from pathlib import Path
-
 import pytest
 
 from lee_llm_router import shims
@@ -23,45 +19,82 @@ def shim_env(tmp_path, monkeypatch):
     return home_dir, project_dir
 
 
-def test_rendered_bodies_differ_only_in_harness_tag_and_marker_hash(shim_env):
-    """Rendered bodies differ only in the harness tag and the marker hash."""
+def test_rendered_bodies_differ_only_in_marker_hash(shim_env):
+    """Rendered bodies carry no harness placeholder, so they differ only in
+    the marker hash (frontmatter still differs per harness)."""
     home, project = shim_env
     targets = shims.get_targets(project=project, home=home)
     assert len(targets) == 4
 
-    normalized_bodies = []
-    for t in targets:
-        b = t.body
-        # Replace the harness tag using word boundaries
-        b = re.sub(rf"\b{re.escape(t.harness)}\b", "TAG", b)
-        # Replace the marker hash
-        b = b.replace(t.marker_hash, "HASH")
-        normalized_bodies.append(b)
-
-    for i in range(1, len(normalized_bodies)):
+    bodies = [t.body.replace(t.marker_hash, "HASH") for t in targets]
+    for i in range(1, len(bodies)):
         assert (
-            normalized_bodies[i] == normalized_bodies[0]
+            bodies[i] == bodies[0]
         ), f"Body for {targets[i].harness} differed from {targets[0].harness}"
 
 
-def test_rendered_body_contains_exact_resolve_and_dispatch_lines(shim_env):
-    """Each rendered body contains the exact resolve command and dispatch line."""
+STAFF_AUTO_LINE = "lee-llm-router staff --mode auto --role <role> --class <class>"
+STAFF_CREW_LINE = "lee-llm-router staff --mode crew <name>"
+RUN_OFFER_LINE = "lee-llm-router run --role <role> --class <class> --packet <path>"
+RUN_OFFER_ROUTE_LINE = (
+    "lee-llm-router run --route <route-id> --role <role> --class <class> "
+    "--packet <path>"
+)
+
+
+def test_rendered_body_has_staff_lines_and_run_offer(shim_env):
+    """Each rendered body carries the exact staff commands and run offer lines."""
     home, project = shim_env
     targets = shims.get_targets(project=project, home=home)
 
     for t in targets:
-        expected_resolve_line = f"lee-llm-router resolve $ARGUMENTS --mode flex --harness {t.harness} --json"
-        assert expected_resolve_line in t.body.splitlines()
+        stripped = [line.strip() for line in t.body.splitlines()]
+        assert STAFF_AUTO_LINE in stripped
+        assert STAFF_CREW_LINE in stripped
+        assert RUN_OFFER_LINE in stripped
+        assert RUN_OFFER_ROUTE_LINE in stripped
 
-        expected_dispatch_line = (
-            f"lee-llm-router dispatch --crew <crew> --role <role> --mode flex "
-            f"--harness {t.harness} --prompt-file <path>"
-        )
-        assert expected_dispatch_line in t.body
 
-        # No provider binary name as a command
-        for forbidden in ("agy", "codex exec", "claude -p", "opencode run", "omp -p"):
-            assert forbidden not in t.body
+@pytest.mark.parametrize(
+    "forbidden_line",
+    [
+        "lee-llm-router resolve ",
+        "lee-llm-router dispatch ",
+        "lee-llm-router run --route pi-gpt-5-6-luna-xhigh-openai-sub",
+        "agy ",
+        "codex exec",
+        "claude -p",
+        "opencode run",
+        "omp -p",
+    ],
+)
+def test_rendered_body_never_dispatches_or_invokes_providers(shim_env, forbidden_line):
+    """No resolve/dispatch line, no executed run command, no provider binary."""
+    home, project = shim_env
+    targets = shims.get_targets(project=project, home=home)
+
+    for t in targets:
+        assert (
+            forbidden_line not in t.body
+        ), f"Rendered body for {t.harness} contains forbidden {forbidden_line!r}"
+
+
+def test_rendered_body_run_offer_is_offered_not_executed(shim_env):
+    """The run command appears only as an offer: each occurrence sits in a
+    sentence that says offer/do not execute, and no line tells the harness
+    to run it."""
+    home, project = shim_env
+    targets = shims.get_targets(project=project, home=home)
+
+    for t in targets:
+        assert "offer — do not execute — the dispatch command" in t.body
+        # The only lines starting with the run command are the two offer lines
+        run_lines = [
+            line
+            for line in t.body.splitlines()
+            if line.startswith("lee-llm-router run")
+        ]
+        assert sorted(run_lines) == sorted([RUN_OFFER_LINE, RUN_OFFER_ROUTE_LINE])
 
 
 def test_shims_install_dry_run(shim_env, capsys):
@@ -124,7 +157,7 @@ def test_shims_install_apply_second_run_reports_unchanged(shim_env, capsys):
 def test_shims_hand_edited_target_refused_without_force_and_overwritten_with_force(
     shim_env, capsys
 ):
-    """Hand-edited target is refused without --force (exit 1, others still written) and overwritten with --force."""
+    """Refuse a hand edit without force; overwrite it with force."""
     home, project = shim_env
     targets = shims.get_targets(project=project, home=home)
 
@@ -189,7 +222,7 @@ def test_shims_target_with_no_marker_line_is_refused(shim_env, capsys):
 
 
 def test_shims_diff_lifecycle(shim_env, capsys):
-    """diff exits 0 on clean install, 1 with unified diff after hand edit, and reports missing for removed file."""
+    """Diff reports clean, edited, and missing target states."""
     home, project = shim_env
     targets = shims.get_targets(project=project, home=home)
 
