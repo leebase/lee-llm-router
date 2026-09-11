@@ -34,7 +34,8 @@ Commands:
     lee-llm-router template
     lee-llm-router trace --last N
     lee-llm-router evidence rollup
-    lee-llm-router evidence import --benchmark PATH [--csv PATH]
+    lee-llm-router evidence import (--benchmark PATH [--csv PATH] |
+                                    --agent-orch PATH)
     lee-llm-router export-source --dest <path> [--force]
 """
 
@@ -1207,15 +1208,21 @@ def _run_evidence_rollup(_args: argparse.Namespace) -> int:
 
 
 def _run_evidence_import(args: argparse.Namespace) -> int:
-    """Import SHA-pinned per-run benchmark v6 evidence."""
+    """Import benchmark or recent Agent-Orch evidence."""
     from lee_llm_router.staffing.import_evidence import (
         EvidenceImportError,
+        import_agent_orch_evidence,
         import_benchmark_evidence,
     )
     from lee_llm_router.staffing.ledger import AttemptLedgerError, ShortWriteError
 
     try:
-        summary = import_benchmark_evidence(args.benchmark, csv_path=args.csv)
+        if args.agent_orch is not None:
+            if args.csv is not None:
+                raise EvidenceImportError("--csv requires --benchmark")
+            summary = import_agent_orch_evidence(args.agent_orch)
+        else:
+            summary = import_benchmark_evidence(args.benchmark, csv_path=args.csv)
     except (EvidenceImportError, AttemptLedgerError, ShortWriteError, OSError) as exc:
         message = " ".join(str(exc).split())
         print(f"evidence import: {message}", file=sys.stderr)
@@ -2691,16 +2698,26 @@ def main(argv: list[str] | None = None) -> None:
     evidence_rollup_parser.set_defaults(func=_run_evidence_rollup)
     evidence_import_parser = evidence_sub.add_parser(
         "import",
-        help="Import per-run benchmark v6 evidence into the attempt ledger",
+        help="Import benchmark or recent Agent-Orch evidence into the attempt ledger",
     )
-    # This source-specific option is intentionally isolated so the agent-orch
-    # half can add its own mutually exclusive source without changing the
-    # benchmark importer.
-    evidence_import_parser.add_argument(
+    evidence_sources = evidence_import_parser.add_mutually_exclusive_group(
+        required=True
+    )
+    evidence_sources.add_argument(
         "--benchmark",
-        required=True,
+        default=None,
         metavar="PATH",
         help="Path to the benchmark v6 staffing-evidence sidecar",
+    )
+    evidence_sources.add_argument(
+        "--agent-orch",
+        dest="agent_orch",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Agent-Orch projects directory, *-agent-orch-runs directory, "
+            "or one run.json fixture"
+        ),
     )
     evidence_import_parser.add_argument(
         "--csv",

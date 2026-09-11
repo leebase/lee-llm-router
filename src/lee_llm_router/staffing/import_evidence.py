@@ -1,4 +1,4 @@
-"""Import historical benchmark evidence into the staffing attempt ledger.
+"""Import historical evidence into the staffing attempt ledger.
 
 The Phase-1 benchmark source is the v6 staffing-evidence sidecar.  Its
 ``source_csv`` names and hashes the per-run CSV, while each sidecar row adds a
@@ -11,6 +11,11 @@ oracle command, a supervisor route, or a cost calculated from Phase-1 terms.
 Those facts are therefore never inferred.  Imported records are deliberately
 not ``verified_success`` records and their canonical cost is unavailable.
 
+Agent-Orch imports use only retained ``run.json`` manifests and each
+attempt's sibling ``route-selection.json`` and optional ``usage.json``.
+They do not infer class metadata or reinterpret raw attempts as the fuller
+Phase-4 observation shape.
+
 No provider or subprocess boundary exists here.  Appends go through
 ``staffing.ledger.append_attempt``, which validates and performs the existing
 single-write ``O_APPEND`` operation.
@@ -22,9 +27,10 @@ import csv
 import hashlib
 import io
 import json
+import math
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -40,6 +46,11 @@ from lee_llm_router.staffing.ledger import (
 
 BENCHMARK_SCHEMA_VERSION = "benchmark.staffing-evidence/2"
 BENCHMARK_USAGE_SOURCE = "benchmark v6 CSV usage_*_tokens"
+_AGENT_ORCH_USAGE_SOURCE = "agent-orch usage.json"
+_AGENT_ORCH_PROVENANCE_SOURCE = "agent-orch-runs"
+_AGENT_ORCH_DAYS = 30
+_AGENT_ORCH_RECORDED_BY = "lee-llm-router evidence import"
+_AGENT_ORCH_AUTHORITY_REF = "docs/staffing/chief-answers-p1-3.md"
 TOKEN_COLUMNS = (
     "usage_input_tokens",
     "usage_output_tokens",
@@ -66,19 +77,19 @@ _ROLE_STAGE = {
 
 
 class EvidenceImportError(LLMRouterError):
-    """Raised when benchmark import inputs or the destination are invalid."""
+    """Raised when evidence import inputs or the destination are invalid."""
 
 
 class _RowError(ValueError):
-    """One malformed or unmappable CSV row, safe to skip explicitly."""
+    """One malformed or unmappable source item, safe to skip explicitly."""
 
 
 @dataclass(frozen=True)
 class ImportIssue:
-    """Reason one source CSV row was skipped.
+    """Reason one source row or attempt was skipped.
 
     Attributes:
-        row_number: One-based physical CSV line number.
+        row_number: One-based source row or attempt ordinal.
         run_id: Source run id when it was readable.
         reason: Explicit malformed/unmappable or duplicate reason.
     """
@@ -90,7 +101,7 @@ class ImportIssue:
 
 @dataclass(frozen=True)
 class ImportSummary:
-    """Counts and per-row diagnostics from one benchmark import."""
+    """Counts and per-item diagnostics from one evidence import."""
 
     imported: int
     skipped: int
@@ -597,11 +608,465 @@ def import_benchmark_evidence(
     )
 
 
+# ---------------------------------------------------------------------------
+# Agent-Orch raw per-attempt import (P1-7b1)
+# ---------------------------------------------------------------------------
+
+
+def _agent_orch_run_files(root: Path) -> list[Path]:
+    """Return deterministic run manifests below an Agent-Orch evidence root."""
+    root = root.expanduser()
+    if root.is_file():
+        if root.name != "run.json":
+            raise EvidenceImportError(
+                f"agent-orch source {root} is not a run.json manifest"
+            )
+        return [root.resolve()]
+    if not root.is_dir():
+        raise EvidenceImportError(f"agent-orch source directory not found: {root}")
+
+    if root.name.endswith("-agent-orch-runs") or root.name == "agent-orch-runs":
+        paths = (
+            path for path in root.glob("*/run.json") if path.parent.name != "latest"
+        )
+    else:
+        paths = (
+            path
+            for path in root.glob("*-agent-orch-runs/*/run.json")
+            if path.parent.name != "latest"
+        )
+    # Real roots expose ``latest`` as a symlink to a retained run. Excluding
+    # that pointer above and de-duplicating resolved paths prevents one source
+    # attempt from being reported as a duplicate during its first import.
+    return sorted({path.resolve() for path in paths if path.is_file()})
+
+
+def _agent_orch_json_object(path: Path, label: str) -> dict[str, Any]:
+    """Read one authorized Agent-Orch artifact as a JSON object."""
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise _RowError(f"cannot read {label}: {exc}") from exc
+    try:
+        value = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise _RowError(f"{label} is not valid UTF-8 JSON: {exc}") from exc
+    if not isinstance(value, dict):
+        raise _RowError(f"{label} is not a JSON object")
+    return value
+
+
+def _agent_orch_run_dir(value: Any, run_path: Path) -> Path:
+    """Resolve the attempt directory named by a run manifest."""
+    if not isinstance(value, str) or not value.strip():
+        raise _RowError("run_dir is missing or empty")
+    candidate = Path(value).expanduser()
+    if not candidate.is_absolute():
+        candidate = run_path.parent / candidate
+    return candidate.resolve()
+
+
+def _agent_orch_route(route_document: Mapping[str, Any]) -> dict[str, Any]:
+    """Copy the authorized three-field selected route, without enrichment."""
+    selected = route_document.get("selected_route")
+    if not isinstance(selected, dict):
+        raise _RowError("route-selection.json selected_route is missing")
+    harness = selected.get("harness")
+    model = selected.get("model")
+    if not isinstance(harness, str) or not harness.strip():
+        raise _RowError("selected route harness is missing")
+    if not isinstance(model, str) or not model.strip():
+        raise _RowError("selected route model is missing")
+    effort = selected.get("effort")
+    if effort is not None and (not isinstance(effort, str) or not effort.strip()):
+        raise _RowError("selected route effort is invalid")
+    # Agent-Orch omits effort for adapters without an effort dial.  The raw
+    # contract represents that source-level absence explicitly as null; no
+    # model, provider, channel, or route id is substituted.
+    return {"harness": harness, "model": model, "effort": effort}
+
+
+def _agent_orch_counter(value: Any, label: str) -> int | None:
+    """Validate one raw receipt counter without turning unknown into zero."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise _RowError(f"{label} is not a nonnegative integer or null")
+    return value
+
+
+def _agent_orch_amount(value: Any, label: str) -> int | float:
+    """Validate one raw receipt amount without accepting JSON booleans/NaN."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise _RowError(f"{label} is not a nonnegative number")
+    if value < 0 or (isinstance(value, float) and not math.isfinite(value)):
+        raise _RowError(f"{label} is not a nonnegative finite number")
+    return value
+
+
+def _agent_orch_raw_usage(
+    usage_document: Mapping[str, Any], *, require_core: bool
+) -> dict[str, Any]:
+    """Project accepted raw token names, requiring core counts when measured."""
+    raw_usage = usage_document.get("raw_usage")
+    if raw_usage is not None and not isinstance(raw_usage, dict):
+        raise _RowError("usage.json raw_usage is not an object")
+
+    raw: dict[str, Any] = {}
+    for name in (
+        "input_tokens",
+        "output_tokens",
+        "cached_read_tokens",
+        "total_tokens",
+    ):
+        if name in usage_document:
+            raw[name] = _agent_orch_counter(usage_document[name], name)
+    if isinstance(raw_usage, dict) and "reasoning_output_tokens" in raw_usage:
+        raw["reasoning_output_tokens"] = _agent_orch_counter(
+            raw_usage["reasoning_output_tokens"],
+            "raw_usage.reasoning_output_tokens",
+        )
+
+    if require_core:
+        for required in ("input_tokens", "output_tokens"):
+            if required not in raw or raw[required] is None:
+                raise _RowError(f"usage.json {required} is unavailable")
+    return raw
+
+
+def _agent_orch_unavailable_mapping(
+    accounting_status: str | None,
+    usage_document: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return the fixed canonical usage/cost mapping for no receipt/spend."""
+    if accounting_status is None:
+        reason = "missing usage receipt"
+    elif accounting_status == "not_applicable":
+        reason = "non-metered adapter"
+    elif accounting_status == "unaccounted":
+        raw_reason = usage_document.get("reason") if usage_document else None
+        if not isinstance(raw_reason, str) or not raw_reason.strip():
+            raise _RowError("unaccounted usage.json reason is missing")
+        reason = raw_reason
+    else:  # pragma: no cover - status is checked by the caller
+        raise _RowError(
+            f"unsupported unavailable accounting status {accounting_status!r}"
+        )
+    return (
+        {"basis": "unavailable", "unavailable_reason": reason},
+        {"basis": "unavailable"},
+    )
+
+
+def _agent_orch_attempt_record(
+    run_document: Mapping[str, Any],
+    run_path: Path,
+    step: Mapping[str, Any],
+    attempt: Mapping[str, Any],
+    route_path: Path,
+    usage_path: Path | None,
+    route_document: Mapping[str, Any],
+    usage_document: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Build one v2 raw-attempt record from only the three allowed artifacts."""
+    run_id = run_document.get("run_id")
+    step_id = step.get("step_id")
+    attempt_number = attempt.get("attempt_number")
+    if not isinstance(run_id, str) or not run_id:
+        raise _RowError("run.json run_id is missing")
+    if not isinstance(step_id, str) or not step_id:
+        raise _RowError("step_id is missing")
+    if (
+        isinstance(attempt_number, bool)
+        or not isinstance(attempt_number, int)
+        or attempt_number < 1
+    ):
+        raise _RowError("attempt_number is not a positive integer")
+
+    worker_exit_code = attempt.get("worker_exit_code")
+    validation_passed = attempt.get("validation_passed")
+    if isinstance(worker_exit_code, bool) or not isinstance(worker_exit_code, int):
+        raise _RowError("worker_exit_code is not an integer")
+    if not isinstance(validation_passed, bool):
+        raise _RowError("validation_passed is not a boolean")
+    policy_decision = attempt.get("policy_decision")
+    if not isinstance(policy_decision, str) or not policy_decision.strip():
+        raise _RowError("policy_decision is missing or empty")
+
+    failure_classification = attempt.get("failure_classification")
+    if failure_classification is not None and (
+        not isinstance(failure_classification, str)
+        or not failure_classification.strip()
+    ):
+        raise _RowError("failure_classification is invalid")
+
+    accounting_status: str | None
+    if usage_document is None:
+        accounting_status = None
+    else:
+        accounting_status_value = usage_document.get("accounting_status")
+        if accounting_status_value not in {
+            "measured",
+            "unaccounted",
+            "not_applicable",
+        }:
+            raise _RowError("usage.json accounting_status is invalid")
+        accounting_status = accounting_status_value
+
+    route = _agent_orch_route(route_document)
+    source_paths = [str(run_path), str(route_path)]
+    if usage_path is not None:
+        source_paths.append(str(usage_path))
+    raw_payload: dict[str, Any] = {
+        "run_id": run_id,
+        "step_id": step_id,
+        "attempt_number": attempt_number,
+        "route": route,
+        "worker_exit_code": worker_exit_code,
+        "validation_passed": validation_passed,
+        "policy_decision": policy_decision,
+        "failure_classification": failure_classification,
+        "accounting_status": accounting_status,
+        "source_paths": source_paths,
+    }
+
+    if usage_document is not None:
+        raw_usage = _agent_orch_raw_usage(
+            usage_document, require_core=accounting_status == "measured"
+        )
+        if raw_usage:
+            raw_payload["usage"] = raw_usage
+
+    if accounting_status == "measured":
+        if usage_path is None:  # pragma: no cover - paired by the caller
+            raise _RowError("measured attempt has no usage receipt")
+        if "cost_usd" not in usage_document:
+            raise _RowError("measured usage.json cost_usd is unavailable")
+        raw_payload["cost_usd"] = _agent_orch_amount(
+            usage_document["cost_usd"], "usage.json cost_usd"
+        )
+    elif accounting_status in {"unaccounted", "not_applicable", None}:
+        pass
+    else:  # pragma: no cover - guarded above
+        raise _RowError(f"unsupported accounting status {accounting_status!r}")
+
+    for timestamp_name in ("started_at", "ended_at"):
+        timestamp = attempt.get(timestamp_name)
+        if timestamp is not None:
+            raw_payload[timestamp_name] = _aware_timestamp(
+                timestamp, f"attempt {timestamp_name}"
+            )
+
+    if accounting_status == "measured":
+        usage = raw_payload["usage"]
+        canonical_usage = {
+            "basis": "provider_reported",
+            "source": _AGENT_ORCH_USAGE_SOURCE,
+            "input_tokens": usage["input_tokens"],
+            "output_tokens": usage["output_tokens"],
+        }
+        if "cached_read_tokens" in usage:
+            canonical_usage["cached_input_tokens"] = usage["cached_read_tokens"]
+        if "reasoning_output_tokens" in usage:
+            canonical_usage["reasoning_tokens"] = usage["reasoning_output_tokens"]
+        if "total_tokens" in usage:
+            canonical_usage["total_tokens"] = usage["total_tokens"]
+        canonical_cost = {"basis": "list", "usd_list": raw_payload["cost_usd"]}
+    else:
+        canonical_usage, canonical_cost = _agent_orch_unavailable_mapping(
+            accounting_status, usage_document
+        )
+
+    attempt_id = hashlib.sha256(
+        f"{run_id}/{step_id}/{attempt_number}".encode("utf-8")
+    ).hexdigest()
+    captured_at = _aware_timestamp(
+        run_document.get("last_updated_at"), "run.json last_updated_at"
+    )
+    verified_success = worker_exit_code == 0 and validation_passed is True
+    record = {
+        "schema_version": 2,
+        "attempt_id": attempt_id,
+        "record_kind": "agent_orch_attempt",
+        "captured_at": captured_at,
+        "verified_success": verified_success,
+        "class_source": "none",
+        "verdict": {"tier": "engine_validation"},
+        "usage": canonical_usage,
+        "cost": canonical_cost,
+        "agent_orch_attempt": raw_payload,
+        "provenance": {
+            "source": _AGENT_ORCH_PROVENANCE_SOURCE,
+            "recorded_by": _AGENT_ORCH_RECORDED_BY,
+            "source_refs": [_AGENT_ORCH_AUTHORITY_REF, *source_paths],
+            "notes": [
+                "Only run.json, sibling route-selection.json, and usage.json "
+                "when present were read for this raw attempt.",
+                "attempt_id is sha256 of " f"{run_id}/{step_id}/{attempt_number}.",
+                "captured_at preserves run.json last_updated_at; no per-attempt "
+                "timestamp or wall-clock duration is inferred.",
+                "No class, channel, provider, supervisor route, oracle, or "
+                "marginal cost is inferred.",
+            ],
+        },
+    }
+    validate_attempt(record)
+    return record
+
+
+def _agent_orch_cutoff(now: datetime | None) -> tuple[datetime, datetime]:
+    """Return the UTC now and precise thirty-day lower bound."""
+    current = datetime.now(timezone.utc) if now is None else now
+    if current.tzinfo is None or current.utcoffset() is None:
+        raise EvidenceImportError("agent-orch cutoff time must be timezone-aware")
+    current_utc = current.astimezone(timezone.utc)
+    return current_utc - timedelta(days=_AGENT_ORCH_DAYS), current_utc
+
+
+def import_agent_orch_evidence(
+    source: str | Path,
+    *,
+    ledger_path: str | Path | None = None,
+    now: datetime | None = None,
+) -> ImportSummary:
+    """Import recent Agent-Orch raw attempts into the append-only ledger.
+
+    The source is either a ``*-agent-orch-runs`` directory, its containing
+    projects directory, or one ``run.json`` fixture.  A run is eligible only
+    when its authoritative ``run.json.last_updated_at`` lies in the precise
+    preceding thirty days.  Each attempt reads only the run manifest, its
+    sibling route-selection artifact, and usage.json when present.
+
+    Args:
+        source: Agent-Orch evidence root or one run.json file.
+        ledger_path: Optional explicit attempt ledger path.
+        now: Aware UTC reference time, injectable for deterministic fixtures.
+
+    Returns:
+        Imported/skipped counts, diagnostics, and the resolved ledger path.
+
+    Raises:
+        EvidenceImportError: If the source root or cutoff is unusable.
+        AttemptLedgerError: If the existing ledger is invalid.
+        OSError: If the ledger cannot be read or appended.
+    """
+    source_path = Path(source).expanduser()
+    run_paths = _agent_orch_run_files(source_path)
+    cutoff, current = _agent_orch_cutoff(now)
+    target = resolve_attempts_path(ledger_path)
+    existing = read_attempts(target) if target.is_file() else []
+    known_ids = {record["attempt_id"] for record in existing}
+
+    imported = 0
+    issues: list[ImportIssue] = []
+    source_ordinal = 0
+    for run_path in run_paths:
+        run_id_value: str | None = None
+        try:
+            run_document = _agent_orch_json_object(run_path, str(run_path))
+            run_id = run_document.get("run_id")
+            if not isinstance(run_id, str) or not run_id:
+                raise _RowError("run.json run_id is missing")
+            run_id_value = run_id
+            timestamp_text = _aware_timestamp(
+                run_document.get("last_updated_at"), f"{run_path} last_updated_at"
+            )
+            timestamp = datetime.fromisoformat(timestamp_text.replace("Z", "+00:00"))
+            timestamp_utc = timestamp.astimezone(timezone.utc)
+            if timestamp_utc < cutoff or timestamp_utc > current:
+                continue
+            steps = run_document.get("step_results")
+            if not isinstance(steps, list):
+                raise _RowError("run.json step_results is not an array")
+        except _RowError as exc:
+            source_ordinal += 1
+            issues.append(ImportIssue(source_ordinal, run_id_value, str(exc)))
+            continue
+
+        for step in steps:
+            if not isinstance(step, dict):
+                source_ordinal += 1
+                issues.append(
+                    ImportIssue(source_ordinal, run_id, "step result is not an object")
+                )
+                continue
+            step_id = step.get("step_id")
+            attempts = step.get("attempts")
+            if not isinstance(step_id, str) or not step_id:
+                source_ordinal += 1
+                issues.append(ImportIssue(source_ordinal, run_id, "step_id is missing"))
+                continue
+            if not isinstance(attempts, list):
+                source_ordinal += 1
+                issues.append(
+                    ImportIssue(source_ordinal, run_id, "step attempts is not an array")
+                )
+                continue
+            for attempt in attempts:
+                source_ordinal += 1
+                if not isinstance(attempt, dict):
+                    issues.append(
+                        ImportIssue(
+                            source_ordinal,
+                            run_id,
+                            "attempt entry is not an object",
+                        )
+                    )
+                    continue
+                try:
+                    attempt_dir = _agent_orch_run_dir(attempt.get("run_dir"), run_path)
+                    route_path = attempt_dir / "route-selection.json"
+                    if not route_path.is_file():
+                        raise _RowError("sibling route-selection.json is missing")
+                    route_document = _agent_orch_json_object(
+                        route_path, str(route_path)
+                    )
+                    usage_path = attempt_dir / "usage.json"
+                    usage_document = (
+                        _agent_orch_json_object(usage_path, str(usage_path))
+                        if usage_path.is_file()
+                        else None
+                    )
+                    record = _agent_orch_attempt_record(
+                        run_document,
+                        run_path,
+                        step,
+                        attempt,
+                        route_path,
+                        usage_path if usage_document is not None else None,
+                        route_document,
+                        usage_document,
+                    )
+                except (_RowError, AttemptLedgerError) as exc:
+                    issues.append(ImportIssue(source_ordinal, run_id, str(exc)))
+                    continue
+                if record["attempt_id"] in known_ids:
+                    issues.append(
+                        ImportIssue(
+                            source_ordinal,
+                            run_id,
+                            "attempt_id already present",
+                        )
+                    )
+                    continue
+                append_attempt(record, target)
+                known_ids.add(record["attempt_id"])
+                imported += 1
+
+    return ImportSummary(
+        imported=imported,
+        skipped=len(issues),
+        issues=tuple(issues),
+        ledger_path=target,
+    )
+
+
 __all__ = [
     "BENCHMARK_SCHEMA_VERSION",
     "BENCHMARK_USAGE_SOURCE",
     "EvidenceImportError",
     "ImportIssue",
     "ImportSummary",
+    "import_agent_orch_evidence",
     "import_benchmark_evidence",
 ]
