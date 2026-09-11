@@ -252,6 +252,23 @@ malformed sidecar metadata can surface an internal `_RowError`; one usage-status
 diagnostic is imprecise. Future concern: agent-orch CLI wiring must replace the
 currently required benchmark option with a mutually exclusive source choice.
 
+## P1-7b — agent-orch attempt import (stopped at schema boundary)
+
+| Attempt | Role | Explain / selection | Excluded summary | Route | Result | Usage / cost |
+|---|---|---|---|---|---|---|
+| P1-7b GLM | impl | fresh `impl/deterministic/none/m/python`; first authority-available GLM with proof subscriptions reserved | Go likely-exhausted; never-automatic/policy exclusions; Gemini/Anthropic proof reservations | `pi-z-ai-glm-5-3-flash-openrouter` | 590s watchdog, zero repo output; `parent_attempt_id: P1-7-combined`; `escalation_reason: platform_timeout` | provider_reported: input 2,418, output 571, cached 26,880, reasoning 479, total 29,869; governed non-cached $0.000324100 |
+| P1-7b Luna | impl | fresh explain; Luna Pi XHigh eligible despite TOO FAST badge | GLM failed; Go and policy exclusions unchanged | `pi-gpt-5-6-luna-xhigh-openai-sub` | 590s watchdog; partial importer only, no tests; `parent_attempt_id: P1-7b-GLM`; `escalation_reason: platform_timeout` | provider_reported: input 9,412, output 2,820, cached 171,520, reasoning 2,706, total 183,752; subscription execution estimate $0.003949800 |
+| P1-7b Sol | impl | fresh explain; final Sol High rung eligible | lower rungs failed | `codex-gpt-5-6-sol-high-openai-sub` | stopped on incompatible accepted schema; discarded entire Luna partial and restored accepted tree; `parent_attempt_id: P1-7b-Luna`; `escalation_reason: platform_timeout` | observed terminal Codex JSON: input 2,895,665, cached 2,744,576, output 15,299, reasoning 8,178; subscription execution estimate $0.682752000 |
+
+P1-7b stopped after about 26 minutes and three author attempts. Direct schema
+inspection confirms `record_kind: agent_orch` requires a complete embedded
+`agent_orch_observation` (mission/cycle, producer/reviewer participants,
+outcome, and review), while the plan-authorized per-attempt inputs do not
+provide that payload. Real inspection found 108 last-30-days runs and 524
+attempts: 440 measured, 60 not_applicable, 11 unaccounted, and 13 missing
+receipts. Inventing the missing observation/review facts would violate D209
+usage/provenance truth; changing the accepted v2 schema is outside P1-7 scope.
+
 ## P1-1 — Effective tier in explain
 
 | Packet | Role | Explain / selection | Excluded summary | Route | Start / end | Exit | Usage / cost | Result |

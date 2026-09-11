@@ -360,9 +360,42 @@ router commit `b5ed4b5`; Phase 1 has not begun.
   timeout. Ruling needed: authorize a timeout-based author escalation route,
   or change the GLM watchdog/packet strategy beyond the two-round ceiling.
 
+  Resolved by Chief answer 2: watchdog/no-output and two-round
+  non-convergence are ladder failures. After one Rule B split where needed,
+  escalate implementation to eligible Pi Luna XHigh, then Codex Sol High,
+  recording `parent_attempt_id` and `escalation_reason`.
+
 ## Resolved by Chief, Phase 1 round 1 (2026-09-10)
 
 See `docs/staffing/chief-answers-p1-1.md`: `run` always takes `--role` and `--class`;
 `--route ID` pins the choice and is checked for eligibility under the same role/class path as
 explain; ineligible explicit route exits 3 with the reason. Continue P1-5a with the corrected
 contract quoted.
+
+## Resolved by Chief, Phase 1 round 2 (2026-09-10)
+
+See `docs/staffing/chief-answers-p1-2.md`: watchdog kills with no output and two-round
+non-convergence are the cheap route failing the packet; escalate by the plan's ladder (Luna
+XHigh via Pi, then Sol High) with `escalation_reason` recorded; one Rule B split first where the
+packet is wide. Not a missing authority.
+
+## Phase 1 stop — P1-7b schema/source incompatibility (2026-09-10)
+
+P1-7b cannot honestly import the specified last-30-days per-attempt artifacts
+under the accepted attempt-record v2 schema. The schema condition for
+`record_kind: agent_orch` requires `agent_orch_observation`, whose required
+fields include mission/cycle identities, producer and reviewer participants,
+outcome, and a full review verdict/count payload. The authorized inputs
+(`run.json`, per-attempt `route-selection.json`, `usage.json`, and
+`accounting_status`) do not carry that complete canonical observation.
+
+Observed scope is material: 108 runs, 524 attempts; 440 measured, 60
+not_applicable, 11 unaccounted, 13 missing receipts. Please choose one:
+
+1. authorize a v2 schema extension/new record kind that embeds a verbatim raw
+   agent-orch attempt payload with absent class and truthful usage; or
+2. identify the authoritative per-attempt `agentOrchObservation` source and
+   join rule (including review pairing) that P1-7b may use.
+
+No production/test partial remains. P1-8/P1-9 are held because the plan makes
+P1-7 a dependency of the live-proof/final-gate chain.
