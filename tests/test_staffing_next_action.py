@@ -59,6 +59,28 @@ def test_null_failure_class_maps_to_supervisor_judgment() -> None:
     assert next_action(None) == SUPERVISOR_JUDGMENT
 
 
+def test_oracle_failed_maps_to_supervisor_judgment() -> None:
+    # P3-2 definition (D213 ruling 3 + the accepted D211 ruling 6 mapping):
+    # oracle_failed is a deterministic *classification* class in the Phase 3
+    # vocabulary, but the class→action decision stays owned by this pure
+    # Phase 2 mapping, and oracle_failed is none of platform_*,
+    # spec_rejected, capability_rejected, or unaccounted_spend. The
+    # already-authorized handling is therefore the pure mapping's own
+    # fail-closed outcome: supervisor_judgment. The P3-2 CLI preserves this
+    # verbatim and invents no dispatch or policy for it.
+    assert next_action("oracle_failed") == SUPERVISOR_JUDGMENT
+    # The capability context is consulted only for capability_rejected, so
+    # a repair count never turns oracle_failed into a repair or escalation.
+    assert next_action("oracle_failed", 1) == SUPERVISOR_JUDGMENT
+    assert next_action("oracle_failed", "second") == SUPERVISOR_JUDGMENT
+
+
+def test_unknown_class_maps_to_supervisor_judgment() -> None:
+    # D213 ruling 3's deterministic "unknown" class fails closed exactly
+    # like any other unnamed string: the supervisor decides.
+    assert next_action("unknown") == SUPERVISOR_JUDGMENT
+
+
 # ---------------------------------------------------------------------------
 # Platform-prefix boundary
 # ---------------------------------------------------------------------------

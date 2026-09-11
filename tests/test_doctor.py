@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import sys
 from pathlib import Path
@@ -1625,6 +1626,342 @@ def test_classify_failure_cli_malformed_record_exits_3(tmp_path, capsys):
         main(["classify-failure", "--record", str(bad)])
     assert exc_info.value.code == 3
     assert "not valid JSON" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# next-action (P3-2): the /supervise loop step over the pure Phase 2 mapping
+# ---------------------------------------------------------------------------
+
+
+def _write_classify_output(path: Path, failure_class) -> Path:
+    """Write exactly the JSON object 'classify-failure --json' prints."""
+    path.write_text(
+        json.dumps({"failure_class": failure_class}, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _forbid_run_and_provider_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every subprocess, network, socket, and ledger call explode."""
+
+    def fail_subprocess(*_args, **_kwargs):
+        raise AssertionError("next-action must not start a subprocess")
+
+    def fail_network(*_args, **_kwargs):
+        raise AssertionError("next-action must not touch the network")
+
+    def fail_ledger(*_args, **_kwargs):
+        raise AssertionError("next-action must not write a ledger event")
+
+    monkeypatch.setattr("subprocess.run", fail_subprocess)
+    monkeypatch.setattr("subprocess.Popen", fail_subprocess)
+    monkeypatch.setattr("subprocess.check_output", fail_subprocess)
+    monkeypatch.setattr("subprocess.check_call", fail_subprocess)
+    monkeypatch.setattr("urllib.request.urlopen", fail_network)
+    monkeypatch.setattr("http.client.HTTPConnection.request", fail_network)
+    monkeypatch.setattr("socket.socket.connect", fail_network)
+    monkeypatch.setattr("lee_llm_router.events.append_event", fail_ledger)
+
+
+@pytest.mark.parametrize(
+    ("failure_class", "repair_count", "expected_action"),
+    [
+        ("platform_timeout", None, "retry_same_route_after_platform_repair"),
+        ("platform_env", None, "retry_same_route_after_platform_repair"),
+        ("spec_rejected", None, "return_to_planner"),
+        ("capability_rejected", 0, "repair_same_route"),
+        ("capability_rejected", 1, "escalate"),
+        ("capability_rejected", 5, "escalate"),
+        ("unaccounted_spend", None, "reconcile_then_retry"),
+        ("oracle_failed", None, "supervisor_judgment"),
+        ("unknown", None, "supervisor_judgment"),
+        (None, None, "supervisor_judgment"),
+    ],
+)
+def test_next_action_cli_maps_every_failure_class_exactly(
+    tmp_path, capsys, failure_class, repair_count, expected_action
+):
+    """Every failure class maps through the pure Phase 2 mapping, exactly."""
+    from lee_llm_router.doctor import main
+    from lee_llm_router.staffing.next_action import next_action as pure_next_action
+
+    args = [
+        "next-action",
+        "--input",
+        str(_write_classify_output(tmp_path / "classified.json", failure_class)),
+    ]
+    if repair_count is not None:
+        args += ["--repair-count", str(repair_count)]
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(args)
+    assert exc_info.value.code == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    # The CLI calls the pure mapping: its output equals the pure function's
+    # own decision for the same inputs, never a reimplemented one.
+    attempt = None if repair_count is None else repair_count + 1
+    assert payload == {
+        "failure_class": failure_class,
+        "repair_count": repair_count,
+        "next_action": pure_next_action(failure_class, attempt),
+    }
+    assert payload["next_action"] == expected_action
+
+
+def test_next_action_cli_matches_pure_function_on_every_sample(capsys, monkeypatch):
+    """The CLI output is the pure mapping's output, key for key, value for value."""
+    from lee_llm_router.doctor import main
+    from lee_llm_router.staffing.next_action import next_action as pure_next_action
+
+    samples = [
+        ("platform_timeout", None),
+        ("platform_env", 3),
+        ("spec_rejected", 0),
+        ("capability_rejected", 0),
+        ("capability_rejected", 1),
+        ("unaccounted_spend", 2),
+        ("oracle_failed", 1),
+        ("mystery", 7),
+        (None, 0),
+    ]
+    for failure_class, repair_count in samples:
+        args = ["next-action", "--input", "-"]
+        if repair_count is not None:
+            args += ["--repair-count", str(repair_count)]
+        monkeypatch.setattr(
+            sys, "stdin", io.StringIO(json.dumps({"failure_class": failure_class}))
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            main(args)
+        assert exc_info.value.code == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["next_action"] == pure_next_action(
+            failure_class,
+            None if repair_count is None else repair_count + 1,
+        )
+
+
+def test_next_action_cli_capability_repair_count_boundary(tmp_path, capsys):
+    """Count 0 is the first capability rejection; 1 or more escalates."""
+    from lee_llm_router.doctor import main
+
+    for repair_count, expected in [
+        (0, "repair_same_route"),
+        (1, "escalate"),
+        (2, "escalate"),
+        (99, "escalate"),
+    ]:
+        with pytest.raises(SystemExit) as exc_info:
+            main(
+                [
+                    "next-action",
+                    "--input",
+                    str(
+                        _write_classify_output(
+                            tmp_path / f"cap-{repair_count}.json",
+                            "capability_rejected",
+                        )
+                    ),
+                    "--repair-count",
+                    str(repair_count),
+                ]
+            )
+        assert exc_info.value.code == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["next_action"] == expected
+
+
+def test_next_action_cli_capability_without_count_fails_closed(tmp_path, capsys):
+    """capability_rejected without a repair count fails closed, never guesses."""
+    from lee_llm_router.doctor import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "next-action",
+                "--input",
+                str(
+                    _write_classify_output(tmp_path / "cap.json", "capability_rejected")
+                ),
+            ]
+        )
+    assert exc_info.value.code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "failure_class": "capability_rejected",
+        "repair_count": None,
+        "next_action": "supervisor_judgment",
+    }
+
+
+def test_next_action_cli_repair_count_ignored_for_other_classes(tmp_path, capsys):
+    from lee_llm_router.doctor import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "next-action",
+                "--input",
+                str(_write_classify_output(tmp_path / "spec.json", "spec_rejected")),
+                "--repair-count",
+                "4",
+            ]
+        )
+    assert exc_info.value.code == 0
+    assert json.loads(capsys.readouterr().out)["next_action"] == "return_to_planner"
+
+
+def test_next_action_cli_negative_repair_count_refused(tmp_path, capsys):
+    from lee_llm_router.doctor import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "next-action",
+                "--input",
+                str(
+                    _write_classify_output(tmp_path / "cap.json", "capability_rejected")
+                ),
+                "--repair-count",
+                "-1",
+            ]
+        )
+    assert exc_info.value.code == 3
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    err = captured.err
+    assert err.startswith("next-action:")
+    assert "nonnegative" in err
+
+
+@pytest.mark.parametrize("bad_count", ["abc", "1.5", ""])
+def test_next_action_cli_noninteger_repair_count_rejected_by_parser(
+    tmp_path, capsys, bad_count
+):
+    from lee_llm_router.doctor import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "next-action",
+                "--input",
+                str(
+                    _write_classify_output(tmp_path / "cap.json", "capability_rejected")
+                ),
+                "--repair-count",
+                bad_count,
+            ]
+        )
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "invalid int value" in captured.err
+
+
+def test_next_action_cli_stdin_contract(tmp_path, capsys, monkeypatch):
+    """--input - reads the same single classify-failure JSON object from stdin."""
+    from lee_llm_router.doctor import main
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO('{"failure_class": "platform_env"}'))
+    with pytest.raises(SystemExit) as exc_info:
+        main(["next-action", "--input", "-"])
+    assert exc_info.value.code == 0
+    assert json.loads(capsys.readouterr().out)["next_action"] == (
+        "retry_same_route_after_platform_repair"
+    )
+
+
+def test_next_action_cli_missing_input_file_refused(tmp_path, capsys):
+    from lee_llm_router.doctor import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["next-action", "--input", str(tmp_path / "absent.json")])
+    assert exc_info.value.code == 3
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("next-action: input file cannot be read:")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "{not json",
+        "",
+        "[]",
+        '"platform_timeout"',
+        "42",
+        '{"failure_class": "platform_timeout", "extra": 1}',
+        '{"next_action": "escalate"}',
+        '{"failure_class": true}',
+        '{"failure_class": 7}',
+    ],
+)
+def test_next_action_cli_malformed_or_missing_json_refused(tmp_path, capsys, body):
+    """Malformed, missing-key, non-object, and mis-typed inputs refuse."""
+    from lee_llm_router.doctor import main
+
+    bad = tmp_path / "bad.json"
+    bad.write_text(body, encoding="utf-8")
+    with pytest.raises(SystemExit) as exc_info:
+        main(["next-action", "--input", str(bad)])
+    assert exc_info.value.code == 3
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("next-action:")
+    assert len(captured.err.splitlines()) == 1
+
+
+def test_next_action_cli_empty_stdin_refused(capsys, monkeypatch):
+    from lee_llm_router.doctor import main
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+    with pytest.raises(SystemExit) as exc_info:
+        main(["next-action", "--input", "-"])
+    assert exc_info.value.code == 3
+    assert "not valid JSON" in capsys.readouterr().err
+
+
+def test_next_action_cli_never_runs_or_calls_a_provider(tmp_path, monkeypatch, capsys):
+    """A successful mapping launches nothing: no subprocess, network, ledger."""
+    from lee_llm_router.doctor import main
+
+    _forbid_run_and_provider_calls(monkeypatch)
+    ledger = tmp_path / "events.jsonl"
+    monkeypatch.setenv("LEE_LLM_ROUTER_EVENTS_FILE", str(ledger))
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "next-action",
+                "--input",
+                str(
+                    _write_classify_output(tmp_path / "classified.json", "platform_env")
+                ),
+            ]
+        )
+    assert exc_info.value.code == 0
+    assert json.loads(capsys.readouterr().out)["next_action"] == (
+        "retry_same_route_after_platform_repair"
+    )
+    assert not ledger.exists()
+
+
+def test_next_action_cli_never_runs_or_calls_a_provider_even_on_refusal(
+    tmp_path, monkeypatch, capsys
+):
+    """Refusals launch nothing either."""
+    from lee_llm_router.doctor import main
+
+    _forbid_run_and_provider_calls(monkeypatch)
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["next-action", "--input", str(bad)])
+    assert exc_info.value.code == 3
+    assert capsys.readouterr().out == ""
 
 
 # ---------------------------------------------------------------------------

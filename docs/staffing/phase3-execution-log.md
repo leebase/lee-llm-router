@@ -85,3 +85,18 @@ usage basis and knowable cost, verdict, findings, next action, and escalation.
   `$0.0278569536` and 5,084,744 / `$0.0978310704`, provider-reported metered.
 - Post-review live census is empty; all router workers deregistered. Black,
   Ruff, and diff check clean. P3-4 metered spend `$0.206769304`.
+
+## P3-2 — Next-action CLI
+
+- Named-crew GLM/Pi wired `next-action` to the accepted Phase 2 pure function.
+  Its worker exited 0; the oracle exposed one parity-test construction defect
+  (`None` rendered as an integer argument), which the supervisor repaired
+  without changing production policy. Receipt: 1,301,527 provider-reported
+  tokens / `$0.02840001` metered.
+- The CLI accepts exactly the classifier JSON object and a nonnegative
+  completed repair count, translates capability count 0 to pure-function
+  attempt 1 and 1+ to escalation, and leaves `oracle_failed`/unknown at
+  `supervisor_judgment`. It performs no dispatch or registry operation.
+- DeepSeek/Pi review with GLM excluded passed, 0 blockers; 164 focused passed,
+  Black/Ruff/diff clean. Receipt: 710,471 provider-reported tokens /
+  `$0.0177000432` metered. P3-2 metered spend `$0.0461000532`.

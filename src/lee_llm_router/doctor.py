@@ -32,6 +32,7 @@ Commands:
                           [--accounting-status STATUS] [--usage-basis BASIS]
                           [--unaccounted-spend] [--verdict TEXT]
                           [--judgment CLASS] [--review-verdict TEXT]
+    lee-llm-router next-action --input FILE [--repair-count N]
     lee-llm-router template
     lee-llm-router trace --last N
     lee-llm-router evidence rollup
@@ -2135,6 +2136,119 @@ def _run_classify_failure(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# next-action (P3-2): the /supervise loop step over the pure Phase 2 mapping
+# ---------------------------------------------------------------------------
+
+
+def _run_next_action(args: argparse.Namespace) -> int:
+    """Run ``next-action``: map one classified failure to its next action.
+
+    Contract (P3-2, D213 rulings 1 and 3,
+    ``docs/staffing/phase3-contracts.md`` §D213 rulings): ``lee-llm-router
+    next-action --input FILE [--repair-count N]`` consumes exactly the JSON
+    object printed by ``classify-failure --json`` — ``{"failure_class":
+    <string or null>}`` — from ``FILE``. ``--input -`` is the equally
+    deterministic stdin contract: the same single JSON object read from
+    standard input. The decision itself is made entirely by the accepted
+    Phase 2 pure mapping
+    :func:`lee_llm_router.staffing.next_action.next_action` — this CLI
+    calls it, never duplicates or alters it, and it never dispatches,
+    launches a run, registers a live run, or calls a provider.
+
+    Repair-count boundary: ``--repair-count`` is the attempt's completed
+    same-route repair count — ``0`` on the first capability rejection
+    (nothing repaired yet), ``1`` after one same-route repair has already
+    failed. It is forwarded to the pure mapping as its 1-based capability
+    attempt number (``repair_count + 1``), preserving the pure mapping's
+    exact boundary: count ``0`` → ``repair_same_route`` (one same-route
+    capability repair precedes escalation, D213 execution invariants),
+    count ``1`` or more → ``escalate``. A negative count is refused and a
+    noninteger count is rejected by argument parsing before the mapping
+    runs; an omitted count for ``capability_rejected`` fails closed to
+    ``supervisor_judgment`` exactly as the pure mapping does, and the
+    count is ignored for every other class.
+
+    ``oracle_failed`` and ``unknown``: D213 ruling 3 classifies them
+    deterministically, and the pure mapping — which owns the class→action
+    decision — maps both to ``supervisor_judgment``. This CLI preserves
+    that handling verbatim; no dispatch or policy is invented here.
+
+    Output: one compact structured JSON object ``{"failure_class": ...,
+    "repair_count": ..., "next_action": ...}`` suitable for the
+    /supervise loop. Every mapped outcome — including
+    ``supervisor_judgment`` — exits 0. Refusals (unreadable input,
+    malformed JSON, a non-object payload, unexpected keys, a missing or
+    non-string ``failure_class``, or a negative repair count) print one
+    concise stderr line prefixed ``next-action:`` and exit 3.
+    """
+    import json
+    from pathlib import Path
+
+    from lee_llm_router.staffing.next_action import next_action
+
+    def fail(message: str) -> int:
+        print(f"next-action: {message}", file=sys.stderr)
+        return 3
+
+    if args.repair_count is not None and args.repair_count < 0:
+        return fail(
+            f"--repair-count must be a nonnegative integer, " f"got {args.repair_count}"
+        )
+
+    if args.input == "-":
+        source = "<stdin>"
+        raw = sys.stdin.read()
+    else:
+        input_path = Path(args.input).expanduser()
+        source = str(input_path)
+        try:
+            raw = input_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            return fail(f"input file cannot be read: {exc}")
+
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return fail(f"input is not valid JSON: {source}: {exc}")
+    if not isinstance(payload, dict):
+        return fail(
+            f"input must be one JSON object (the 'classify-failure --json' "
+            f"output): {source}"
+        )
+    unexpected = sorted(set(payload) - {"failure_class"})
+    if unexpected:
+        return fail(
+            f"input carries unexpected key(s) {unexpected}; only the "
+            f"'classify-failure --json' output object is accepted"
+        )
+    if "failure_class" not in payload:
+        return fail(f'input is missing "failure_class": {source}')
+    failure_class = payload["failure_class"]
+    if failure_class is not None and not isinstance(failure_class, str):
+        return fail('"failure_class" must be a string or null')
+
+    # The pure Phase 2 mapping owns the decision; the CLI only translates
+    # its repair count into the mapping's 1-based capability attempt
+    # number and forwards everything else unchanged.
+    capability_attempt_number = (
+        None if args.repair_count is None else args.repair_count + 1
+    )
+    action = next_action(failure_class, capability_attempt_number)
+
+    print(
+        json.dumps(
+            {
+                "failure_class": failure_class,
+                "repair_count": args.repair_count,
+                "next_action": action,
+            },
+            separators=(",", ":"),
+        )
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None):
     import argparse
 
@@ -2879,6 +2993,37 @@ def main(argv: list[str] | None = None):
         ),
     )
     classify_failure_parser.set_defaults(func=_run_classify_failure)
+
+    next_action_parser = subparsers.add_parser(
+        "next-action",
+        help=(
+            "Map one classify-failure JSON class to its next staff action "
+            "(no dispatch)"
+        ),
+    )
+    next_action_parser.add_argument(
+        "--input",
+        required=True,
+        metavar="FILE",
+        help=(
+            "File holding exactly the JSON object printed by "
+            '"classify-failure --json" ({"failure_class": ...}); '
+            "'-' reads the same single JSON object from stdin"
+        ),
+    )
+    next_action_parser.add_argument(
+        "--repair-count",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "The attempt's nonnegative repair count (0 on the first "
+            "capability rejection); forwarded to the pure next-action "
+            "mapping as its 1-based capability attempt number and ignored "
+            "for non-capability classes"
+        ),
+    )
+    next_action_parser.set_defaults(func=_run_next_action)
 
     evidence_parser = subparsers.add_parser(
         "evidence",
