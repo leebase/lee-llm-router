@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://lee-llm-router.local/config/staffing/schema/attempt-record.schema.json",
   "title": "Unified attempt record (Phase 1 P1-2, v2)",
-  "description": "One strict Draft 2020-12 record: the canonical v2 attempt envelope per D209 as mapped by docs/staffing/phase1-contracts.md, unifying the lee-llm-router run-command attempt, the Agent-Orch model/effort observation (/home/lee/projects/auto-orch/src/auto_orch/performance.py OBSERVATION_SCHEMA), and the AI Workforce Benchmark crew-run record (/home/lee/projects/ai-workforce-benchmark/config/crew-run.schema.json). The v1 source-specific payloads remain embedded verbatim as provenance evidence; they are not competing locations for v2 usage, cost, selection, or verdict. Route identity is exactly the tuple (model, effort, harness, channel) per the accepted P0-1 route contract (phase0-contracts §Route); provider is separate optional observed metadata, never part of the identity tuple, never a replacement for channel, and never invented for a source that lacks one. class_record reproduces the strict classes.schema.json $defs/classBlock vocabulary verbatim (same six required fields, same closed value sets, same canonical class_key pattern); imported historical attempts without class metadata omit it and carry class_source: 'none' — the only condition under which class_key is optional. Per D206, quoted verbatim: 'Class metadata MUST NOT map directly to a preferred model or route. It may only: 1. join production attempts to comparable benchmark evidence; and 2. determine whether an unevidenced cheap trial is permitted.' No class-to-model or class-to-route mapping exists in this schema. verified_success is true only for verdict 'pass' with the required route, usage, cost (when usage permits it), oracle, duration, and provenance evidence; where a source lacks a channel, provider, supervisor route, usage, cost, or duration, the field is null or absent — never invented. Every price, fee, capacity, date, or multiplier needs a source; this schema invents none. Phase 1 P1-7b1 (Chief of Staff answer 3, docs/staffing/chief-answers-p1-3.md) adds record_kind 'agent_orch_attempt': the agent-orch runs per-attempt import built only from the authorized raw per-attempt artifacts ($defs/agentOrchAttempt), with class_source 'none' and never class_record, provenance.source 'agent-orch-runs', the verdict tier 'engine_validation', and verified_success exactly the agent-orch validation gate (worker_exit_code == 0 and validation_passed == true). The existing 'agent_orch' full-observation kind is unchanged and reserved for the Phase 4 import.",
+  "description": "One strict Draft 2020-12 record: the canonical v2 attempt envelope per D209 as mapped by docs/staffing/phase1-contracts.md, unifying the lee-llm-router run-command attempt, the Agent-Orch model/effort observation (/home/lee/projects/auto-orch/src/auto_orch/performance.py OBSERVATION_SCHEMA), and the AI Workforce Benchmark crew-run record (/home/lee/projects/ai-workforce-benchmark/config/crew-run.schema.json). The v1 source-specific payloads remain embedded verbatim as provenance evidence; they are not competing locations for v2 usage, cost, selection, or verdict. Route identity is exactly the tuple (model, effort, harness, channel) per the accepted P0-1 route contract (phase0-contracts §Route); provider is separate optional observed metadata, never part of the identity tuple, never a replacement for channel, and never invented for a source that lacks one. class_record reproduces the strict classes.schema.json $defs/classBlock vocabulary verbatim (same six required fields, same closed value sets, same canonical class_key pattern); imported historical attempts without class metadata omit it and carry class_source: 'none' — the only condition under which class_key is optional. Per D206, quoted verbatim: 'Class metadata MUST NOT map directly to a preferred model or route. It may only: 1. join production attempts to comparable benchmark evidence; and 2. determine whether an unevidenced cheap trial is permitted.' No class-to-model or class-to-route mapping exists in this schema. verified_success is true only for verdict 'pass' with the required route, usage, cost (when usage permits it), oracle, duration, and provenance evidence; where a source lacks a channel, provider, supervisor route, usage, cost, or duration, the field is null or absent — never invented. Every price, fee, capacity, date, or multiplier needs a source; this schema invents none. Phase 1 P1-7b1 (Chief of Staff answer 3, docs/staffing/chief-answers-p1-3.md) adds record_kind 'agent_orch_attempt': the agent-orch runs per-attempt import built only from the authorized raw per-attempt artifacts ($defs/agentOrchAttempt), with class_source 'none' and never class_record, provenance.source 'agent-orch-runs', the verdict tier 'engine_validation', and verified_success exactly the agent-orch validation gate (worker_exit_code == 0 and validation_passed == true). The existing 'agent_orch' full-observation kind is unchanged and reserved for the Phase 4 import. The benchmark_run payload has exactly two shapes selected by oneOf ($defs/benchmarkRunPayload): $defs/crewRunRecord, the historical crew-run envelope retained so append-only ledger lines committed before the raw-v6 repair stay valid and readable — it is no longer written by any importer, because the benchmark v6 staffing-evidence sidecar provides neither a crew name nor a crews-file identity; and $defs/benchmarkV6Run, the raw v6 shape whose payload contains only facts read from the verified sidecar and its SHA-256-pinned source CSV, so no crew or crews-file semantics are ever invented. Because the ledger is append-only, pre-repair legacy rows are never rewritten: re-running the benchmark import appends a deterministic benchmark:v6:<run_id> correction record for each legacy-shaped row whose run is present in the verified source, leaving the fabricated legacy line in place as disclosed history.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -181,7 +181,7 @@
       "$ref": "#/$defs/agentOrchAttempt"
     },
     "benchmark_run": {
-      "$ref": "#/$defs/crewRunRecord"
+      "$ref": "#/$defs/benchmarkRunPayload"
     },
     "provenance": {
       "$ref": "#/$defs/provenance"
@@ -428,7 +428,7 @@
         ],
         "properties": {
           "benchmark_run": {
-            "$ref": "#/$defs/crewRunRecord"
+            "$ref": "#/$defs/benchmarkRunPayload"
           },
           "provenance": {
             "allOf": [
@@ -1249,6 +1249,7 @@
         ],
         "notes": [
           "Scratch example for one benchmark run; the embedded benchmark_run payload keeps the crew-run record verbatim, including its own attempt_id.",
+          "Legacy pre-repair shape: this crew-run envelope (crew_name 'mixed-economy' and the crews_file_sha256 sidecar digest) is retained only so committed append-only ledger lines stay valid; the v6 sidecar provides neither a crew name nor a crews-file identity, so current imports write the raw benchmarkV6Run shape instead and never fabricate these fields.",
           "Imported benchmark row: provenance.source is 'benchmark' and source usage is preserved exactly (this crew-run v1 shape captures none).",
           "verdict 'pass' is the canonical v2 verdict mapped from final_acceptance 'accepted'; the benchmark acceptance vocabulary remains in the embedded payload.",
           "No route, provider, or supervisor_route is asserted: the crew-run worker records model/harness/effort/model_family only, with no channel and no supervisor route.",
@@ -1614,6 +1615,98 @@
           "captured_at preserves run.json last_updated_at; per-attempt started_at and ended_at are absent because the authorized raw attempt does not record them.",
           "Top-level cached_input_tokens maps usage.json cached_read_tokens, and reasoning_tokens maps raw_usage.reasoning_output_tokens; all copied numeric values are unchanged.",
           "cost is list basis only and preserves usage.json cost_usd; no marginal cost, class, channel, provider, supervisor route, oracle, or wall-clock duration is inferred."
+        ]
+      }
+    },
+    {
+      "schema_version": 2,
+      "attempt_id": "benchmark:scratch-run-1",
+      "record_kind": "benchmark_run",
+      "captured_at": "2026-09-09T12:05:00Z",
+      "verified_success": false,
+      "class_record": {
+        "class_key": "impl/deterministic/none/m/python",
+        "role": "impl",
+        "oracle_type": "deterministic",
+        "domain_tags": [],
+        "size_band": "m",
+        "language": "python"
+      },
+      "verdict": "pass",
+      "failure_class": null,
+      "usage": {
+        "basis": "provider_reported",
+        "source": "benchmark v6 CSV usage_*_tokens",
+        "input_tokens": 101,
+        "output_tokens": 202,
+        "cached_input_tokens": 33,
+        "reasoning_tokens": null,
+        "total_tokens": 303
+      },
+      "cost": {
+        "basis": [
+          "unavailable"
+        ]
+      },
+      "wall_clock_ms": 290000,
+      "benchmark_run": {
+        "schema_version": "benchmark.staffing-evidence/2",
+        "sidecar_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "source_csv": {
+          "path": "benchmark-v6-runs.csv",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "generated_at": "2026-09-09T15:00:00Z",
+        "run_id": "scratch-run-1",
+        "task_key": "scratch-task-1",
+        "class": {
+          "class_key": "impl/deterministic/none/m/python",
+          "role": "impl",
+          "oracle_type": "deterministic",
+          "domain_tags": [],
+          "size_band": "m",
+          "language": "python"
+        },
+        "worker": {
+          "model": "scratch-model",
+          "harness": "claude_code",
+          "effort": "medium",
+          "model_family": "scratch-family"
+        },
+        "usage": {
+          "usage_status": "known",
+          "usage_input_tokens": 101,
+          "usage_output_tokens": 202,
+          "usage_cached_input_tokens": 33,
+          "usage_reasoning_tokens": null,
+          "usage_total_tokens": 303
+        },
+        "acceptance": "accepted",
+        "elapsed_ms": 290000,
+        "source_timestamps": {
+          "run_created_at": "2026-09-09T12:00:00Z",
+          "launch_created_at": "2026-09-09T12:00:05Z",
+          "started_at": "2026-09-09T12:00:05Z",
+          "finished_at": "2026-09-09T12:04:55Z",
+          "captured_at": "2026-09-09T12:05:00Z"
+        }
+      },
+      "provenance": {
+        "source": "benchmark",
+        "recorded_by": "lee-llm-router evidence import",
+        "source_refs": [
+          "tests/fixtures/staffing/benchmark-v6-sidecar.fixture",
+          "tests/fixtures/staffing/benchmark-v6-runs.csv",
+          "docs/staffing/phase1-contracts.md §Attempt record v2 placement, §Usage evidence taxonomy"
+        ],
+        "notes": [
+          "Scratch example of the raw benchmarkV6Run payload written by the current evidence import; every payload fact is copied from the verified v6 sidecar/source-CSV join.",
+          "No crew_name and no crews_file_sha256 exist anywhere in the record: the v6 sidecar provides neither a crew name nor a crews-file identity, and the sidecar digest is carried as sidecar_sha256 only.",
+          "The payload worker carries the four join-verified fields; the sidecar's provider/vendor worker labels are not carried because they would imply route semantics the source does not assert.",
+          "usage.basis is 'provider_reported' from the exact 'benchmark v6 CSV usage_*_tokens' evidence string; the raw payload preserves the source column names, including the null reasoning component (never zero).",
+          "No route, provider, supervisor_route, stage, role composition, or canonical cost is asserted because the source records none; cost.basis is ['unavailable'] and no figure is estimated.",
+          "verdict 'pass' is the canonical v2 verdict mapped from acceptance 'accepted'; the acceptance vocabulary remains in the embedded payload.",
+          "verified_success is false because the run lacks complete route, supervisor-route, class-record provenance gate, oracle, and cost evidence; nothing is invented."
         ]
       }
     }
@@ -2725,10 +2818,173 @@
         }
       }
     },
+    "benchmarkRunPayload": {
+      "description": "The two benchmark_run payload shapes; exactly one validates (oneOf). crewRunRecord is the legacy Phase-0 crew-run envelope: it remains schema-valid solely so append-only ledger lines committed before the raw-v6 repair stay valid and readable, and no importer writes it any more — the benchmark v6 staffing-evidence sidecar provides neither a crew name nor a crews-file identity, so a crew_run envelope synthesized for a v6 import was fabricated evidence (D209), which is why benchmarkV6Run exists. Current benchmark imports write only benchmarkV6Run.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/crewRunRecord"
+        },
+        {
+          "$ref": "#/$defs/benchmarkV6Run"
+        }
+      ]
+    },
+    "benchmarkV6Run": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Raw benchmark v6 staffing-evidence facts for one CSV run, embedded from the verified sidecar/source-CSV join. It contains only facts the v6 sidecar and its SHA-256-pinned source CSV actually carry: there is no crew_name and no crews_file_sha256, because the v6 sidecar provides neither a crew name nor a crews-file identity (D209: preserved source facts, never invented evidence). No stage, role composition, route, channel, supervisor route, pricing snapshot, or canonical cost exists in this shape because the source records none.",
+      "required": [
+        "schema_version",
+        "sidecar_sha256",
+        "source_csv",
+        "generated_at",
+        "run_id",
+        "task_key",
+        "class",
+        "worker",
+        "usage",
+        "acceptance",
+        "elapsed_ms"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "benchmark.staffing-evidence/2",
+          "description": "The verified sidecar's own schema_version, copied verbatim."
+        },
+        "sidecar_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "SHA-256 of the verified v6 staffing-evidence sidecar itself. The sidecar is not a crews file and carries no crew identity; this digest asserts the evidence sidecar's bytes only."
+        },
+        "source_csv": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "The sidecar's own source_csv block, verbatim (path as written in the sidecar); its sha256 was verified against the CSV bytes before import. The resolved filesystem path lives in the record provenance, not here.",
+          "required": [
+            "path",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          }
+        },
+        "generated_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "The sidecar's generated_at, verbatim."
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The CSV row's run_id, verified present in the sidecar run_ids."
+        },
+        "task_key": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The sidecar task_key, verified equal to the CSV task_key."
+        },
+        "class": {
+          "$ref": "#/$defs/classRecord",
+          "description": "The sidecar row's validated class block, verbatim; mirrors the top-level class_record (D206: no class-to-model or class-to-route mapping)."
+        },
+        "worker": {
+          "$ref": "#/$defs/crewWorker",
+          "description": "The four join-verified worker fields (model, harness, effort, model_family) from the sidecar worker block, verified equal to the CSV row. Other sidecar worker labels (provider/vendor) are not carried: they are not needed for the join and would imply route semantics the source does not assert."
+        },
+        "usage": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "The raw per-run usage receipt columns, preserved verbatim under their source column names with null for source null/empty. The top-level usage object carries the same counters under canonical names with basis 'provider_reported' and source 'benchmark v6 CSV usage_*_tokens'; this object preserves the source shape.",
+          "required": [
+            "usage_status",
+            "usage_input_tokens",
+            "usage_output_tokens",
+            "usage_cached_input_tokens",
+            "usage_reasoning_tokens",
+            "usage_total_tokens"
+          ],
+          "properties": {
+            "usage_status": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 1,
+              "description": "The CSV usage_status value (known | partial | null when the source recorded none). It marks omitted optional semantic detail, not estimated counters."
+            },
+            "usage_input_tokens": {
+              "$ref": "#/$defs/tokenCounter"
+            },
+            "usage_output_tokens": {
+              "$ref": "#/$defs/tokenCounter"
+            },
+            "usage_cached_input_tokens": {
+              "$ref": "#/$defs/tokenCounter"
+            },
+            "usage_reasoning_tokens": {
+              "$ref": "#/$defs/tokenCounter"
+            },
+            "usage_total_tokens": {
+              "$ref": "#/$defs/tokenCounter"
+            }
+          }
+        },
+        "acceptance": {
+          "$ref": "#/$defs/acceptance",
+          "description": "The CSV row's acceptance value (normalized to the source's own accepted | not_accepted | unverified vocabulary); the top-level verdict maps it canonically."
+        },
+        "elapsed_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "The CSV row's elapsed_ms; null when the source records none. Mirrors the top-level wall_clock_ms."
+        },
+        "source_timestamps": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "description": "Every timestamp column the CSV row supplies, verbatim; omitted entirely when the row supplies none. captured_at also appears as the top-level captured_at.",
+          "properties": {
+            "run_created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "launch_created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "started_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "finished_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "captured_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "evaluation_created_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        }
+      }
+    },
     "crewRunRecord": {
       "type": "object",
       "additionalProperties": false,
-      "description": "AI Workforce Benchmark crew-run record, embedded verbatim from /home/lee/projects/ai-workforce-benchmark/config/crew-run.schema.json (minus its $schema/$id/title/description envelope). It keeps its own attempt_id; the unified top-level attempt_id mirrors it.",
+      "description": "AI Workforce Benchmark crew-run record, embedded verbatim from /home/lee/projects/ai-workforce-benchmark/config/crew-run.schema.json (minus its $schema/$id/title/description envelope). It keeps its own attempt_id; the unified top-level attempt_id mirrors it. LEGACY SHAPE: retained only so append-only ledger lines committed before the raw-v6 repair stay valid and readable; the benchmark v6 staffing-evidence sidecar provides neither a crew name nor a crews-file identity, so no current importer writes this envelope for a v6 import — such records are superseded, not rewritten (re-running the benchmark import appends benchmark:v6:<run_id> correction records).",
+      "deprecated": true,
       "required": [
         "schema_version",
         "crew_name",

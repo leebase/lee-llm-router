@@ -1,10 +1,23 @@
 """Import historical evidence into the staffing attempt ledger.
 
-The Phase-1 benchmark source is the v6 staffing-evidence sidecar.  Its
-``source_csv`` names and hashes the per-run CSV, while each sidecar row adds a
-validated task class and a lossless ``run_usage`` entry for every CSV run.
-This module verifies that join before projecting a run into the closest valid
-attempt-record v2 shape.
+The Phase-1 benchmark source is the benchmark v6 staffing-evidence sidecar
+(``benchmark.staffing-evidence/2``).  Its ``source_csv`` names and hashes the
+per-run CSV, while each sidecar row adds a validated task class and a lossless
+``run_usage`` entry for every CSV run.  This module verifies that join before
+embedding a raw ``benchmarkV6Run`` payload in the attempt-record v2 shape.
+
+The payload contains only facts the v6 sidecar and its pinned CSV actually
+carry: the sidecar's own schema version and digest, its verbatim
+``source_csv`` block, the join-verified task key, class block, and four
+worker fields, the raw ``usage_*_tokens`` receipt columns, the row's
+acceptance and ``elapsed_ms``, and every timestamp column the row supplies.
+The v6 sidecar provides neither a crew name nor a crews-file identity, so no
+``crew_name`` and no ``crews_file_sha256`` are ever written; the sidecar's
+own digest is carried as ``sidecar_sha256`` only.  Records committed before
+this raw shape existed embed the legacy crew-run envelope; they stay valid
+and readable, and re-running this import is the governed correction: it
+appends a deterministic ``benchmark:v6:<run_id>`` record built from the same
+verified facts instead of rewriting the append-only ledger.
 
 Benchmark CSV rows do not identify a channel-qualified staffing route, an
 oracle command, a supervisor route, or a cost calculated from Phase-1 terms.
@@ -59,6 +72,17 @@ TOKEN_COLUMNS = (
     "usage_total_tokens",
 )
 _ATTEMPT_ID_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
+_ATTEMPT_ID_PREFIX = "benchmark:"
+_CORRECTION_PREFIX = "benchmark:v6:"
+_LEGACY_CREW_RUN_SCHEMA_VERSION = "benchmark.crew-run/1"
+_SOURCE_TIMESTAMP_COLUMNS = (
+    "run_created_at",
+    "launch_created_at",
+    "started_at",
+    "finished_at",
+    "captured_at",
+    "evaluation_created_at",
+)
 _CLASS_FIELDS = {
     "class_key",
     "role",
@@ -66,13 +90,6 @@ _CLASS_FIELDS = {
     "domain_tags",
     "size_band",
     "language",
-}
-_ROLE_STAGE = {
-    "impl": "author",
-    "plan": "ideate",
-    "review": "score",
-    "judge": "score",
-    "prose": "author",
 }
 
 
@@ -208,10 +225,39 @@ def _verdict(acceptance: str) -> str:
 
 
 def _attempt_id(run_id: str) -> str:
-    candidate = f"benchmark:{run_id}"
+    candidate = f"{_ATTEMPT_ID_PREFIX}{run_id}"
     if not _ATTEMPT_ID_RE.fullmatch(candidate):
         raise _RowError("run_id cannot form a valid deterministic attempt id")
     return candidate
+
+
+def _correction_attempt_id(run_id: str) -> str:
+    """Deterministic id of the truthful correction of one legacy record."""
+    candidate = f"{_CORRECTION_PREFIX}{run_id}"
+    if not _ATTEMPT_ID_RE.fullmatch(candidate):
+        raise _RowError("run_id cannot form a valid deterministic correction id")
+    return candidate
+
+
+def _legacy_crew_run_run_id(record: Mapping[str, Any]) -> str | None:
+    """Recover the source run id from a pre-repair legacy crew-run record.
+
+    Legacy ids were built exactly as ``benchmark:<run_id>``, so stripping the
+    fixed prefix recovers the run id even when the run id itself contains a
+    colon.  Anything not shaped that way is not a legacy benchmark import.
+    """
+    if record.get("record_kind") != "benchmark_run":
+        return None
+    payload = record.get("benchmark_run")
+    if (
+        not isinstance(payload, Mapping)
+        or payload.get("schema_version") != _LEGACY_CREW_RUN_SCHEMA_VERSION
+    ):
+        return None
+    attempt_id = record.get("attempt_id")
+    if not isinstance(attempt_id, str) or not attempt_id.startswith(_ATTEMPT_ID_PREFIX):
+        return None
+    return attempt_id[len(_ATTEMPT_ID_PREFIX) :]
 
 
 def _source_csv_path(
@@ -368,89 +414,120 @@ def _timestamp_note(row: Mapping[str, Any]) -> str:
     return "Source row timestamps: " + ", ".join(timestamps)
 
 
-def _build_record(
+def _row_usage_status(row: Mapping[str, Any]) -> str | None:
+    """The raw CSV usage_status value, or None when the source recorded none."""
+    value = row.get("usage_status")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip()
+
+
+def _row_timestamps(row: Mapping[str, Any]) -> dict[str, str]:
+    """Every timestamp column the source row supplies, verbatim."""
+    timestamps: dict[str, str] = {}
+    for name in _SOURCE_TIMESTAMP_COLUMNS:
+        value = row.get(name)
+        if isinstance(value, str) and value.strip():
+            # Validated, not transformed: a malformed source timestamp skips
+            # the row instead of entering the record unchecked.
+            timestamps[name] = _aware_timestamp(value, name)
+    return timestamps
+
+
+def _benchmark_payload(
     row: Mapping[str, Any],
     metadata: _RunMetadata,
     *,
-    sidecar_path: Path,
-    csv_path: Path,
+    usage: Mapping[str, Any],
+    source_ref: str,
     sidecar_sha256: str,
     source_csv_sha256: str,
     generated_at: str,
 ) -> dict[str, Any]:
+    """Build the raw benchmarkV6Run payload from verified source facts only."""
     run_id = _required_text(row.get("run_id"), "run_id")
-    attempt_id = _attempt_id(run_id)
+    acceptance = _acceptance(row)
+    elapsed_ms = _optional_elapsed(row.get("elapsed_ms"))
+    worker = metadata.worker
+    effort_value = worker.get("effort")
+    if effort_value is not None and (
+        not isinstance(effort_value, str) or not effort_value.strip()
+    ):
+        raise _RowError("sidecar worker effort is invalid")
+    raw_usage: dict[str, Any] = {
+        "usage_status": _row_usage_status(row),
+        "usage_input_tokens": usage["input_tokens"],
+        "usage_output_tokens": usage["output_tokens"],
+        "usage_cached_input_tokens": usage["cached_input_tokens"],
+        "usage_reasoning_tokens": usage["reasoning_tokens"],
+        "usage_total_tokens": usage["total_tokens"],
+    }
+    payload: dict[str, Any] = {
+        "schema_version": BENCHMARK_SCHEMA_VERSION,
+        "sidecar_sha256": sidecar_sha256,
+        "source_csv": {"path": source_ref, "sha256": source_csv_sha256},
+        "generated_at": generated_at,
+        "run_id": run_id,
+        "task_key": metadata.task_key,
+        "class": dict(metadata.class_record),
+        # Exactly the four join-verified worker fields, by name: the sidecar
+        # worker block may carry extra provider/vendor labels that would
+        # imply route semantics the source does not assert.
+        "worker": {
+            "model": _required_text(worker.get("model"), "sidecar worker model"),
+            "harness": _required_text(worker.get("harness"), "sidecar worker harness"),
+            "effort": effort_value if isinstance(effort_value, str) else None,
+            "model_family": _required_text(
+                worker.get("model_family"), "sidecar worker model_family"
+            ),
+        },
+        "usage": raw_usage,
+        "acceptance": acceptance,
+        "elapsed_ms": elapsed_ms,
+    }
+    timestamps = _row_timestamps(row)
+    if timestamps:
+        payload["source_timestamps"] = timestamps
+    return payload
+
+
+def _build_record(
+    row: Mapping[str, Any],
+    metadata: _RunMetadata,
+    *,
+    attempt_id: str,
+    sidecar_path: Path,
+    csv_path: Path,
+    source_ref: str,
+    sidecar_sha256: str,
+    source_csv_sha256: str,
+    generated_at: str,
+    correction_of: str | None = None,
+) -> dict[str, Any]:
     usage = _row_usage(row)
     _verify_join(row, metadata, usage)
     acceptance = _acceptance(row)
     captured_at = _aware_timestamp(row.get("captured_at"), "captured_at")
     elapsed_ms = _optional_elapsed(row.get("elapsed_ms"))
-    model = _required_text(row.get("model"), "model")
-    harness = _required_text(row.get("harness"), "harness")
-    model_family = _required_text(metadata.worker.get("model_family"), "model_family")
-    effort_raw = row.get("effort")
-    if not isinstance(effort_raw, str):
-        raise _RowError("effort is not text")
-    effort = effort_raw or None
-    role = metadata.class_record["role"]
-    stage = _ROLE_STAGE.get(role)
-    if stage is None:
-        raise _RowError(f"class role {role!r} cannot map to a benchmark stage")
 
-    # The committed v2 schema embeds the older named-crew payload.  Per-run
-    # CSV evidence predates that envelope, so this uses its least-specific
-    # mixed crew and a single role-derived stage.  The notes explicitly mark
-    # those fields as compatibility structure, not facts about source routing.
-    benchmark_run = {
-        "schema_version": "benchmark.crew-run/1",
-        "crew_name": "mixed-economy",
-        "crews_file_sha256": sidecar_sha256,
-        "mission": {
-            "task_key": metadata.task_key,
-            "role_composition": [stage],
-        },
-        "attempt_id": attempt_id,
-        "stages": [
-            {
-                "stage": stage,
-                "worker": {
-                    "model": model,
-                    "harness": harness,
-                    "effort": effort,
-                    "model_family": model_family,
-                },
-                "run_id": run_id,
-                "cost_low_usd": None,
-                "cost_high_usd": None,
-                "elapsed_ms": elapsed_ms,
-                "acceptance": acceptance,
-                "pricing_snapshot_ref": None,
-                "pricing_snapshot_sha256": None,
-                "evidence_status": "measured",
-            }
-        ],
-        "totals": {
-            "cost_low_usd": None,
-            "cost_high_usd": None,
-            "elapsed_ms": elapsed_ms,
-            "stage_count": 1,
-            "priced_stage_count": 0,
-            "timed_stage_count": 1 if elapsed_ms is not None else 0,
-        },
-        "final_acceptance": acceptance,
-        "provenance": {
-            "assembled_by": "lee-llm-router evidence import",
-            "assembled_at": generated_at,
-            "source_csv_sha256": source_csv_sha256,
-            "notes": [
-                "Single-run compatibility projection from benchmark v6 CSV; "
-                "mixed-economy and the role-derived stage do not assert that "
-                "the historical run belonged to a named crew.",
-                "crews_file_sha256 carries the verified v6 sidecar digest; the "
-                "per-run CSV does not identify a crews file.",
-            ],
-        },
-    }
+    notes = [
+        "No route or supervisor route is asserted because the source does not "
+        "identify a staffing channel.",
+        "Canonical cost is unavailable: source API-equivalent figures are not "
+        "Phase-1 list and marginal costs for a selected route.",
+        "The payload records only facts from the verified v6 sidecar and its "
+        "SHA-256-pinned source CSV; the v6 sidecar carries no crew name and no "
+        "crews-file identity, so neither is asserted.",
+    ]
+    if correction_of is not None:
+        notes.insert(
+            0,
+            f"Truthful correction of legacy record {correction_of}: that "
+            "committed line's crew_name and crews_file_sha256 were "
+            "compatibility fabrications (the v6 sidecar provides neither); the "
+            "append-only ledger keeps the legacy line unmodified.",
+        )
+    notes.append(_timestamp_note(row))
     record = {
         "schema_version": 2,
         "attempt_id": attempt_id,
@@ -462,18 +539,20 @@ def _build_record(
         "usage": usage,
         "cost": {"basis": ["unavailable"]},
         "wall_clock_ms": elapsed_ms,
-        "benchmark_run": benchmark_run,
+        "benchmark_run": _benchmark_payload(
+            row,
+            metadata,
+            usage=usage,
+            source_ref=source_ref,
+            sidecar_sha256=sidecar_sha256,
+            source_csv_sha256=source_csv_sha256,
+            generated_at=generated_at,
+        ),
         "provenance": {
             "source": "benchmark",
             "recorded_by": "lee-llm-router evidence import",
             "source_refs": [str(sidecar_path), str(csv_path)],
-            "notes": [
-                "No route or supervisor route is asserted because the source "
-                "does not identify a staffing channel.",
-                "Canonical cost is unavailable: source API-equivalent figures "
-                "are not Phase-1 list and marginal costs for a selected route.",
-                _timestamp_note(row),
-            ],
+            "notes": notes,
         },
     }
     validate_attempt(record)
@@ -538,7 +617,9 @@ def import_benchmark_evidence(
 
     target = resolve_attempts_path(ledger_path)
     existing = read_attempts(target) if target.is_file() else []
-    known_ids = {record["attempt_id"] for record in existing}
+    known: dict[str, dict[str, Any]] = {
+        record["attempt_id"]: record for record in existing
+    }
     imported = 0
     issues: list[ImportIssue] = []
     try:
@@ -579,25 +660,42 @@ def import_benchmark_evidence(
             if metadata is None:
                 raise _RowError("run_id is absent from the v6 sidecar")
             attempt_id = _attempt_id(run_id)
-            if attempt_id in known_ids:
-                issues.append(
-                    ImportIssue(row_number, run_id, "attempt_id already present")
-                )
-                continue
+            correction_of: str | None = None
+            existing_record = known.get(attempt_id)
+            if existing_record is not None:
+                if _legacy_crew_run_run_id(existing_record) != run_id:
+                    issues.append(
+                        ImportIssue(row_number, run_id, "attempt_id already present")
+                    )
+                    continue
+                # Governed reconciliation of a pre-repair legacy crew-run
+                # record: append the truthful raw-shape record under a
+                # deterministic correction id instead of rewriting history.
+                correction_id = _correction_attempt_id(run_id)
+                if correction_id in known:
+                    issues.append(
+                        ImportIssue(row_number, run_id, "correction already present")
+                    )
+                    continue
+                attempt_id = correction_id
+                correction_of = f"{_ATTEMPT_ID_PREFIX}{run_id}"
             record = _build_record(
                 row,
                 metadata,
+                attempt_id=attempt_id,
                 sidecar_path=sidecar_path,
                 csv_path=resolved_csv,
+                source_ref=source_ref,
                 sidecar_sha256=sidecar_sha256,
                 source_csv_sha256=actual_sha256,
                 generated_at=generated_at,
+                correction_of=correction_of,
             )
         except (_RowError, EvidenceImportError, AttemptLedgerError) as exc:
             issues.append(ImportIssue(row_number, run_id, str(exc)))
             continue
         append_attempt(record, target)
-        known_ids.add(record["attempt_id"])
+        known[record["attempt_id"]] = record
         imported += 1
 
     return ImportSummary(

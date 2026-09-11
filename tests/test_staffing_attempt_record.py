@@ -27,6 +27,8 @@ FIXTURE_DIR = REPO_ROOT / "tests" / "fixtures" / "staffing"
 AGENT_ORCH_ATTEMPT_ID = (
     "b0ccf22e228b8dbc599747372cbf018150ff39eeedd3437de8d4f70e2ec00daa"
 )
+BENCHMARK_V6_RUN_ID = "benchmark:scratch-run-1"
+LEGACY_BENCHMARK_ID = "bench-mixed-economy-0001"
 
 FIXTURE_FILES = [
     "attempt-record-agent-orch.json",
@@ -35,6 +37,7 @@ FIXTURE_FILES = [
     "attempt-record-router-run-escalation.json",
     "attempt-record-import-agent-orch-unclassed.json",
     "attempt-record-agent-orch-raw-attempt.json",
+    "attempt-record-benchmark-v6-run.json",
 ]
 
 D206_VERBATIM = (
@@ -146,7 +149,7 @@ def require_required_error(
 def test_all_schema_examples_validate(
     validator: Draft202012Validator, schema: dict
 ) -> None:
-    assert len(schema["examples"]) == 6
+    assert len(schema["examples"]) == 7
     for ex in schema["examples"]:
         problems = [
             (list(e.absolute_path), e.message) for e in validator.iter_errors(ex)
@@ -696,7 +699,8 @@ def test_provenance_source_pairs_with_record_kind(
     pairs = {
         "a6a85c6b02c6": ("agent-orch", "benchmark"),
         AGENT_ORCH_ATTEMPT_ID: ("agent-orch-runs", "agent-orch"),
-        "bench-mixed-economy-0001": ("benchmark", "agent-orch"),
+        LEGACY_BENCHMARK_ID: ("benchmark", "agent-orch"),
+        BENCHMARK_V6_RUN_ID: ("benchmark", "agent-orch"),
         "pi-run-0001": ("router-run", "benchmark"),
     }
     for attempt_id, (correct, wrong) in pairs.items():
@@ -1000,6 +1004,144 @@ def test_verified_success_gate_rejects_missing_evidence(
     assert list(
         validator.iter_errors(record)
     ), "gate must not accept incomplete evidence"
+
+
+# ---------------------------------------------------------------------------
+# Raw benchmark v6 payload (D209: preserved source facts, never invented)
+# ---------------------------------------------------------------------------
+
+
+def raw_benchmark_v6_run(examples: dict) -> dict:
+    """Return the raw benchmarkV6Run example for mutation tests."""
+    return copy.deepcopy(examples[BENCHMARK_V6_RUN_ID])
+
+
+def test_benchmark_run_payload_is_one_of_two_closed_shapes(schema: dict) -> None:
+    payload = schema["$defs"]["benchmarkRunPayload"]
+    assert payload["oneOf"] == [
+        {"$ref": "#/$defs/crewRunRecord"},
+        {"$ref": "#/$defs/benchmarkV6Run"},
+    ]
+    raw = schema["$defs"]["benchmarkV6Run"]
+    assert raw["additionalProperties"] is False
+    assert set(raw["properties"]) == {
+        "schema_version",
+        "sidecar_sha256",
+        "source_csv",
+        "generated_at",
+        "run_id",
+        "task_key",
+        "class",
+        "worker",
+        "usage",
+        "acceptance",
+        "elapsed_ms",
+        "source_timestamps",
+    }
+    # The v6 sidecar provides neither a crew name nor a crews-file identity;
+    # neither may exist as a machine field in the raw shape.
+    assert "crew_name" not in raw["properties"]
+    assert "crews_file_sha256" not in raw["properties"]
+    assert "stages" not in raw["properties"]
+    assert "role_composition" not in json.dumps(raw)
+    # The legacy crew-run envelope stays valid only for committed history.
+    assert schema["$defs"]["crewRunRecord"].get("deprecated") is True
+    legacy_description = schema["$defs"]["crewRunRecord"]["description"]
+    assert "append-only ledger" in legacy_description
+    assert "benchmark:v6:" in legacy_description
+
+
+def test_raw_benchmark_example_validates_and_carries_no_fabricated_facts(
+    validator: Draft202012Validator, examples: dict
+) -> None:
+    record = examples[BENCHMARK_V6_RUN_ID]
+    assert not list(validator.iter_errors(record))
+    payload = json.dumps(record["benchmark_run"])
+    assert "crew_name" not in payload
+    assert "crews_file_sha256" not in payload
+    assert "mixed-economy" not in json.dumps(record)
+    assert "benchmark.crew-run/1" not in payload
+    # The sidecar digest appears only as the honestly named sidecar fact, and
+    # no fabricated field name appears as a machine key anywhere in the record
+    # (the prose notes may name what they refuse to fabricate).
+    assert record["benchmark_run"]["sidecar_sha256"]
+
+    def keys_of(value: object) -> list[str]:
+        found: list[str] = []
+        if isinstance(value, dict):
+            for key, item in value.items():
+                found.append(str(key))
+                found.extend(keys_of(item))
+        elif isinstance(value, list):
+            for item in value:
+                found.extend(keys_of(item))
+        return found
+
+    assert not [k for k in keys_of(record) if "crew" in k]
+
+
+def test_legacy_benchmark_shape_remains_valid_for_committed_ledger_lines(
+    validator: Draft202012Validator, examples: dict
+) -> None:
+    """Schema evolution never invalidates the append-only ledger history."""
+    legacy = examples[LEGACY_BENCHMARK_ID]
+    assert legacy["benchmark_run"]["schema_version"] == "benchmark.crew-run/1"
+    assert legacy["benchmark_run"]["crew_name"] == "mixed-economy"
+    assert not list(validator.iter_errors(legacy))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("crew_name", "mixed-economy"),
+        ("crews_file_sha256", "0" * 64),
+        ("stages", []),
+        ("role_composition", ["author"]),
+    ],
+)
+def test_fabricated_crew_fields_planted_into_raw_benchmark_record_rejected(
+    validator: Draft202012Validator,
+    examples: dict,
+    field: str,
+    value: object,
+) -> None:
+    """Astra reproducer at the schema layer: the crew-run envelope fields are
+    not readable into the raw v6 shape — planting any of them fails oneOf."""
+    record = raw_benchmark_v6_run(examples)
+    record["benchmark_run"][field] = value
+    require_error(validator, record, "$.benchmark_run", "oneOf")
+
+
+def test_benchmark_payload_shapes_are_disjoint(
+    validator: Draft202012Validator, examples: dict
+) -> None:
+    # A raw record missing a required v6 fact is not rescued by the legacy
+    # branch: the two payload shapes admit no interpolation.
+    record = raw_benchmark_v6_run(examples)
+    del record["benchmark_run"]["sidecar_sha256"]
+    assert list(validator.iter_errors(record))
+
+    record = raw_benchmark_v6_run(examples)
+    record["benchmark_run"]["schema_version"] = "benchmark.crew-run/1"
+    assert list(validator.iter_errors(record))
+
+    # The legacy example fails as a raw shape too (no sidecar_sha256).
+    legacy = copy.deepcopy(examples[LEGACY_BENCHMARK_ID])
+    legacy["benchmark_run"].pop("crew_name")
+    assert list(validator.iter_errors(legacy))
+
+
+def test_raw_benchmark_worker_covers_only_join_verified_fields(schema: dict) -> None:
+    worker = schema["$defs"]["benchmarkV6Run"]["properties"]["worker"]["$ref"]
+    assert worker == "#/$defs/crewWorker"
+    # The raw shape reuses the crew worker def (model/harness/effort/model_family)
+    # — the four fields the import verifies against the CSV row.
+    assert set(schema["$defs"]["crewWorker"]["properties"]) == {
+        "model",
+        "harness",
+        "effort",
+        "model_family",
+    }
 
 
 # ---------------------------------------------------------------------------
