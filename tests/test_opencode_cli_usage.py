@@ -194,6 +194,7 @@ def test_single_native_step_reports_strict_v2_usage() -> None:
         "output_tokens": 25,
         "cached_input_tokens": 40,
         "reasoning_tokens": 5,
+        "cache_write_tokens": 3,
         "total_tokens": 130,
     }
 
@@ -216,6 +217,7 @@ def test_multiple_step_finish_events_are_summed_once_each() -> None:
     assert result["output_tokens"] == 29
     assert result["cached_input_tokens"] == 42
     assert result["reasoning_tokens"] == 6
+    assert result["cache_write_tokens"] == 6
     assert result["total_tokens"] == 145
 
 
@@ -245,6 +247,7 @@ def test_absent_optional_counters_stay_null_and_total_is_not_estimated() -> None
     assert result["basis"] == "provider_reported"
     assert result["cached_input_tokens"] is None
     assert result["reasoning_tokens"] is None
+    assert result["cache_write_tokens"] is None
     assert result["total_tokens"] is None
 
 
@@ -279,6 +282,7 @@ def test_genuine_reported_zeroes_are_preserved() -> None:
         "output_tokens": 0,
         "cached_input_tokens": 0,
         "reasoning_tokens": 0,
+        "cache_write_tokens": 0,
         "total_tokens": 0,
     }
 
@@ -367,6 +371,7 @@ def test_provider_copied_worker_artifact_is_only_fallback(tmp_path: Path) -> Non
         "output_tokens": 4,
         "cached_input_tokens": 3,
         "reasoning_tokens": 2,
+        "cache_write_tokens": None,
         "total_tokens": 18,
     }
 
@@ -440,7 +445,7 @@ def test_every_event_result_is_strict_v2(output: str) -> None:
     errors = list(_usage_validator().iter_errors(result))
     assert not errors, [(list(error.absolute_path), error.message) for error in errors]
     assert set(result) == (
-        {"basis", "source", *UNAVAILABLE_COUNTERS}
+        {"basis", "source", *UNAVAILABLE_COUNTERS, "cache_write_tokens"}
         if result["basis"] == "provider_reported"
         else {"basis", "unavailable_reason", *UNAVAILABLE_COUNTERS}
     )

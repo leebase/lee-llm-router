@@ -987,9 +987,15 @@ def _attempt_cost(
     * Cache rates from authoritative P0-4 sources are applied when cached
       tokens are present. If cached tokens are nonzero but cache price evidence
       is unavailable for the model, cost fails closed as unavailable.
-    * Null/absent cached tokens do not bill cache and do not fabricate zeros.
-    * Reasoning tokens remain an evidence subset of output and are never billed
-      as an unknown extra counter.
+    * Null/absent cached tokens do not bill cache and do not fabricate zeros,
+      except for harnesses whose receipt separates cache reads from input; for
+      those harnesses an absent split is incomplete billing evidence.
+    * OpenCode reports reasoning separately from ordinary output. Both are
+      billed at the selected output-token rate only when the separate reasoning
+      counter is authoritative; no reasoning count or price is invented.
+    * Agy and OpenCode cache-write counters are preserved when captured. A
+      nonzero write count has no selected dated price in the P0-4 API, so cost
+      fails closed rather than dropping the component.
 
     Complete-billing-evidence gates (Astra final review finding 1):
     * The selected dated price terms price exactly the selected route's
@@ -1029,8 +1035,44 @@ def _attempt_cost(
 
     input_tokens = usage["input_tokens"]
     output_tokens = usage["output_tokens"]
+    harness = getattr(outcome.route, "harness", None)
 
-    if getattr(outcome.route, "harness", None) in _TOTAL_INCLUDES_CACHE_HARNESSES:
+    # Codex's input count can contain cached input, but an absent cached split
+    # does not tell us whether the input was all uncached. Agy/OpenCode expose
+    # cache as separate billable components; an absent cache counter is just as
+    # unknowable. Never substitute an uncached input or zero cache write.
+    cached_value = usage.get("cached_input_tokens")
+    if cached_value is not None and not _known_token_count(
+        usage, "cached_input_tokens"
+    ):
+        return {"basis": ["unavailable"]}, "cached_input_tokens is invalid"
+    if harness == "codex" and not _known_token_count(usage, "cached_input_tokens"):
+        return {"basis": ["unavailable"]}, (
+            "Codex cached_input_tokens is unknown, so the input billing split "
+            "cannot be priced"
+        )
+    if harness in {"agy", "opencode"}:
+        if not _known_token_count(usage, "cached_input_tokens"):
+            return {"basis": ["unavailable"]}, (
+                f"{harness} cached_input_tokens is unknown, so the separate "
+                "cache-read billing component cannot be priced"
+            )
+        cache_write_value = usage.get("cache_write_tokens")
+        if cache_write_value is not None and not _known_token_count(
+            usage, "cache_write_tokens"
+        ):
+            return {"basis": ["unavailable"]}, "cache_write_tokens is invalid"
+        if not _known_token_count(usage, "cache_write_tokens"):
+            return {"basis": ["unavailable"]}, (
+                f"{harness} cache_write_tokens is unknown, so the cache-write "
+                "billing component cannot be ruled out"
+            )
+        if usage["cache_write_tokens"]:
+            return {"basis": ["unavailable"]}, (
+                f"{harness} cache_write_tokens has no selected dated price"
+            )
+
+    if harness in _TOTAL_INCLUDES_CACHE_HARNESSES:
         if not _known_token_count(usage, "total_tokens"):
             return {"basis": ["unavailable"]}, (
                 "total_tokens is unknown, so unrepresented cache-write "
@@ -1097,15 +1139,26 @@ def _attempt_cost(
 
     cache_cost_list = cached_tokens * cache_repl if cache_tokens_known else 0.0
     cache_cost_marg = cached_tokens * cache_marg if cache_tokens_known else 0.0
+    billable_output_tokens = output_tokens
+    if harness == "opencode":
+        # OpenCode's ``output`` and ``reasoning`` fields are separate rather
+        # than a subset relationship. The pricing model has one output-token
+        # rate, so the authoritative sum is the quantity priced as output.
+        if not _known_token_count(usage, "reasoning_tokens"):
+            return {"basis": ["unavailable"]}, (
+                "opencode reasoning_tokens is unknown, so the separate "
+                "output billing component cannot be priced"
+            )
+        billable_output_tokens += usage["reasoning_tokens"]
 
     list_cost = (
         uncached_input_tokens * pricing.replacement_input_usd_per_token
-        + output_tokens * pricing.replacement_output_usd_per_token
+        + billable_output_tokens * pricing.replacement_output_usd_per_token
         + cache_cost_list
     )
     marginal_cost = (
         uncached_input_tokens * pricing.marginal_input_usd_per_token
-        + output_tokens * pricing.marginal_output_usd_per_token
+        + billable_output_tokens * pricing.marginal_output_usd_per_token
         + cache_cost_marg
     )
 
@@ -1601,14 +1654,20 @@ def dispatch_route(
     duration = clock_fn() - started
 
     stdout_text = bytes(stdout_buf).decode("utf-8", errors="replace")
+    # Usage parsing and Claude aggregate-model extraction are one capture
+    # boundary. Both inspect the same receipt, and a failure in either must
+    # preserve the completed worker as one unavailable-evidence outcome.
     try:
         usage = _usage_for_harness(harness, stdout_text)
+        # Claude ``modelUsage`` model ids are billing-relevance evidence: the
+        # selected dated price terms price exactly the route's model, so cost
+        # needs to know when the receipt aggregates several models.
+        usage_models = (
+            claude_aggregate_models(stdout_text) if harness == "claude" else None
+        )
     except Exception as exc:
         usage = _capture_failure_usage(harness, exc)
-    # Claude ``modelUsage`` model ids are billing-relevance evidence: the
-    # selected dated price terms price exactly the route's model, so cost
-    # needs to know when the receipt aggregates several models.
-    usage_models = claude_aggregate_models(stdout_text) if harness == "claude" else None
+        usage_models = None
     return DispatchOutcome(
         argv=tuple(argv),
         exit_code=exit_code,

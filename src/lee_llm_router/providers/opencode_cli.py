@@ -31,11 +31,13 @@ _INPUT_KEYS = ("input", "input_tokens")
 _OUTPUT_KEYS = ("output", "output_tokens")
 _REASONING_KEYS = ("reasoning", "reasoning_tokens")
 _CACHE_READ_KEYS = ("read", "input", "cached_input_tokens")
+_CACHE_WRITE_KEYS = ("write", "cache_write_tokens", "cached_write_tokens")
 _V2_COUNTER_KEYS = (
     "input_tokens",
     "output_tokens",
     "cached_input_tokens",
     "reasoning_tokens",
+    "cache_write_tokens",
     "total_tokens",
 )
 _WORKER_ARTIFACT_KEYS = {"basis", "source", *_V2_COUNTER_KEYS}
@@ -170,11 +172,12 @@ def _capture_event_usage(output: str) -> dict[str, Any]:
     aliases, and malformed reported counters fail closed.
 
     Missing required input/output usage makes the complete usage unavailable.
-    Optional cache-read and reasoning counters remain null when any counted
-    step omits them; they are never turned into zero. A source-reported zero
-    remains zero. OpenCode does not report a native total in the authoritative
-    event shape, so total is calculated from input, output, and reasoning only
-    when all three are reported. Cache is kept separate, as in the reference.
+    Optional cache-read, cache-write, and reasoning counters remain null when
+    any counted step omits them; they are never turned into zero. A
+    source-reported zero remains zero. OpenCode does not report a native total
+    in the authoritative event shape, so total is calculated from input,
+    output, and reasoning only when all three are reported. Cache is kept
+    separate, as in the reference.
 
     Args:
         output: Captured stdout from governed ``opencode run --format json``.
@@ -205,6 +208,7 @@ def _capture_event_usage(output: str) -> dict[str, Any]:
         "output_tokens": 0,
         "cached_input_tokens": 0,
         "reasoning_tokens": 0,
+        "cache_write_tokens": 0,
     }
     parsed_steps: list[dict[str, int | None]] = []
     incomplete = False
@@ -226,8 +230,12 @@ def _capture_event_usage(output: str) -> dict[str, Any]:
         raw_cache = raw_tokens.get("cache")
         if raw_cache is None:
             cache_read = None
+            cache_write = None
         elif isinstance(raw_cache, dict):
             cache_read = _consistent_counter(raw_cache, _CACHE_READ_KEYS, "cache.read")
+            cache_write = _consistent_counter(
+                raw_cache, _CACHE_WRITE_KEYS, "cache.write"
+            )
         else:
             raise LLMRouterError(
                 "OpenCode step_finish usage cache must be an object or null",
@@ -244,12 +252,15 @@ def _capture_event_usage(output: str) -> dict[str, Any]:
             totals["cached_input_tokens"] += cache_read
         if reasoning_tokens is not None:
             totals["reasoning_tokens"] += reasoning_tokens
+        if cache_write is not None:
+            totals["cache_write_tokens"] += cache_write
         parsed_steps.append(
             {
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
                 "reasoning_tokens": reasoning_tokens,
                 "cache_read_tokens": cache_read,
+                "cache_write_tokens": cache_write,
             }
         )
 
@@ -260,6 +271,9 @@ def _capture_event_usage(output: str) -> dict[str, Any]:
         )
 
     all_cache_read = all(step["cache_read_tokens"] is not None for step in parsed_steps)
+    all_cache_write = all(
+        step["cache_write_tokens"] is not None for step in parsed_steps
+    )
     all_reasoning = all(step["reasoning_tokens"] is not None for step in parsed_steps)
     total_tokens = (
         totals["input_tokens"] + totals["output_tokens"] + totals["reasoning_tokens"]
@@ -276,6 +290,9 @@ def _capture_event_usage(output: str) -> dict[str, Any]:
             totals["cached_input_tokens"] if all_cache_read else None
         ),
         "reasoning_tokens": totals["reasoning_tokens"] if all_reasoning else None,
+        "cache_write_tokens": (
+            totals["cache_write_tokens"] if all_cache_write else None
+        ),
         "total_tokens": total_tokens,
     }
 
@@ -329,7 +346,12 @@ def _worker_artifact_usage(path: str | Path) -> dict[str, Any]:
             "OpenCode worker usage artifact lacked valid input/output token counters"
         )
     optional: dict[str, int | None] = {}
-    for key in ("cached_input_tokens", "reasoning_tokens", "total_tokens"):
+    for key in (
+        "cached_input_tokens",
+        "reasoning_tokens",
+        "cache_write_tokens",
+        "total_tokens",
+    ):
         value = payload.get(key)
         if value is not None and not _nonnegative_int(value):
             raise LLMRouterError(
@@ -364,6 +386,7 @@ def _worker_artifact_usage(path: str | Path) -> dict[str, Any]:
         "output_tokens": output_tokens,
         "cached_input_tokens": optional["cached_input_tokens"],
         "reasoning_tokens": reasoning_tokens,
+        "cache_write_tokens": optional["cache_write_tokens"],
         "total_tokens": total_tokens if total_tokens is not None else expected_total,
     }
 

@@ -1578,7 +1578,7 @@ def test_usage_for_harness_agy_valid_and_missing_receipt() -> None:
     zeros or estimates.
     """
     usage = _usage_for_harness("agy", AGY_RECEIPT_STDOUT)
-    assert set(usage) == PROVIDER_REPORTED_KEYS
+    assert set(usage) == PROVIDER_REPORTED_KEYS | {"cache_write_tokens"}
     assert usage["source"] == AGY_USAGE_SOURCE
     assert AGY_USAGE_SOURCE == "agy -p usage line (agent-orch worker.py)"
     assert usage["input_tokens"] == 100
@@ -1600,7 +1600,7 @@ def test_usage_for_harness_opencode_valid_and_missing_usage() -> None:
     counters.
     """
     usage = _usage_for_harness("opencode", OPENCODE_RECEIPT_STDOUT)
-    assert set(usage) == PROVIDER_REPORTED_KEYS
+    assert set(usage) == PROVIDER_REPORTED_KEYS | {"cache_write_tokens"}
     assert usage["source"] == OPENCODE_USAGE_SOURCE
     assert OPENCODE_USAGE_SOURCE == "opencode run JSON usage event"
     assert usage["input_tokens"] == 100
@@ -2263,12 +2263,10 @@ def test_run_packet_id_is_content_addressed_not_a_path(
     assert str(packet) not in payload["packet_id"]
 
 
-def test_run_known_usage_has_list_and_marginal_cost_from_selected_price(
+def test_run_unknown_codex_cache_split_withholds_numeric_cost(
     monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
 ):
-    """Known required counters use the selected dated P0-4 price exactly."""
-    from lee_llm_router.staffing.terms import route_price
-
+    """Codex input/output without a cached split cannot be priced as uncached."""
     launcher = LaunchRecorder(chunks=[(CODEX_RECEIPT_STDOUT + "\n").encode()])
     code, captured = _run_cli(
         monkeypatch,
@@ -2282,24 +2280,9 @@ def test_run_known_usage_has_list_and_marginal_cost_from_selected_price(
 
     assert code == 0
     payload = _assert_output_matches_single_append(captured, scratch_state)
-    price = route_price(
-        CODEX_ROUTE,
-        "ON TRACK",
-        load_staffing_catalog(catalog_dir),
-    )
-    cost = payload["cost"]
-    assert cost["basis"] == ["list", "marginal"]
-    assert cost["usd_list"] == pytest.approx(
-        12 * price.replacement.input_usd_per_token
-        + 7 * price.replacement.output_usd_per_token
-    )
-    assert cost["usd_marginal"] == pytest.approx(
-        12 * price.marginal_input_usd_per_token
-        + 7 * price.marginal_output_usd_per_token
-    )
-    # The provider did not report cache/reasoning counters. The committed
-    # P0-4 API prices input/output and the v2 gate explicitly makes those
-    # components optional, so no zero is fabricated and cost remains known.
+    assert payload["cost"] == {"basis": ["unavailable"]}
+    # The missing cache split remains null; it is never treated as all
+    # uncached input.
     assert payload["usage"]["cached_input_tokens"] is None
     assert payload["usage"]["reasoning_tokens"] is None
 
@@ -2549,7 +2532,8 @@ def test_attempt_cost_edge_case_null_cached_count(catalog_dir) -> None:
         excluded=(),
         pricing=pricing_sol,
     )
-    # When cached_input_tokens is None, full input rate applies (no subset subtraction)
+    # An absent cached-input split is not evidence that the whole input was
+    # uncached, so the Codex cost is unavailable.
     cost, note = _attempt_cost(
         outcome_sol,
         {
@@ -2559,10 +2543,22 @@ def test_attempt_cost_edge_case_null_cached_count(catalog_dir) -> None:
             "cached_input_tokens": None,
         },
     )
-    assert cost["basis"] == ["list", "marginal"]
-    assert cost["usd_list"] == pytest.approx(0.244328)
-    assert cost["usd_marginal"] == pytest.approx(0.244328)
-    assert "known input/output counters" in note
+    assert cost == {"basis": ["unavailable"]}
+    assert "cached_input_tokens is unknown" in note
+
+    # A source-reported zero split is a valid known-component branch.
+    known_cost, _ = _attempt_cost(
+        outcome_sol,
+        {
+            "basis": "provider_reported",
+            "input_tokens": 59282,
+            "output_tokens": 360,
+            "cached_input_tokens": 0,
+            "total_tokens": 59642,
+        },
+    )
+    assert known_cost["basis"] == ["list", "marginal"]
+    assert known_cost["usd_list"] == pytest.approx(0.244328)
 
     # GLM with cached None
     route_glm = next(r for r in catalog.routes.routes if r.route_id == PI_ROUTE)
@@ -2599,6 +2595,94 @@ def test_attempt_cost_edge_case_null_cached_count(catalog_dir) -> None:
     )
     assert cost_glm["basis"] == ["list", "marginal"]
     assert cost_glm["usd_list"] == pytest.approx(0.000451825)
+
+
+def test_astra_billing_reproducers_fail_closed_or_bill_known_components() -> None:
+    """Residual Astra cost reproducers never drop billable components."""
+    from types import SimpleNamespace as Namespace
+
+    from lee_llm_router.staffing.run import _attempt_cost
+
+    pricing = Namespace(
+        replacement_input_usd_per_token=1e-6,
+        replacement_output_usd_per_token=2e-6,
+        marginal_input_usd_per_token=1e-6,
+        marginal_output_usd_per_token=2e-6,
+        multiplier=1,
+    )
+
+    def selected(harness: str) -> Namespace:
+        return Namespace(
+            route=Namespace(harness=harness, model="fixture-model"),
+            pricing=pricing,
+            cache_replacement_usd_per_token=0.1e-6,
+            cache_marginal_usd_per_token=0.1e-6,
+            cache_rates_checked=True,
+        )
+
+    codex_usage = _usage_for_harness(
+        "codex",
+        json.dumps(
+            {
+                "type": "turn.completed",
+                "usage": {"input_tokens": 10, "output_tokens": 2},
+            }
+        ),
+    )
+    codex_cost, codex_note = _attempt_cost(selected("codex"), codex_usage)
+    assert codex_cost == {"basis": ["unavailable"]}
+    assert "cached_input_tokens is unknown" in codex_note
+
+    agy_usage = _usage_for_harness(
+        "agy",
+        json.dumps(
+            {
+                "status": "SUCCESS",
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 2,
+                    "cache_read_tokens": 0,
+                    "cache_write_tokens": 100,
+                },
+            }
+        ),
+    )
+    assert agy_usage["cache_write_tokens"] == 100
+    agy_cost, agy_note = _attempt_cost(selected("agy"), agy_usage)
+    assert agy_cost == {"basis": ["unavailable"]}
+    assert "cache_write_tokens has no selected dated price" in agy_note
+
+    opencode_usage = _usage_for_harness(
+        "opencode",
+        json.dumps(
+            {
+                "type": "step_finish",
+                "part": {
+                    "tokens": {
+                        "input": 10,
+                        "output": 2,
+                        "reasoning": 100,
+                        "cache": {"read": 0, "write": 0},
+                    }
+                },
+            }
+        ),
+    )
+    assert opencode_usage["reasoning_tokens"] == 100
+    assert opencode_usage["cache_write_tokens"] == 0
+    opencode_cost, _ = _attempt_cost(selected("opencode"), opencode_usage)
+    assert opencode_cost["basis"] == ["list", "marginal"]
+    assert opencode_cost["usd_list"] == pytest.approx(0.000214)
+
+    # Known zero cache components remain billable; no zero is fabricated for
+    # the Codex split or agy cache write.
+    codex_known = dict(codex_usage, cached_input_tokens=0)
+    known_codex_cost, _ = _attempt_cost(selected("codex"), codex_known)
+    assert known_codex_cost["usd_list"] == pytest.approx(0.000014)
+
+    agy_known_usage = dict(agy_usage, cache_write_tokens=0)
+    known_agy_cost, _ = _attempt_cost(selected("agy"), agy_known_usage)
+    assert known_agy_cost["usd_list"] == pytest.approx(0.000014)
 
 
 def test_attempt_cost_edge_case_unavailable_price_evidence(catalog_dir) -> None:
@@ -2896,6 +2980,49 @@ def test_run_worker_usage_capture_exception_appends_attempt_with_unavailable_usa
     assert payload["cost"] == {"basis": ["unavailable"]}
     assert payload["verified_success"] is False
     assert payload["verified_success_reason"] == "supervisor_route_unattested"
+
+
+def test_run_claude_pathological_integer_keeps_completed_worker_record(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """A second Claude parse failure must not drop the completed worker."""
+    from lee_llm_router.staffing import ledger
+
+    calls: list[dict[str, Any]] = []
+    real_append = ledger.append_attempt
+
+    def recording_append(record):
+        calls.append(record)
+        return real_append(record)
+
+    monkeypatch.setattr(ledger, "append_attempt", recording_append)
+    receipt = (
+        '{"type":"result","usage":{"input_tokens":'
+        + "1" * 5000
+        + ',"output_tokens":2}}'
+    )
+    launcher = LaunchRecorder(chunks=[(receipt + "\n").encode("utf-8")])
+
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CLAUDE_ROUTE,
+        launcher=launcher,
+    )
+
+    assert code == 0
+    payload = _assert_output_matches_single_append(captured, scratch_state)
+    assert len(launcher.processes) == 1
+    assert len(calls) == 1
+    assert payload["usage"]["basis"] == "unavailable"
+    assert payload["cost"] == {"basis": ["unavailable"]}
+    assert (
+        "usage capture failed for harness 'claude'"
+        in payload["usage"]["unavailable_reason"]
+    )
 
 
 def test_run_worker_usage_capture_exception_with_oracle_preserves_oracle_evidence(

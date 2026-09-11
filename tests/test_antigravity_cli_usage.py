@@ -176,8 +176,27 @@ def test_success_receipt_reports_truthful_v2_counters():
         "output_tokens": 25,
         "cached_input_tokens": 50,
         "reasoning_tokens": 10,
+        "cache_write_tokens": None,
         "total_tokens": 125,
     }
+
+
+def test_cache_write_counter_is_preserved_for_cost_governance():
+    result = capture_usage(
+        _receipt(
+            usage={
+                "input_tokens": 10,
+                "output_tokens": 2,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 100,
+                "total_tokens": 12,
+            }
+        )
+    )
+
+    assert result["basis"] == "provider_reported"
+    assert result["cached_input_tokens"] == 0
+    assert result["cache_write_tokens"] == 100
 
 
 def test_error_receipt_with_real_usage_is_provider_reported():
@@ -203,6 +222,7 @@ def test_error_receipt_with_real_usage_is_provider_reported():
     assert result["output_tokens"] == 17770
     assert result["cached_input_tokens"] == 1218308
     assert result["reasoning_tokens"] == 11165
+    assert result["cache_write_tokens"] is None
     assert result["total_tokens"] == 169168
 
 
@@ -226,6 +246,7 @@ def test_successful_zero_receipt_preserves_reported_zeroes():
         "output_tokens": 0,
         "cached_input_tokens": 0,
         "reasoning_tokens": 0,
+        "cache_write_tokens": None,
         "total_tokens": 0,
     }
 
@@ -448,6 +469,7 @@ def test_every_returned_usage_has_exact_v2_keys(output):
             "output_tokens",
             "cached_input_tokens",
             "reasoning_tokens",
+            "cache_write_tokens",
             "total_tokens",
         }
     else:

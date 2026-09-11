@@ -28,7 +28,11 @@ AGY_GOVERNED_CONFIG: dict[str, str] = {"output_format": "json"}
 _AGY_INPUT_KEYS = ("input_tokens", "prompt_tokens")
 _AGY_OUTPUT_KEYS = ("output_tokens", "completion_tokens")
 _AGY_CACHED_READ_KEYS = ("cached_read_tokens", "cache_read_tokens")
-_AGY_CACHED_WRITE_KEYS = ("cached_write_tokens",)
+_AGY_CACHED_WRITE_KEYS = (
+    "cache_write_tokens",
+    "cached_write_tokens",
+    "cache_write_input_tokens",
+)
 _AGY_REASONING_KEYS = ("thinking_tokens",)
 _AGY_TOTAL_KEYS = ("total_tokens",)
 _AGY_REQUIRED_KEYS = _AGY_INPUT_KEYS + _AGY_OUTPUT_KEYS
@@ -239,7 +243,9 @@ def _parse_agy_receipt(payload: dict[str, Any]) -> dict[str, Any]:
 
     # cache_read_tokens is deliberately not constrained by input_tokens:
     # the proven receipt records cache history that can exceed this turn's
-    # input count. cache_write_tokens is validated above but has no v2 field.
+    # input count. Preserve cache-write evidence separately: the v2 cost
+    # boundary must not silently price input/output while dropping a billed
+    # cache component.
     return {
         "basis": "provider_reported",
         "source": AGY_USAGE_SOURCE,
@@ -247,6 +253,7 @@ def _parse_agy_receipt(payload: dict[str, Any]) -> dict[str, Any]:
         "output_tokens": output_tokens,
         "cached_input_tokens": optional_values["cached_input_tokens"][1],
         "reasoning_tokens": reasoning,
+        "cache_write_tokens": optional_values["cached_write_tokens"][1],
         "total_tokens": (
             reported_total if reported_total is not None else expected_total
         ),
