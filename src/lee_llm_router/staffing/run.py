@@ -80,10 +80,14 @@ import yaml
 from lee_llm_router.availability import AvailabilitySnapshot
 from lee_llm_router.crews import HARNESS_PROVIDER_CHANNELS
 from lee_llm_router.dispatch import run_dispatch
-from lee_llm_router.providers.antigravity_cli import AntigravityCLIProvider
+from lee_llm_router.providers.antigravity_cli import (
+    AGY_USAGE_SOURCE,
+    AntigravityCLIProvider,
+)
 from lee_llm_router.providers.base import FailureType, LLMRouterError
 from lee_llm_router.providers.codex_cli import (
     CLAUDE_GOVERNED_CONFIG,
+    CLAUDE_USAGE_SOURCE,
     CODEX_USAGE_SOURCE,
     ClaudeCodeCLIProvider,
     CodexCLIProvider,
@@ -92,9 +96,15 @@ from lee_llm_router.providers.codex_cli import (
 from lee_llm_router.providers.codex_cli import (
     capture_usage as capture_codex_usage,
 )
-from lee_llm_router.providers.omp_cli import OmpCLIProvider
-from lee_llm_router.providers.opencode_cli import OpenCodeCLIProvider
-from lee_llm_router.providers.pi_cli import PiCLIProvider
+from lee_llm_router.providers.omp_cli import OMP_USAGE_SOURCE, OmpCLIProvider
+from lee_llm_router.providers.opencode_cli import (
+    OPENCODE_USAGE_SOURCE,
+    OpenCodeCLIProvider,
+)
+from lee_llm_router.providers.pi_cli import (
+    PI_USAGE_SOURCE,
+    PiCLIProvider,
+)
 from lee_llm_router.providers.pi_cli import capture_usage as capture_pi_usage
 from lee_llm_router.resolver import PROMPT_PLACEHOLDER, Resolution
 from lee_llm_router.staffing.catalog import Route as StaffingRoute
@@ -201,6 +211,16 @@ _HARNESS_PROVIDER_CLASSES: dict[str, type] = {
 _HARNESS_PROVIDER_NAMES: dict[str, str] = {
     harness: provider_cls.name
     for harness, provider_cls in _HARNESS_PROVIDER_CLASSES.items()
+}
+
+#: Route harness -> authoritative usage taxonomy source string.
+_HARNESS_USAGE_SOURCES: dict[str, str] = {
+    "pi": PI_USAGE_SOURCE,
+    "codex": CODEX_USAGE_SOURCE,
+    "claude": CLAUDE_USAGE_SOURCE,
+    "agy": AGY_USAGE_SOURCE,
+    "opencode": OPENCODE_USAGE_SOURCE,
+    "omp": OMP_USAGE_SOURCE,
 }
 
 #: Funding channel -> Pi backend provider id, the exact reverse of the
@@ -1184,20 +1204,45 @@ def build_dispatch_command(route: StaffingRoute) -> list[str]:
     return provider.build_command(config, model=route.model, effort=route.effort)
 
 
+def _capture_failure_usage(harness: str, exc: Exception) -> dict[str, Any]:
+    """Schema-valid unavailable v2 usage preserving a capture failure diagnostic."""
+    err = str(exc).strip() or type(exc).__name__
+    source_desc = _HARNESS_USAGE_SOURCES.get(harness)
+    if source_desc:
+        reason = f"usage capture failed for harness {harness!r} ({source_desc}): {err}"
+    else:
+        reason = f"usage capture failed for harness {harness!r}: {err}"
+    return {
+        "basis": "unavailable",
+        "unavailable_reason": reason,
+        "input_tokens": None,
+        "output_tokens": None,
+        "cached_input_tokens": None,
+        "reasoning_tokens": None,
+        "total_tokens": None,
+    }
+
+
 def _usage_for_harness(harness: str, stdout_text: str) -> dict[str, Any]:
     """Schema-valid v2 usage from the harness's accepted capture function.
 
     Pi and Codex have accepted P1-4a/P1-4b capture parsers and Claude the
     committed P1-4c governed capture; every other wired harness records
-    ``unavailable`` with a specific reason. No parser estimates tokens
-    from text, context length, cost, or elapsed time.
+    ``unavailable`` with a specific reason. When a capture function raises
+    after the worker completes, the failure is recorded as unavailable usage
+    preserving the failure diagnostic so the completed worker is never
+    dropped from the attempt ledger. No parser estimates tokens from text,
+    context length, cost, or elapsed time.
     """
-    if harness == "pi":
-        return capture_pi_usage(stdout_text)
-    if harness == "codex":
-        return capture_codex_usage(stdout_text)
-    if harness == "claude":
-        return capture_claude_usage(stdout_text)
+    try:
+        if harness == "pi":
+            return capture_pi_usage(stdout_text)
+        if harness == "codex":
+            return capture_codex_usage(stdout_text)
+        if harness == "claude":
+            return capture_claude_usage(stdout_text)
+    except Exception as exc:
+        return _capture_failure_usage(harness, exc)
     return {
         "basis": "unavailable",
         "unavailable_reason": (
@@ -1282,8 +1327,6 @@ def dispatch_route(
         RunDispatchError: When the harness has no wired provider, a Pi
             route's channel has no committed provider id, the workdir does
             not exist, or the timeout is not positive.
-        LLMRouterError: When the harness capture parser fails closed on
-            contradictory usage evidence.
     """
     harness = route.harness
     argv = build_dispatch_command(route)
@@ -1338,6 +1381,10 @@ def dispatch_route(
     duration = clock_fn() - started
 
     stdout_text = bytes(stdout_buf).decode("utf-8", errors="replace")
+    try:
+        usage = _usage_for_harness(harness, stdout_text)
+    except Exception as exc:
+        usage = _capture_failure_usage(harness, exc)
     return DispatchOutcome(
         argv=tuple(argv),
         exit_code=exit_code,
@@ -1345,7 +1392,7 @@ def dispatch_route(
         stderr=bytes(stderr_buf).decode("utf-8", errors="replace"),
         duration_seconds=duration,
         timed_out=(exit_code == _TIMEOUT_EXIT_CODE),
-        usage=_usage_for_harness(harness, stdout_text),
+        usage=usage,
     )
 
 

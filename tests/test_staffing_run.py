@@ -2192,3 +2192,319 @@ def test_run_cli_cache_pricing_end_to_end(
     assert payload_glm["cost"]["usd_marginal"] == pytest.approx(0.000533425)
     assert payload_glm["usage"]["cached_input_tokens"] == 5440
     assert payload_glm["usage"]["reasoning_tokens"] == 193
+
+
+# ---------------------------------------------------------------------------
+# Astra contract blocker: worker usage capture exceptions must not drop
+# the completed worker from the attempt ledger
+# ---------------------------------------------------------------------------
+
+
+def test_run_worker_usage_capture_exception_appends_attempt_with_unavailable_usage(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """A completed worker must never disappear from the ledger because capture raises.
+
+    Quoted reproducer: when usage capture raises after the worker completes,
+    CLI exits 3 and the ledger append spy sees zero calls.
+    Fixed: build and append exactly one truthful router_run record with usage
+    basis unavailable, null token counters, diagnostic preserved in
+    unavailable_reason, cost unavailable, and verified_success false.
+    """
+    from lee_llm_router.staffing import ledger
+
+    calls: list[dict[str, Any]] = []
+    real_append = ledger.append_attempt
+
+    def recording_append(record):
+        calls.append(record)
+        return real_append(record)
+
+    monkeypatch.setattr(ledger, "append_attempt", recording_append)
+
+    # Contradictory total_tokens causes capture_codex_usage to raise LLMRouterError
+    contradictory_stdout = json.dumps(
+        {
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "total_tokens": 10,  # contradicts 100 + 50 = 150
+            },
+        }
+    )
+    launcher = LaunchRecorder(chunks=[(contradictory_stdout + "\n").encode("utf-8")])
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        launcher=launcher,
+    )
+
+    assert code == 0
+    payload = _assert_output_matches_single_append(captured, scratch_state)
+    assert len(calls) == 1
+    assert calls[0] == payload
+
+    # Truthful attempt record checks
+    assert payload["record_kind"] == "router_run"
+    assert payload["route"]["harness"] == "codex"
+    assert payload["usage"]["basis"] == "unavailable"
+    assert payload["usage"]["input_tokens"] is None
+    assert payload["usage"]["output_tokens"] is None
+    assert payload["usage"]["cached_input_tokens"] is None
+    assert payload["usage"]["reasoning_tokens"] is None
+    assert payload["usage"]["total_tokens"] is None
+    assert "source" not in payload["usage"]
+    assert (
+        "usage capture failed for harness 'codex'"
+        in payload["usage"]["unavailable_reason"]
+    )
+    assert "total_tokens contradicts" in payload["usage"]["unavailable_reason"]
+    assert payload["cost"] == {"basis": ["unavailable"]}
+    assert payload["verified_success"] is False
+    assert payload["verified_success_reason"] == "supervisor_route_unattested"
+
+
+def test_run_worker_usage_capture_exception_with_oracle_preserves_oracle_evidence(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, tmp_path, scratch_state
+):
+    """When capture raises, oracle execution and evidence are preserved in ledger."""
+    from lee_llm_router.staffing import ledger
+
+    calls: list[dict[str, Any]] = []
+    real_append = ledger.append_attempt
+
+    def recording_append(record):
+        calls.append(record)
+        return real_append(record)
+
+    monkeypatch.setattr(ledger, "append_attempt", recording_append)
+
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+
+    # Contradictory output causes capture to raise
+    contradictory_stdout = json.dumps(
+        {
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "total_tokens": 10,
+            },
+        }
+    )
+    launcher = SequencedLaunchRecorder(
+        [
+            {"chunks": [(contradictory_stdout + "\n").encode("utf-8")], "exit_code": 0},
+            {"chunks": [b"oracle passed all assertions\n"], "exit_code": 0},
+        ]
+    )
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        supervisor_route=CODEX_ROUTE,
+        workdir=workdir,
+        launcher=launcher,
+        extra=("--oracle", "pytest -v"),
+    )
+
+    assert code == 0
+    payload = _assert_output_matches_single_append(captured, scratch_state)
+    assert len(calls) == 1
+
+    # Both worker and oracle were launched
+    assert len(launcher.calls) == 2
+    assert launcher.calls[1][0] == ["pytest", "-v"]
+
+    # Oracle evidence preserved
+    assert payload["oracle_cmd"] == "pytest -v"
+    assert payload["verdict"] == "pass"
+    assert (
+        "exit_code=0, timed_out=False, error=none" in payload["provenance"]["notes"][-1]
+    )
+
+    # Usage and cost are unavailable
+    assert payload["usage"]["basis"] == "unavailable"
+    assert payload["cost"] == {"basis": ["unavailable"]}
+
+    # Attested + passing oracle + unavailable usage -> evidence_incomplete
+    assert payload["verified_success"] is False
+    assert payload["verified_success_reason"] == "evidence_incomplete"
+
+
+def test_run_worker_usage_capture_exception_with_failing_oracle(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, tmp_path, scratch_state
+):
+    """When capture raises and oracle fails, oracle verdict fail takes precedence."""
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+
+    contradictory_stdout = json.dumps(
+        {
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "total_tokens": 10,
+            },
+        }
+    )
+    launcher = SequencedLaunchRecorder(
+        [
+            {"chunks": [(contradictory_stdout + "\n").encode("utf-8")], "exit_code": 0},
+            {"chunks": [b"FAILED: 1 test failed\n"], "exit_code": 1},
+        ]
+    )
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        supervisor_route=CODEX_ROUTE,
+        workdir=workdir,
+        launcher=launcher,
+        extra=("--oracle", "pytest -v"),
+    )
+
+    assert code == 0
+    payload = _assert_output_matches_single_append(captured, scratch_state)
+    assert payload["verdict"] == "fail"
+    assert payload["verified_success"] is False
+    assert payload["verified_success_reason"] == "oracle_not_passed"
+    assert payload["usage"]["basis"] == "unavailable"
+    assert payload["cost"] == {"basis": ["unavailable"]}
+
+
+def test_run_worker_usage_capture_exception_nonzero_worker_exit(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """Nonzero worker exit with capture error records worker_dispatch_failed."""
+    from lee_llm_router.staffing import ledger
+
+    calls: list[dict[str, Any]] = []
+    real_append = ledger.append_attempt
+
+    def recording_append(record):
+        calls.append(record)
+        return real_append(record)
+
+    monkeypatch.setattr(ledger, "append_attempt", recording_append)
+
+    contradictory_stdout = json.dumps(
+        {
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "total_tokens": 10,
+            },
+        }
+    )
+    launcher = LaunchRecorder(
+        chunks=[(contradictory_stdout + "\n").encode("utf-8")],
+        exit_code=7,
+    )
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        supervisor_route=CODEX_ROUTE,
+        launcher=launcher,
+    )
+
+    assert code == 7
+    payload = _assert_output_matches_single_append(captured, scratch_state)
+    assert len(calls) == 1
+    assert payload["verified_success"] is False
+    assert payload["verified_success_reason"] == "worker_dispatch_failed"
+    assert payload["usage"]["basis"] == "unavailable"
+    assert payload["cost"] == {"basis": ["unavailable"]}
+
+
+def test_run_worker_arbitrary_capture_exception_handled(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """Arbitrary capture exceptions are recorded as unavailable usage."""
+    from lee_llm_router.staffing import ledger
+    from lee_llm_router.staffing import run as run_mod
+
+    calls: list[dict[str, Any]] = []
+    real_append = ledger.append_attempt
+
+    def recording_append(record):
+        calls.append(record)
+        return real_append(record)
+
+    monkeypatch.setattr(ledger, "append_attempt", recording_append)
+
+    def exploding_capture(_stdout):
+        raise RuntimeError("unexpected parser explosion")
+
+    monkeypatch.setattr(run_mod, "capture_codex_usage", exploding_capture)
+
+    launcher = LaunchRecorder(chunks=[b"some stdout\n"])
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        launcher=launcher,
+    )
+
+    assert code == 0
+    payload = _assert_output_matches_single_append(captured, scratch_state)
+    assert len(calls) == 1
+    assert payload["usage"]["basis"] == "unavailable"
+    assert "unexpected parser explosion" in payload["usage"]["unavailable_reason"]
+    assert payload["cost"] == {"basis": ["unavailable"]}
+    assert payload["verified_success"] is False
+
+
+def test_pre_dispatch_configuration_error_writes_no_ledger_record(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, tmp_path, scratch_state
+):
+    """Pre-dispatch configuration errors refuse (exit 3) and append no ledger record."""
+    from lee_llm_router.staffing import ledger
+
+    calls: list[dict[str, Any]] = []
+    real_append = ledger.append_attempt
+
+    def recording_append(record):
+        calls.append(record)
+        return real_append(record)
+
+    monkeypatch.setattr(ledger, "append_attempt", recording_append)
+
+    launcher = LaunchRecorder()
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        workdir=tmp_path / "nonexistent-workdir",
+        launcher=launcher,
+    )
+
+    assert code == 3
+    assert launcher.processes == []
+    assert len(calls) == 0
+    assert not scratch_state["attempts"].exists()
+    assert "workdir is not a directory" in captured.err
