@@ -154,6 +154,7 @@ from lee_llm_router.staffing.eligibility import (
     StaffingEligibilityError,
     evaluate_eligibility,
 )
+from lee_llm_router.staffing.json_int import int_to_decimal
 from lee_llm_router.staffing.terms import (
     DEFAULT_OPENROUTER_SNAPSHOT_PATH,
     DEFAULT_RATE_TABLE_PATH,
@@ -1978,6 +1979,19 @@ def run_json_record(
     }
 
 
+def _plain_counter_text(value: object) -> object:
+    """Render one usage counter for the plain-text summary, huge-int safe.
+
+    ``str(huge_int)`` trips CPython's default int-to-decimal conversion
+    ceiling, which would crash the summary after the attempt already
+    persisted. Normal counters render exactly as ``str`` always did; only the
+    bounded converter's digits differ, and only above the ceiling.
+    """
+    if isinstance(value, int) and not isinstance(value, bool):
+        return int_to_decimal(value)
+    return value
+
+
 def run_summary_lines(
     outcome: SelectionOutcome,
     dispatch: DispatchOutcome,
@@ -2006,7 +2020,7 @@ def run_summary_lines(
         lines.append(f"usage: unavailable ({usage.get('unavailable_reason')})")
     else:
         counters = " ".join(
-            f"{name}={usage.get(field)}"
+            f"{name}={_plain_counter_text(usage.get(field))}"
             for field, name in (
                 ("input_tokens", "in"),
                 ("output_tokens", "out"),

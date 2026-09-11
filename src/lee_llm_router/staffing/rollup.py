@@ -23,10 +23,12 @@ sample reports its middle counter, and an even sample reports the exact
 arithmetic mean of its two middle counters — an ``int`` when that mean is an
 integer, a ``float`` when the half-integer is exactly representable in binary
 floating point, and otherwise the exact ``"<whole>.5"`` decimal string,
-because no JSON number can carry the true value and rounding would invent
-precision.  Pass counting follows each record's own verdict shape: canonical
-v2 records carry the verdict string ``pass`` and break down by their class
-oracle type, while agent-orch imports (chief answer 3) carry the verdict
+because neither exact Python numeric type can carry the value: an ``int`` is
+never fractional and a ``float`` would round the half away above 53
+significand bits, while JSON itself can carry the exact digits and the lossless
+``str`` preserves them.  Pass counting follows each record's own verdict
+shape: canonical v2 records carry the verdict string ``pass`` and break down by
+class oracle type, while agent-orch imports (chief answer 3) carry the verdict
 object ``{"tier": "engine_validation"}`` whose pass fact is exactly the
 schema's ``verified_success`` equivalence (``worker_exit_code == 0`` and
 ``validation_passed == true``); those passes count under the
@@ -36,7 +38,6 @@ key, so no pass is ever counted twice.
 
 from __future__ import annotations
 
-import json
 from typing import Any, Iterable, Mapping
 
 from lee_llm_router.staffing.import_evidence import (
@@ -44,6 +45,7 @@ from lee_llm_router.staffing.import_evidence import (
     benchmark_source_run_id,
     is_benchmark_v6_record,
 )
+from lee_llm_router.staffing.json_int import dump_json, int_to_decimal
 from lee_llm_router.staffing.ledger import read_attempts, resolve_attempts_path
 
 MINIMUM_SAMPLE_SIZE = 5
@@ -173,8 +175,10 @@ def _exact_median(values: list[int]) -> int | float | str:
     an ``int`` when the sum is even, a ``float`` when the half-integer is
     exactly representable in binary floating point (sum ``bit_length <= 53``,
     identical to what ``statistics.median`` returns there), and otherwise
-    the exact ``"<whole>.5"`` decimal string — no JSON number can carry the
-    true value, so rounding is never substituted for it.
+    the exact ``"<whole>.5"`` decimal string — neither exact Python numeric
+    type can carry the value (an ``int`` is never fractional and a ``float``
+    would round above 53 significand bits), so the lossless decimal string
+    is the truthful representation; rounding is never substituted for it.
     """
     ordered = sorted(values)
     count = len(ordered)
@@ -185,7 +189,10 @@ def _exact_median(values: list[int]) -> int | float | str:
         return total // 2
     if total.bit_length() <= 53:
         return total / 2
-    return f"{total // 2}.5"
+    # The whole part can exceed the interpreter's default int-to-decimal
+    # ceiling (e.g. an odd sum of aggregates near ``9 * 10**4299``), so its
+    # exact digits are rendered through the bounded converter.
+    return f"{int_to_decimal(total // 2)}.5"
 
 
 def _token_aggregates(
@@ -395,10 +402,16 @@ def rollup_ledger(path: str | None = None) -> dict[str, list[dict[str, Any]]]:
 
 
 def render_rollup(rollup: Mapping[str, Any]) -> str:
-    """Encode a rollup as stable compact JSON followed by no newline."""
-    return json.dumps(
-        rollup,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+    """Encode a rollup as stable compact JSON followed by no newline.
+
+    Aggregates of validated counters stay exact arbitrary-precision JSON
+    integers at any magnitude: the bounded serializer
+    :func:`lee_llm_router.staffing.json_int.dump_json` emits every digit
+    without tripping CPython's default int-to-decimal conversion ceiling (the
+    stock ``json.dumps`` raises :class:`ValueError` once an aggregate passes
+    it, e.g. ``2 * 9 * 10**4299``), without mutating that process-wide
+    setting, and without rounding or stringifying a counter. Half-integer
+    medians that Python's exact numeric types cannot carry remain the exact
+    ``"<whole>.5"`` decimal strings described in the module docstring.
+    """
+    return dump_json(dict(rollup), sort_keys=True)

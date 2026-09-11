@@ -1774,6 +1774,7 @@ def _run_run(args: argparse.Namespace) -> int:
     from lee_llm_router.staffing import (
         load_staffing_catalog,
     )
+    from lee_llm_router.staffing.json_int import dump_json
     from lee_llm_router.staffing.ledger import append_attempt
     from lee_llm_router.staffing.run import (
         OracleOutcome,
@@ -1983,8 +1984,10 @@ def _run_run(args: argparse.Namespace) -> int:
         # One compact JSON object is both the command result and the exact
         # object encoded by append_attempt (the ledger adds only its newline).
         # This holds on the governed oracle-setup-failure path too: the result
-        # is the persisted record; the failure is reported on stderr.
-        print(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
+        # is the persisted record; the failure is reported on stderr. The
+        # bounded serializer keeps every huge token counter an exact JSON
+        # integer, byte-identical to the appended ledger line.
+        print(dump_json(record))
     else:
         for line in run_summary_lines(outcome, dispatch, oracle, record=record):
             print(line)

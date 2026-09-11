@@ -253,6 +253,16 @@ the source authoritatively reports it or it is calculated from
 authoritatively reported components. No parser estimates tokens from text,
 context length, cost, or elapsed time.
 
+The schema's integer counters remain JSON integer literals at arbitrary
+precision; they are never changed to strings or floats when CPython's default
+4300-digit integer conversion limit is exceeded. The staffing ledger uses a
+bounded exact encoder and `read_attempts()` uses its matching decoder without
+changing the process-wide security setting. Consumers parsing a rendered
+rollup directly in Python must use the same bounded `parse_int` hook. Rollup
+medians retain normal `int`/exact small `float` values; an exact large
+half-integer is represented as the decimal string `"<whole>.5"` rather than a
+rounded number.
+
 | Field | Schema constraint | Notes |
 |---|---|---|
 | `basis` | enum `observed` \| `provider_reported` \| `calculated` \| `unavailable` | The narrowest truthful basis. |

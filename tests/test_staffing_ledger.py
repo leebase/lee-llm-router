@@ -26,6 +26,11 @@ import pytest
 from lee_llm_router import events
 from lee_llm_router.providers.base import LLMRouterError
 from lee_llm_router.staffing import ledger as ledger_module
+from lee_llm_router.staffing.json_int import (
+    dump_json,
+    int_from_decimal,
+    int_to_decimal,
+)
 from lee_llm_router.staffing.ledger import (
     ATTEMPT_RECORD_SCHEMA_PATH,
     ATTEMPTS_FILE_ENV_VAR,
@@ -168,6 +173,39 @@ def test_valid_append_then_read_round_trips(tmp_path, valid_record) -> None:
     assert read_attempts(ledger) == [valid_record]
 
 
+def test_boundary_counter_persists_and_round_trips_without_changing_digit_limit(
+    tmp_path, valid_record
+) -> None:
+    """A schema-valid 4300-digit counter remains exact in one ledger line."""
+    counter = 9 * 10**4299
+    record = dict(valid_record)
+    record["attempt_id"] = "boundary-counter"
+    record["usage"] = {
+        "basis": "provider_reported",
+        "source": "pi --mode json events",
+        "input_tokens": counter,
+        "output_tokens": 1,
+        "cached_input_tokens": 0,
+        "reasoning_tokens": 0,
+        "total_tokens": counter + 1,
+    }
+    ledger = tmp_path / "boundary.jsonl"
+    get_limit = getattr(sys, "get_int_max_str_digits", None)
+    before = get_limit() if get_limit is not None else None
+
+    append_attempt(record, ledger)
+
+    raw = ledger.read_text(encoding="utf-8")
+    assert raw.count("\n") == 1
+    assert int_to_decimal(counter) in raw
+    assert read_attempts(ledger) == [record]
+    # The bounded conversions never alter CPython's process-wide security
+    # setting. Python 3.10 has no setting to compare.
+    if get_limit is not None:
+        assert get_limit() == before
+    assert int_from_decimal(int_to_decimal(counter)) == counter
+
+
 def test_multiple_appends_keep_file_order(
     tmp_path, valid_record, escalation_record
 ) -> None:
@@ -232,6 +270,19 @@ def test_encoding_is_compact_utf8_with_trailing_newline(valid_record) -> None:
     assert line == expected + b"\n"
     assert "scratch" in line.decode("utf-8")  # non-ASCII-safe content survives
     assert line.count(b"\n") == 1
+
+
+def test_bounded_json_matches_stdlib_for_normal_values_and_keys() -> None:
+    """The custom path retains ordinary JSON types and key semantics."""
+    value = {
+        "values": [None, True, False, 1, -2.5, "scratch é"],
+        -7: "integer key",
+        2.5: "float key",
+    }
+    expected = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+    assert dump_json(value) == expected
+    assert json.loads(dump_json(value)) == json.loads(expected)
 
 
 def test_encode_rejects_schema_invalid_record(valid_record) -> None:

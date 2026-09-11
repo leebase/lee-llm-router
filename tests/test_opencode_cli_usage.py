@@ -414,6 +414,84 @@ def test_worker_artifact_contradictory_total_fails_closed(tmp_path: Path) -> Non
     assert "contradicts" in str(exc_info.value)
 
 
+def test_worker_artifact_total_below_known_counters_fails_closed(
+    tmp_path: Path,
+) -> None:
+    """Regression: absent reasoning cannot justify a total below input+output."""
+    usage_path = tmp_path / "usage.json"
+    usage_path.write_text(
+        json.dumps(
+            _artifact_payload(
+                input_tokens=10,
+                output_tokens=2,
+                reasoning_tokens=None,
+                total_tokens=1,
+            )
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(LLMRouterError) as exc_info:
+        capture_usage("", worker_usage_path=usage_path)
+    assert exc_info.value.failure_type is FailureType.CONTRACT_VIOLATION
+    assert "below the known input/output counters" in str(exc_info.value)
+
+
+@pytest.mark.parametrize("total_tokens", [12, 15])
+def test_worker_artifact_absent_reasoning_valid_totals_pass(
+    tmp_path: Path, total_tokens: int
+) -> None:
+    """Absent reasoning permits any total >= input + output, reported as-is."""
+    usage_path = tmp_path / "usage.json"
+    usage_path.write_text(
+        json.dumps(
+            _artifact_payload(
+                input_tokens=10,
+                output_tokens=2,
+                reasoning_tokens=None,
+                total_tokens=total_tokens,
+            )
+        ),
+        encoding="utf-8",
+    )
+    result = capture_usage("", worker_usage_path=usage_path)
+    assert result == {
+        "basis": "provider_reported",
+        "source": OPENCODE_WORKER_USAGE_SOURCE,
+        "input_tokens": 10,
+        "output_tokens": 2,
+        "cached_input_tokens": 3,
+        "reasoning_tokens": None,
+        "cache_write_tokens": None,
+        "total_tokens": total_tokens,
+    }
+    errors = list(_usage_validator().iter_errors(result))
+    assert not errors, [(list(error.absolute_path), error.message) for error in errors]
+
+
+def test_worker_artifact_absent_reasoning_absent_total_passes(
+    tmp_path: Path,
+) -> None:
+    """No reported total and no reasoning keeps total null (never estimated)."""
+    usage_path = tmp_path / "usage.json"
+    usage_path.write_text(
+        json.dumps(
+            _artifact_payload(
+                input_tokens=10,
+                output_tokens=2,
+                reasoning_tokens=None,
+                total_tokens=None,
+            )
+        ),
+        encoding="utf-8",
+    )
+    result = capture_usage("", worker_usage_path=usage_path)
+    assert result["basis"] == "provider_reported"
+    assert result["reasoning_tokens"] is None
+    assert result["total_tokens"] is None
+    assert result["input_tokens"] == 10
+    assert result["output_tokens"] == 2
+
+
 def test_json_event_usage_wins_without_consulting_artifact(tmp_path: Path) -> None:
     usage_path = tmp_path / "usage.json"
     usage_path.write_text("{not json", encoding="utf-8")

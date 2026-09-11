@@ -16,6 +16,7 @@ import pytest
 
 from lee_llm_router.providers.base import FailureType, LLMRouterError
 from lee_llm_router.providers.pi_cli import PI_USAGE_SOURCE, capture_usage
+from lee_llm_router.staffing.json_int import int_to_decimal
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = (
@@ -259,6 +260,25 @@ def test_agent_end_only_output_unavailable() -> None:
         "Pi JSON output contained no assistant message_end events"
     )
     assert result["input_tokens"] is None
+
+
+def test_huge_counter_at_boundary_is_parsed_exactly() -> None:
+    """Pi capture accepts a valid counter beyond CPython's 4300-digit limit."""
+    counter = 2 * (9 * 10**4299)
+    output = (
+        '{"type":"message_end","message":{"role":"assistant",'
+        '"model":"z-ai/glm-5.3-flash","usage":{"input":'
+        f"{int_to_decimal(counter)}"
+        ',"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":'
+        f"{int_to_decimal(counter)}"
+        "}}}"
+    )
+
+    result = capture_usage(output)
+
+    assert result["basis"] == "provider_reported"
+    assert result["input_tokens"] == counter
+    assert result["total_tokens"] == counter
 
 
 def test_genuine_reported_zero_is_valid() -> None:

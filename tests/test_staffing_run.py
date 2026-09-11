@@ -34,6 +34,7 @@ from lee_llm_router.providers.omp_cli import OMP_USAGE_SOURCE
 from lee_llm_router.providers.opencode_cli import OPENCODE_USAGE_SOURCE
 from lee_llm_router.staffing import load_staffing_catalog
 from lee_llm_router.staffing.catalog import Route as StaffingRoute
+from lee_llm_router.staffing.json_int import int_from_decimal, int_to_decimal
 from lee_llm_router.staffing.run import (
     _usage_for_harness,
     build_dispatch_command,
@@ -1274,6 +1275,43 @@ def test_run_pi_dispatch_argv_and_usage(
     assert "exit_code=0, timed_out=False" in payload["provenance"]["notes"][0]
     _assert_output_matches_single_append(captured, scratch_state)
     assert payload["wall_clock_ms"] >= 0
+
+
+def test_run_pi_huge_counter_persists_completed_worker(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """A completed Pi worker with a 4301-digit counter still appends once."""
+    counter = 2 * (9 * 10**4299)
+    receipt = (
+        '{"type":"message_end","message":{"role":"assistant",'
+        '"model":"z-ai/glm-5.3-flash","usage":{"input":'
+        f"{int_to_decimal(counter)}"
+        ',"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":'
+        f"{int_to_decimal(counter)}"
+        "}}}"
+    )
+    launcher = LaunchRecorder(chunks=[(receipt + "\n").encode("utf-8")])
+
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=PI_ROUTE,
+        launcher=launcher,
+    )
+
+    assert code == 0
+    assert len(launcher.processes) == 1
+    payload = json.loads(captured.out, parse_int=int_from_decimal)
+    assert payload["usage"]["input_tokens"] == counter
+    assert payload["usage"]["total_tokens"] == counter
+    assert payload["cost"] == {"basis": ["unavailable"]}
+    raw = scratch_state["attempts"].read_text(encoding="utf-8")
+    assert raw == captured.out
+    assert int_to_decimal(counter) in raw
+    assert json.loads(raw, parse_int=int_from_decimal) == payload
 
 
 def test_run_codex_dispatch_argv_and_usage(

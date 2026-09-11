@@ -17,6 +17,7 @@ import json
 from typing import Any
 
 from lee_llm_router.providers.base import FailureType, LLMRouterError
+from lee_llm_router.staffing.json_int import int_from_decimal
 
 PROMPT_PLACEHOLDER = "{prompt}"
 
@@ -66,7 +67,7 @@ def _parse_json_events(output: str) -> list[dict[str, Any]]:
     if not isinstance(output, str) or not output.strip():
         return []
     try:
-        whole = json.loads(output)
+        whole = json.loads(output, parse_int=int_from_decimal)
     except json.JSONDecodeError:
         whole = None
     if isinstance(whole, dict):
@@ -74,7 +75,7 @@ def _parse_json_events(output: str) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for line in output.splitlines():
         try:
-            event = json.loads(line)
+            event = json.loads(line, parse_int=int_from_decimal)
         except json.JSONDecodeError:
             continue
         if isinstance(event, dict):

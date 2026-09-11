@@ -13,6 +13,7 @@ from lee_llm_router.staffing.import_evidence import (
     benchmark_source_run_id,
     is_benchmark_v6_record,
 )
+from lee_llm_router.staffing.json_int import int_from_decimal, int_to_decimal
 from lee_llm_router.staffing.ledger import (
     ATTEMPTS_FILE_ENV_VAR,
     ATTEMPTS_STATE_ROOT_ENV_VAR,
@@ -318,6 +319,59 @@ def test_even_huge_odd_sum_median_is_the_exact_decimal_string() -> None:
     # The exact decimal string must survive the rendered JSON round trip.
     rendered = json.loads(render_rollup({"groups": [group]}))
     assert rendered["groups"][0]["token_medians"]["input_tokens"] == expected
+
+
+def test_boundary_rollup_preserves_exact_sum_integer_median_and_round_trip() -> None:
+    """Two valid 4300-digit counters aggregate past Python's default limit."""
+    counter = 9 * 10**4299
+    members = [
+        _record(
+            attempt_id=f"boundary-equal-{index}",
+            route_id="route-boundary",
+            input_tokens=counter,
+            output_tokens=0,
+            total_tokens=None,
+            wall_clock_ms=None,
+        )
+        for index in range(2)
+    ]
+
+    group = _huge_group(members)
+    assert group["token_sums"]["input_tokens"] == 2 * counter
+    assert group["token_medians"]["input_tokens"] == counter
+    assert isinstance(group["token_medians"]["input_tokens"], int)
+
+    rollup = build_rollup(members)
+    rendered = render_rollup(rollup)
+    assert int_to_decimal(2 * counter) in rendered
+    assert json.loads(rendered, parse_int=int_from_decimal) == rollup
+
+
+def test_boundary_half_integer_median_is_an_exact_decimal_string() -> None:
+    """A huge odd middle sum stays exact without a rounded float."""
+    counter = 9 * 10**4299
+    members = [
+        _record(
+            attempt_id=f"boundary-half-{index}",
+            route_id="route-boundary-half",
+            input_tokens=counter + index,
+            output_tokens=0,
+            total_tokens=None,
+            wall_clock_ms=None,
+        )
+        for index in range(2)
+    ]
+
+    group = _huge_group(members)
+    assert group["token_sums"]["input_tokens"] == 2 * counter + 1
+    assert group["token_medians"]["input_tokens"] == (f"{int_to_decimal(counter)}.5")
+    assert isinstance(group["token_medians"]["input_tokens"], str)
+    assert (
+        json.loads(render_rollup({"groups": [group]}), parse_int=int_from_decimal)[
+            "groups"
+        ][0]["token_medians"]["input_tokens"]
+        == f"{int_to_decimal(counter)}.5"
+    )
 
 
 def test_normal_medians_keep_exact_values_and_representations() -> None:

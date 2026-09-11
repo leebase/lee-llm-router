@@ -362,22 +362,31 @@ def _worker_artifact_usage(path: str | Path) -> dict[str, Any]:
         optional[key] = value
 
     reasoning_tokens = optional["reasoning_tokens"]
+    total_tokens = optional["total_tokens"]
+    if total_tokens is not None:
+        if reasoning_tokens is not None:
+            # Every counter is known: the reported total must match exactly.
+            expected_total = input_tokens + output_tokens + reasoning_tokens
+            if total_tokens != expected_total:
+                raise LLMRouterError(
+                    "OpenCode worker usage artifact total_tokens contradicts "
+                    "input/output/reasoning counters",
+                    failure_type=FailureType.CONTRACT_VIOLATION,
+                )
+        elif total_tokens < input_tokens + output_tokens:
+            # Reasoning is unknown but nonnegative, so it can only add to the
+            # known counters; it can never reduce the reported total below
+            # input + output.
+            raise LLMRouterError(
+                "OpenCode worker usage artifact total_tokens is below the "
+                "known input/output counters while reasoning is absent",
+                failure_type=FailureType.CONTRACT_VIOLATION,
+            )
     expected_total = (
         input_tokens + output_tokens + reasoning_tokens
         if reasoning_tokens is not None
         else None
     )
-    total_tokens = optional["total_tokens"]
-    if (
-        total_tokens is not None
-        and expected_total is not None
-        and total_tokens != expected_total
-    ):
-        raise LLMRouterError(
-            "OpenCode worker usage artifact total_tokens contradicts "
-            "input/output/reasoning counters",
-            failure_type=FailureType.CONTRACT_VIOLATION,
-        )
 
     return {
         "basis": "provider_reported",

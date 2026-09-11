@@ -30,6 +30,15 @@ remainder as if it were a fresh record, and a silently torn line is worse for
 an append-only ledger than a raised error the caller can see. No rewrite,
 truncate, or update API exists in this module.
 
+Token counters are arbitrary-precision JSON integers. CPython >= 3.11's
+default 4300-digit int<->decimal conversion ceiling is a Python interpreter
+limit, not a JSON limit, so encoding and decoding never mutate the process
+security setting (``sys.set_int_max_str_digits``) and never degrade a counter
+to a float or a string: the strict line carries the exact integer digits, and
+:func:`read_attempts` rebuilds the exact Python ``int`` on the way out, both
+through the bounded chunked conversions of
+:mod:`lee_llm_router.staffing.json_int`.
+
 This module performs no network calls, starts no subprocesses, and calls no
 providers: it validates a mapping and appends bytes to a file.
 """
@@ -46,6 +55,11 @@ from typing import Any, Mapping
 from jsonschema import Draft202012Validator, FormatChecker
 
 from lee_llm_router.providers.base import LLMRouterError
+from lee_llm_router.staffing.json_int import (
+    dump_json,
+    int_from_decimal,
+    int_to_decimal,
+)
 
 DEFAULT_ATTEMPTS_DIR = Path("~/.local/state/lee-llm-router/attempts")
 """Directory holding one attempt ledger per host (``~`` expanded at use time)."""
@@ -109,12 +123,52 @@ def attempt_record_validator() -> Draft202012Validator:
     return _VALIDATOR_CACHE["attempt-record"]
 
 
+class _SchemaSafeInt(int):
+    """Large integer used only to keep jsonschema diagnostics bounded."""
+
+    def __repr__(self) -> str:
+        """Avoid decimal conversion when jsonschema renders an instance."""
+        return "<large integer>"
+
+
+def _schema_safe_value(value: Any) -> Any:
+    """Copy values with bounded reprs for jsonschema's internal diagnostics."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return _SchemaSafeInt(value) if value.bit_length() > 512 else value
+    if isinstance(value, Mapping):
+        return {
+            _schema_safe_value(key): _schema_safe_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_schema_safe_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_schema_safe_value(item) for item in value)
+    return value
+
+
 def _schema_violations(record: Mapping[str, Any]) -> list[str]:
-    """Render every schema violation of ``record`` as a readable string."""
-    errors = sorted(
-        attempt_record_validator().iter_errors(record),
-        key=lambda e: list(e.absolute_path),
-    )
+    """Render every schema violation of ``record`` as a readable string.
+
+    ``jsonschema`` includes the whole failing instance in some conditional
+    diagnostics. A huge valid counter can therefore trip CPython's decimal
+    conversion limit before validation finishes. Validation sees equivalent
+    integer subclasses whose repr is bounded; the original values are never
+    changed, encoded, or returned.
+    """
+    safe_record = _schema_safe_value(record)
+    try:
+        errors = sorted(
+            attempt_record_validator().iter_errors(safe_record),
+            key=lambda e: list(e.absolute_path),
+        )
+    except ValueError as exc:
+        return [
+            "$: record is schema-invalid and too large to render full schema "
+            f"diagnostics for ({exc})"
+        ]
     return [f"{error.json_path}: {error.message}" for error in errors]
 
 
@@ -205,12 +259,20 @@ def _evidence_violations(record: Mapping[str, Any]) -> list[str]:
         actual = class_record.get("class_key")
         if actual != expected:
             violations.append(
-                f"$.class_record.class_key: {actual!r} does not equal the "
-                f"canonical reconstruction {expected!r} of role/oracle_type/"
-                "sorted domain_tags-or-none/size_band/language (components are "
-                "authoritative; evidence joins require consistency)"
+                f"$.class_record.class_key: {_bounded_repr(actual)} does not "
+                "equal the canonical reconstruction "
+                f"{expected!r} of role/oracle_type/sorted domain_tags-or-"
+                "none/size_band/language (components are authoritative; "
+                "evidence joins require consistency)"
             )
     return violations
+
+
+def _bounded_repr(value: Any) -> str:
+    """Render ``value`` in diagnostics without tripping the digit ceiling."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return int_to_decimal(value)
+    return repr(value)
 
 
 def validate_attempt(record: Mapping[str, Any]) -> None:
@@ -269,11 +331,15 @@ def resolve_attempts_path(explicit: str | Path | None = None) -> Path:
 def encode_attempt(record: Mapping[str, Any]) -> bytes:
     """Validate and encode one attempt record as a single UTF-8 line.
 
-    ``json.dumps`` escapes control characters, so a value containing a literal
-    newline still encodes to one physical line. ``allow_nan=False`` keeps the
-    encoding standards-compliant strict JSON: non-finite floats raise instead
-    of emitting the ``NaN``/``Infinity`` tokens Python's ``json`` would
-    otherwise write into the append-only JSONL.
+    Control characters are escaped, so a value containing a literal newline
+    still encodes to one physical line. Non-finite floats raise instead of
+    emitting the ``NaN``/``Infinity`` tokens Python's ``json`` would otherwise
+    write into the append-only JSONL, keeping the encoding standards-compliant
+    strict JSON. Token counters stay exact arbitrary-precision JSON integers
+    at any magnitude: the bounded serializer of
+    :func:`lee_llm_router.staffing.json_int.dump_json` emits every digit
+    without tripping CPython's default int-to-decimal conversion ceiling, and
+    without mutating that process-wide setting.
 
     Args:
         record: The attempt record to encode.
@@ -287,12 +353,7 @@ def encode_attempt(record: Mapping[str, Any]) -> bytes:
     """
     validate_attempt(record)
     try:
-        text = json.dumps(
-            dict(record),
-            ensure_ascii=False,
-            separators=(",", ":"),
-            allow_nan=False,
-        )
+        text = dump_json(dict(record))
     except (TypeError, ValueError) as exc:
         raise AttemptLedgerError(
             f"attempt record is not JSON-serialisable: {exc}"
@@ -367,7 +428,7 @@ def read_attempts(path: str | Path) -> list[dict[str, Any]]:
             if not line.strip():
                 continue
             try:
-                parsed = json.loads(line)
+                parsed = json.loads(line, parse_int=int_from_decimal)
             except json.JSONDecodeError as exc:
                 raise AttemptLedgerError(
                     f"{ledger_path}:{lineno}: line is not valid JSON "

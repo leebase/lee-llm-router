@@ -96,12 +96,22 @@ The ledger is append-only JSONL at
 `~/.local/state/lee-llm-router/attempts/<host>.jsonl`, with a test-only state
 root environment override. Each validated record is encoded once and written
 by one `O_APPEND` call; a short write raises `ShortWriteError` and no rewrite
-path exists. `read_attempts()` validates every line as v2.
+path exists. `read_attempts()` validates every line as v2. Token counters are
+kept as exact JSON integer literals, including values beyond CPython's default
+4300-digit conversion limit. The bounded encoder/decoder uses small chunks and
+never changes the process-wide integer-digit security setting; Python callers
+must use `read_attempts()` (or `json.loads(..., parse_int=int_from_decimal)`)
+when reading such a document rather than the stock limited integer hook.
 
 Rollup keys are `(route_id, class_key)` and values are attempts, verified pass,
 pass counts by oracle type, token sums and medians, median wall clock,
 `usage_known`, and `comparison_eligible` only at five or more attempts, matching
-`performance.py` semantics. It creates no probabilities or ladders.
+`performance.py` semantics. Rollup sums likewise remain exact JSON integer
+literals. Median values preserve the existing numeric behavior below the
+integer limit: integral means are `int`, small exactly representable
+half-integers are `float`, and larger exact half-integers are strings in the
+`"<whole>.5"` form because Python has no exact fractional integer/float type
+for those values. It creates no probabilities or ladders.
 
 Imports are idempotent by deterministic attempt id. Benchmark rows carry
 `provenance.source: benchmark`; raw per-attempt agent-orch rows carry
