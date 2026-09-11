@@ -19,7 +19,7 @@ Implements the selection-plus-dispatch foundation of the ``run`` command
 * **Dispatch.** The selected route's harness provider ``build_command``
   argv is substituted with the packet prompt and run exactly once through
   the repository's watchdog/subprocess boundary
-  (:func:`lee_llm_router.dispatch.run_dispatch`), with ``cwd`` set to the
+  (:func:`run_supervised_dispatch` below), with ``cwd`` set to the
   workdir and no shell interpolation anywhere. Pi runs its JSON event
   mode and captures usage through the accepted P1-4a parser; Codex forces
   ``json_flag: --json`` (the P1-4b governed capture note) and parses the
@@ -90,19 +90,20 @@ import os
 import re
 import shlex
 import subprocess
+import sys
+import threading
 import time
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Callable, Mapping, TextIO
+from typing import Any, Callable, Mapping, Sequence, TextIO
 
 import yaml
 
 from lee_llm_router.availability import AvailabilitySnapshot
 from lee_llm_router.crews import HARNESS_PROVIDER_CHANNELS
-from lee_llm_router.dispatch import run_dispatch
 from lee_llm_router.providers.antigravity_cli import (
     AGY_GOVERNED_CONFIG,
     AGY_USAGE_SOURCE,
@@ -145,7 +146,6 @@ from lee_llm_router.providers.pi_cli import (
     PiCLIProvider,
 )
 from lee_llm_router.providers.pi_cli import capture_usage as capture_pi_usage
-from lee_llm_router.resolver import PROMPT_PLACEHOLDER, Resolution
 from lee_llm_router.staffing.catalog import Route as StaffingRoute
 from lee_llm_router.staffing.catalog import StaffingCatalog
 from lee_llm_router.staffing.eligibility import (
@@ -160,7 +160,13 @@ from lee_llm_router.staffing.terms import (
     DEFAULT_RATE_TABLE_PATH,
     _verify_sha256,
 )
-from lee_llm_router.watchdog import DEFAULT_MAX_MINUTES, DEFAULT_STALL_MINUTES
+from lee_llm_router.watchdog import (
+    DEFAULT_MAX_MINUTES,
+    DEFAULT_STALL_MINUTES,
+    StallReport,
+    StallWatchdog,
+    run_supervised,
+)
 
 __all__ = [
     "DEFAULT_POLL_SECONDS",
@@ -172,6 +178,9 @@ __all__ = [
     "DispatchOutcome",
     "OracleOutcome",
     "RunDispatchError",
+    "PROMPT_PLACEHOLDER",
+    "Resolution",
+    "run_supervised_dispatch",
     "build_attempt_record",
     "packet_id_for_text",
     "RunSelectionError",
@@ -225,6 +234,27 @@ DEFAULT_POLL_SECONDS = 0.5
 
 _TIMEOUT_EXIT_CODE = 124
 """Exit code the dispatch boundary reports for a ceiling timeout."""
+
+PROMPT_PLACEHOLDER = "{prompt}"
+"""Argv element that marks a harness as taking its prompt on the command line.
+
+Moved here (P2-9 removal) from the deleted ``lee_llm_router.resolver``; the
+per-harness provider modules carry their own identical constant."""
+
+
+@dataclass(frozen=True)
+class Resolution:
+    """Minimal dispatch-boundary resolution (moved from the deleted resolver).
+
+    Only the fields the supervision boundary actually consumes are kept:
+    the stall warning names the worker, and the boundary needs the final
+    argv plus how the prompt is delivered. Event and provenance shapes live
+    in :mod:`lee_llm_router.events` and the attempt record."""
+
+    worker_id: str
+    dispatch_command: list[str]
+    prompt_delivery: str
+
 
 DEFAULT_ORACLE_TIMEOUT_SECONDS = DEFAULT_MAX_MINUTES * 60.0
 """Standard wall-clock bound for an oracle when ``--timeout`` is absent."""
@@ -312,7 +342,7 @@ _TOTAL_INCLUDES_CACHE_HARNESSES = frozenset({"pi", "omp", "claude"})
 class RunSelectionError(Exception):
     """A ``run`` selection refusal: nothing launched, the CLI exits 3.
 
-    Mirrors :class:`lee_llm_router.resolver.ResolutionError`: a plain
+    Mirrors the old resolver's ``ResolutionError``: a plain
     refusal carrying the process exit code and a stable machine ``kind``
     (``excluded``, ``unknown_route``, ``no_eligible``, ``invalid_class``,
     ``invalid_date``, ``invalid_metadata``), not a provider failure.
@@ -1547,26 +1577,237 @@ def _usage_for_harness(harness: str, stdout_text: str) -> dict[str, Any]:
 def _dispatch_resolution(route: StaffingRoute, argv: list[str]) -> Resolution:
     """Build the dispatch-boundary resolution for one selected route."""
     return Resolution(
-        crew="run",
-        role="run",
-        mode="run",
         worker_id=route.route_id,
-        provider=_HARNESS_PROVIDER_NAMES.get(route.harness, route.harness),
-        model=route.model,
-        effort=route.effort,
-        channel=route.channel,
-        headroom="",
-        headroom_remaining_fraction=None,
-        pace_ratio=None,
-        reason="staffing run dispatch",
-        authorized_by=None,
-        route_id=route.route_id,
         dispatch_command=list(argv),
         prompt_delivery=("argv" if PROMPT_PLACEHOLDER in argv else "stdin"),
-        worker_command=route.dispatch_template,
-        snapshot_observed_at=None,
-        snapshot_stale=False,
     )
+
+
+def _format_minutes(val: float) -> str:
+    """Format minutes nicely for display: whole numbers as integers, else float."""
+    r = round(val)
+    if abs(val - r) < 0.05:
+        return str(int(r))
+    return f"{val:g}"
+
+
+def _build_argv(resolution: Resolution, prompt: str) -> list[str]:
+    """Build the final child argv from the resolution and prompt.
+
+    If prompt delivery is "argv", replaces the single ``{prompt}`` placeholder
+    with the prompt text. Otherwise, returns a copy of the dispatch command.
+    """
+    if resolution.prompt_delivery == "argv":
+        return [
+            prompt if arg == PROMPT_PLACEHOLDER else arg
+            for arg in resolution.dispatch_command
+        ]
+    return list(resolution.dispatch_command)
+
+
+def run_supervised_dispatch(
+    resolution: Resolution,
+    prompt: str,
+    *,
+    stall_minutes: float = DEFAULT_STALL_MINUTES,
+    max_minutes: float = DEFAULT_MAX_MINUTES,
+    watch_dirs: Sequence[Path | str] = (),
+    popen: Callable[..., Any] = subprocess.Popen,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+    poll_seconds: float = 0.5,
+    sink: Callable[[bytes], None] | None = None,
+    err_sink: Callable[[bytes], None] | None = None,
+    read_chunk: Callable[[], bytes | None] | None = None,
+    read_err_chunk: Callable[[], bytes | None] | None = None,
+    stderr: TextIO | None = None,
+) -> int:
+    """Execute a resolved worker harness and supervise it with StallWatchdog.
+
+    Moved here (P2-9 removal) from the deleted ``lee_llm_router.dispatch``
+    with its resolution consumption minimized to the worker id, final argv,
+    and prompt delivery. Behavior is unchanged: stream stdout/stderr, feed
+    stdin when the prompt is delivered on stdin, flag stalls without
+    killing, and kill only at the wall-clock ceiling.
+
+    Args:
+        resolution: Dispatch-boundary resolution (worker id, argv, delivery).
+        prompt: Prompt string to deliver.
+        stall_minutes: Minutes of joint silence before flagging a stall.
+        max_minutes: Wall-clock ceiling in minutes before killing the child.
+        watch_dirs: Directories to monitor for file activity.
+        popen: Process spawner callable (injected for tests).
+        clock: Monotonic clock callable (injected for tests).
+        sleep: Sleep callable (injected for tests).
+        poll_seconds: Polling cadence for the watchdog loop.
+        sink: Callable receiving child stdout byte chunks (defaults to
+            stdout buffer).
+        err_sink: Callable receiving child stderr byte chunks (defaults to
+            stderr buffer).
+        read_chunk: Callable returning child stdout byte chunks (defaults to
+            reading child stdout).
+        read_err_chunk: Callable returning child stderr byte chunks (defaults
+            to reading child stderr).
+        stderr: Stream for watchdog warnings and ceiling messages (defaults
+            to sys.stderr).
+
+    Returns:
+        Exit code: 124 on ceiling timeout, otherwise child exit code.
+    """
+    argv = _build_argv(resolution, prompt)
+    target_err = stderr if stderr is not None else sys.stderr
+
+    if sink is not None:
+        sink_fn = sink
+    else:
+
+        def sink_fn(chunk: bytes) -> None:
+            if not chunk:
+                return
+            stdout_buf = getattr(sys.stdout, "buffer", None)
+            if stdout_buf is not None:
+                stdout_buf.write(chunk)
+                stdout_buf.flush()
+            else:
+                sys.stdout.write(chunk.decode("utf-8", errors="replace"))
+                sys.stdout.flush()
+
+    if err_sink is not None:
+        err_sink_fn = err_sink
+    else:
+
+        def err_sink_fn(chunk: bytes) -> None:
+            if not chunk:
+                return
+            target_err_buf = getattr(target_err, "buffer", None)
+            if target_err_buf is not None:
+                target_err_buf.write(chunk)
+                target_err_buf.flush()
+            else:
+                target_err.write(chunk.decode("utf-8", errors="replace"))
+                target_err.flush()
+
+    proc = popen(
+        argv,
+        stdin=subprocess.PIPE if resolution.prompt_delivery == "stdin" else None,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    stdin_thread: threading.Thread | None = None
+    if resolution.prompt_delivery == "stdin":
+        prompt_bytes = prompt.encode("utf-8") if isinstance(prompt, str) else prompt
+
+        def _feed_stdin() -> None:
+            try:
+                proc.stdin.write(prompt_bytes)
+                proc.stdin.flush()
+            except OSError:
+                pass
+            finally:
+                try:
+                    proc.stdin.close()
+                except OSError:
+                    pass
+
+        stdin_thread = threading.Thread(target=_feed_stdin, daemon=True)
+        stdin_thread.start()
+
+    if read_chunk is not None:
+        read_stdout_fn = read_chunk
+    else:
+        os.set_blocking(proc.stdout.fileno(), False)
+
+        def read_stdout_fn() -> bytes | None:
+            try:
+                chunk = proc.stdout.read(65536)
+                return chunk if chunk else None
+            except BlockingIOError:
+                return None
+
+    if read_err_chunk is not None:
+        read_stderr_fn = read_err_chunk
+    else:
+        os.set_blocking(proc.stderr.fileno(), False)
+
+        def read_stderr_fn() -> bytes | None:
+            try:
+                chunk = proc.stderr.read(65536)
+                return chunk if chunk else None
+            except BlockingIOError:
+                return None
+
+    def supervised_read() -> bytes | None:
+        total = 0
+
+        while True:
+            chunk = read_stdout_fn()
+            if not chunk:
+                break
+            sink_fn(chunk)
+            total += len(chunk)
+
+        while True:
+            chunk = read_stderr_fn()
+            if not chunk:
+                break
+            err_sink_fn(chunk)
+            total += len(chunk)
+
+        if total > 0:
+            return bytes(total)
+        return None
+
+    def on_stall(report: StallReport) -> None:
+        n_str = _format_minutes(stall_minutes)
+        m_str = _format_minutes(report.elapsed_seconds / 60.0)
+        max_str = _format_minutes(max_minutes)
+        msg = (
+            f"dispatch: no output and no file activity for {n_str} min "
+            f"(worker {resolution.worker_id}, elapsed {m_str} min); "
+            f"still waiting, ceiling {max_str} min\n"
+        )
+        target_err.write(msg)
+        target_err.flush()
+
+    watch_paths = [Path(p) for p in watch_dirs]
+    stall_seconds = float(stall_minutes) * 60.0
+    max_seconds = float(max_minutes) * 60.0
+
+    watchdog = StallWatchdog(
+        stall_seconds=stall_seconds,
+        max_seconds=max_seconds,
+        clock=clock,
+        watch_dirs=watch_paths,
+        on_stall=on_stall,
+    )
+
+    try:
+        result = run_supervised(
+            proc,
+            watchdog,
+            poll_seconds=poll_seconds,
+            sleep=sleep,
+            read_chunk=supervised_read,
+            sink=lambda _chunk: None,
+        )
+    finally:
+        if stdin_thread is not None:
+            try:
+                proc.stdin.close()
+            except OSError:
+                pass
+            stdin_thread.join(timeout=1.0)
+
+    if result.killed:
+        max_str = _format_minutes(max_minutes)
+        target_err.write(f"dispatch: killed after {max_str} min ceiling\n")
+        target_err.flush()
+        return 124
+
+    if result.exit_code is not None:
+        return result.exit_code
+    return 0
 
 
 def dispatch_route(
@@ -1588,7 +1829,7 @@ def dispatch_route(
     (argv substitution, or stdin delivery when the harness has no
     placeholder), the child's ``cwd`` is the workdir when supplied, and
     nothing is ever shell-quoted or interpolated. The single launch is
-    supervised by :func:`lee_llm_router.dispatch.run_dispatch` (stall
+    supervised by :func:`run_supervised_dispatch` (stall
     watchdog + wall-clock ceiling); there is no retry and no escalation.
 
     Args:
@@ -1654,7 +1895,7 @@ def dispatch_route(
     stderr_buf = bytearray()
 
     started = clock_fn()
-    exit_code = run_dispatch(
+    exit_code = run_supervised_dispatch(
         resolution,
         prompt,
         stall_minutes=stall_minutes,

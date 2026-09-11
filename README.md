@@ -1,6 +1,7 @@
 # Lee LLM Router
 
-A lightweight LLM routing kernel extracted from LeeClaw and Meridian. It supports config-driven routing, provider adapters, telemetry, doctor tooling, and explicit source export for downstream vendoring.
+A deterministic staffing service with governed route catalogs, evidence-aware
+selection, recorded execution, provider adapters, and doctor tooling.
 
 ## Installation
 
@@ -30,31 +31,23 @@ The destination may be missing or already exist as an empty directory. Use
 
 ## Quick Start
 
-```python
-from lee_llm_router import LLMRouter, load_config
-
-config = load_config("config/llm.yaml")
-router = LLMRouter(config)
-
-response = router.complete(
-    role="planner",
-    messages=[{"role": "user", "content": "Summarise the project plan."}],
-)
-print(response.text)
+```bash
+lee-llm-router staff --role impl \
+  --class impl/deterministic/none/s/python --mode auto
+lee-llm-router staff --mode crew luna-sol
+lee-llm-router run --role impl --class impl/deterministic/none/s/python \
+  --packet packet.md
 ```
 
-Or use the legacy-compatible `LLMClient`:
+`staff` computes a block without launching a provider. `run` dispatches one
+eligible route and records its attempt. The old `LLMRouter`, `resolve`, and
+`dispatch` selection layers were removed in Phase 2.
 
-```python
-from lee_llm_router import LLMClient, load_config
+## Diagnostic Provider Config
 
-client = LLMClient(load_config("config/llm.yaml"))
-response = client.complete("planner", messages=[...])
-```
-
-## Config File
-
-Generate a commented template:
+The retained `llm:` config is consumed by `doctor --config` and emitted by
+`template`; it is not a replacement high-level routing API. Generate a
+commented template:
 
 ```bash
 lee-llm-router template > config/llm.yaml
@@ -98,12 +91,6 @@ configured harness contract keys so bad pi-harness wiring fails fast.
 lee-llm-router template > config/llm.yaml
 ```
 
-### Trace
-
-```bash
-lee-llm-router trace --last 5
-```
-
 ### Crews
 
 ```bash
@@ -123,25 +110,43 @@ bucket count; a missing or stale snapshot is a warning, not a failure.
 [docs/config.md](docs/config.md#crews) and
 [docs/availability-refresh.md](docs/availability-refresh.md).
 
-### Resolve
+### Staff and Run
 
 ```bash
-lee-llm-router resolve --crew openai-economy --role author
-lee-llm-router resolve --crew openai-economy --role author --mode flex --json
-lee-llm-router resolve --crew openai-economy --role author --mode bind \
-  --worker codex_terra_high --authorized-by lee --reason "quota exhausted"
-lee-llm-router dispatch --crew openai-economy --role author --mode flex --prompt "Review plan"
+lee-llm-router staff --role impl --class impl/deterministic/none/s/python
+lee-llm-router staff --mode crew sol-low-glm-pi
+lee-llm-router run --role impl --class impl/deterministic/none/s/python \
+  --packet packet.md
 ```
 
-Answers "which worker runs this crew's stage right now, and why": resolves via
-`strict` (default), `flex`, or `bind` mode, prints the worker, provider, model,
-route id, dispatch command, and reason, and appends one line to the event
-ledger for every successful resolution (`--no-event` suppresses that write).
-Exit `0` on success, `2` when nothing is eligible, `3` for a config, usage, or
-forbidden-model refusal. Never invokes a provider binary. `dispatch` resolves
-the worker, runs the harness, and supervises execution under the stall watchdog. See
-[docs/config.md#resolving-a-worker](docs/config.md#resolving-a-worker) and
-[docs/config.md#dispatching](docs/config.md#dispatching).
+Automatic staffing applies catalog, availability, dated terms, evidence,
+expected-cost, and independence rules. Missing or stale availability makes
+subscription-channel-dependent automatic routes unknown/ineligible; it does
+not falsely veto metered/local routes with no quota record. Named crews remain
+exact saved blocks: they are not availability-filtered, reordered, or silently
+fed into automatic selection.
+
+`staff` never launches a provider. `run` always requires role, canonical class,
+and a non-empty packet file. Without `--route`, `run` selects the cheapest
+eligible explain row; pass the selected route from a `staff auto` block via
+`--route ROUTE_ID` to execute that evidence-aware choice. The explicit route
+must still be currently eligible. `run` launches once under watchdog
+supervision and appends one attempt record; it never retries or escalates.
+
+### Harness Shims
+
+Managed shims expose exactly `/crew auto` and `/crew NAME`. The auto form derives
+an already-planned canonical role/class and runs `staff --mode auto`; the named
+form prints the exact `staff --mode crew NAME` block. If class facts are
+missing, the shim asks rather than guessing. Both forms are resolve-only and
+only offer—never execute—a `lee-llm-router run ... --packet <path>` command,
+using `--route <route-id>` when the block selected one.
+
+```bash
+lee-llm-router shims install --dry-run
+lee-llm-router shims install --apply
+lee-llm-router shims diff
+```
 
 ### Export Source
 
@@ -167,13 +172,6 @@ For pi-style subprocess harnesses, configure `codex_cli`, `gemini_cli`, or
 `response_format: json` so malformed harness output is raised as a typed
 `CONTRACT_VIOLATION`.
 
-## Telemetry
-
-Every completion emits structured log events and writes a JSON trace file.
-
-- Events: `llm.complete.start`, `llm.complete.success`, `llm.complete.error`, `policy.choice`
-- Trace files: `<workspace>/.agentleeops/traces/YYYYMMDD/<request_id>-<attempt>-<provider>.json`
-
 ## Development
 
 ```bash
@@ -193,14 +191,14 @@ python -m build
 
 ```text
 lee_llm_router/
+|-- availability.py
+|-- crews.py
+|-- events.py
 |-- config.py
-|-- router.py
-|-- client.py
 |-- response.py
-|-- policy.py
-|-- telemetry.py
-|-- compression.py
 |-- doctor.py
+|-- shims.py
+|-- staffing/
 `-- providers/
     |-- base.py
     |-- registry.py

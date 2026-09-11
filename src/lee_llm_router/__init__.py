@@ -1,15 +1,10 @@
-"""
-Lee LLM Router — shared LLM routing kernel.
+"""Shared provider and response types for the staffing service.
 
-Extracted from LeeClaw/Meridian for reuse across projects.
-
-Public names are loaded lazily (PEP 562 module ``__getattr__``): importing
-this package does not import ``client``, ``router``, ``providers.http``, or
-any other submodule until a name is actually accessed. This keeps cold-start
-consumers — the crew resolver, the availability reader, the event ledger —
-free of the ``httpx``-bearing import chain. See
-``docs/crew-resolver/sprint-plan.md`` Sprint 3's "under 50 ms" done
-condition.
+The current command surface is implemented by :mod:`lee_llm_router.doctor`:
+``staff`` selects a staffing block and ``run`` dispatches one recorded attempt.
+Only provider-facing response/error shapes remain as package-level lazy
+exports; staffing, availability, crews, events, and shims are imported from
+their explicit modules.
 """
 
 from __future__ import annotations
@@ -21,48 +16,22 @@ __version__ = "0.1.0"
 
 __all__ = [
     "__version__",
-    # Phase 0
-    "LLMRouter",
-    "LLMClient",
-    "load_config",
-    "LLMConfig",
     "LLMRequest",
     "LLMResponse",
     "LLMUsage",
     "LLMRouterError",
     "FailureType",
-    # Phase 1
-    "RoutingPolicy",
-    "SimpleRoutingPolicy",
-    "ProviderChoice",
-    "TraceStore",
-    "LocalFileTraceStore",
-    # Phase 2
-    "EventSink",
-    "RouterEvent",
 ]
 
-# Maps each lazily-exported name to the submodule that defines it. Accessing
-# `lee_llm_router.<name>` imports that submodule (and only that submodule) on
-# first use, then caches the result on this module so identity is stable and
-# subsequent lookups are plain attribute access.
+# Maps each remaining package-level name to the submodule that defines it.
+# Accessing ``lee_llm_router.<name>`` imports only that module on first use,
+# preserving a small import surface for the staffing CLI.
 _ATTR_MODULES: dict[str, str] = {
-    "LLMRouter": "lee_llm_router.router",
-    "LLMClient": "lee_llm_router.client",
-    "load_config": "lee_llm_router.config",
-    "LLMConfig": "lee_llm_router.config",
     "LLMRequest": "lee_llm_router.response",
     "LLMResponse": "lee_llm_router.response",
     "LLMUsage": "lee_llm_router.response",
     "LLMRouterError": "lee_llm_router.providers.base",
     "FailureType": "lee_llm_router.providers.base",
-    "RoutingPolicy": "lee_llm_router.policy",
-    "SimpleRoutingPolicy": "lee_llm_router.policy",
-    "ProviderChoice": "lee_llm_router.policy",
-    "TraceStore": "lee_llm_router.telemetry",
-    "LocalFileTraceStore": "lee_llm_router.telemetry",
-    "EventSink": "lee_llm_router.telemetry",
-    "RouterEvent": "lee_llm_router.telemetry",
 }
 
 

@@ -1,7 +1,9 @@
 # Provider Adapter Reference
 
-Providers implement the `Provider` protocol from `lee_llm_router.providers.base`.
-All built-in providers are auto-registered on import.
+Providers implement the low-level `Provider` protocol from
+`lee_llm_router.providers.base`. The staffing `run` command constructs governed
+provider argv from the route catalog; there is no package-level `LLMRouter` or
+`LLMClient` facade. All built-in providers are auto-registered on import.
 
 ## Provider Protocol
 
@@ -234,8 +236,7 @@ Built command:
 literal `{prompt}` placeholder as the final positional element (matching
 `PROMPT_PLACEHOLDER = "{prompt}"`), and `complete()` runs the same builder,
 substituting the placeholder with the prompt text and closing stdin
-(`subprocess.DEVNULL`). `LLMRequest.effort` (set from a crew worker's effort by
-`CrewRoutingPolicy`) overrides the config's `effort`. Reasoning effort accepts
+(`subprocess.DEVNULL`). `LLMRequest.effort` overrides the config's `effort`. Reasoning effort accepts
 only `low`, `medium`, or `high` (`agy` has no `max` level). A system message, if
 present, is prepended to the user prompt.
 
@@ -436,15 +437,18 @@ All provider errors are raised as `LLMRouterError` with a `failure_type`:
 | `CANCELLED` | Request cancelled | No |
 | `UNKNOWN` | Unclassified exception | Yes |
 
-Use `should_retry(error)` from `lee_llm_router.providers.base` to check:
+Low-level adapter consumers can use `should_retry(error)` from
+`lee_llm_router.providers.base` to classify a caught provider error:
 
 ```python
-from lee_llm_router.providers.base import should_retry
+from lee_llm_router.providers.base import LLMRouterError, should_retry
 
 try:
-    response = router.complete(role, messages)
+    response = provider.complete(request, provider_config)
 except LLMRouterError as exc:
     if should_retry(exc):
-        # safe to retry
+        # The caller decides whether its own policy permits a retry.
         ...
 ```
+
+The `run` command itself launches one worker and does not retry or escalate.

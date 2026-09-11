@@ -180,3 +180,38 @@ dispatches record the same fields as `run`.
   `shims diff` exited 0 with no drift. Full repository gate: 1,602 passed/1
   skipped. P2-8 newly metered spend `$0.095278751834`; running knowable
   OpenRouter total `$0.426009552354`.
+
+## P2-9 — Resolver and dormant router removal
+
+- Implementation explains for `impl/deterministic/none/m/python` kept the
+  Phase 2 ladder eligible. The first GLM launch stalled in an over-broad
+  filesystem census before editing; supervisor terminated it as a platform
+  stall (2 events, 6,724 tokens / `$0.000559075`) and retried the same route
+  with exact repository-local paths. The retry reached 590 s with a partial
+  refactor (67 events, 2,332,811 tokens / `$0.044721095`).
+- Luna XHigh escalation repaired the current runtime and reached a 1,442/1
+  full gate before its own 590 s cap during docs/census work: 30 finalized
+  subscription events, 3,772,575 tokens / `$0.12539464` execution equivalent.
+  Sol High finished current-facing docs and the import census, then completed
+  normally: 22 subscription events, 1,797,514 tokens / `$1.77951` execution
+  equivalent.
+- Deleted `resolver.py`, `dispatch.py`, `router.py`, `client.py`, `policy.py`,
+  `telemetry.py`, and `compression.py` plus six suites that exclusively tested
+  those removed layers. The minimal three-field dispatch `Resolution`, prompt
+  marker, and watchdog supervision moved into `staffing/run.py`; current staff,
+  run, shims, catalog/evidence, providers, events, crews, availability, and
+  response shapes remain. `config.py` is retained with exactly two direct
+  consumers: `doctor.py` config validation/template behavior and
+  `tests/test_config.py`.
+- Supervisor read the production/docs diff and checked the current command
+  surface. Final source/test AST census found zero imports of every deleted
+  module. Current docs replace old command examples, explain missing/stale
+  channel-dependent auto ineligibility, and preserve named crews as exact
+  blocks. Author gate: 216 focused; 1,445 passed/1 skipped full; relevant
+  Black/Ruff and diff check clean.
+- Review explain used `--author-route codex-gpt-5-6-sol-high-openai-sub`;
+  independent DeepSeek/Pi was eligible and cross-family. It reran all 1,445/1
+  tests, inspected the deletion census, moved supervision, public exports,
+  retained tests, and docs, then returned PASS — zero findings: 67 events,
+  3,164,084 tokens / `$0.071798462762`. P2-9 newly metered OpenRouter spend
+  `$0.117078632762`; running knowable OpenRouter total `$0.543088185116`.

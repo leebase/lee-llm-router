@@ -5,14 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "lee-llm-router"
 version = "0.1.0"
-description = "Shared LLM routing kernel — config, providers, telemetry, doctor CLI"
+description = "Deterministic LLM staffing service with governed selection and execution"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
     {name = "Lee Harrington"}
 ]
-keywords = ["llm", "routing", "openrouter", "openai", "telemetry"]
+keywords = ["llm", "staffing", "routing", "governance", "orchestration"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
