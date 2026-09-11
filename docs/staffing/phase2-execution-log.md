@@ -98,3 +98,28 @@ dispatches record the same fields as `run`.
   events were provider-reported but their aggregate was not retained by the
   attached no-session harness, so no invented aggregate is claimed. P2-3:
   5 author launches (1 GLM, 3 stalled Luna, 1 Sol), 2 reviews, about 34 min.
+
+## P2-4 — Staffing block
+
+- Implementation explain selected `pi-z-ai-glm-5-3-flash-openrouter`; excluded
+  summary remained likely-exhausted 7, never-automatic 4, role-scope 1, and
+  unpriced/pricing 1. The first GLM attempt completed within its ceiling and
+  owned only `staffing/block.py` plus golden tests: 40 finalized Pi events,
+  1,599,140 provider-reported tokens (1,439,232 cached) and `$0.037481105`.
+- Supervisor read the complete files and identified fallback/independence
+  trust boundaries. Independent review explain with the GLM author route
+  selected DeepSeek/Pi. Review FAIL: one blocker (an independence-excluded
+  route was called independent), three hardening findings (nonfinite facts,
+  ineligible selection, available status without numeric E), and two future
+  notes. Receipt: 34 finalized events, 1,924,042 tokens / `$0.048118502778`.
+- Supervisor repair makes reviewer wording truthful, consumes the ladder's
+  proof-first/marginal-price fallback argmin even when expected cost is
+  unavailable, rejects ineligible explicit/argmin selection, converts
+  nonfinite facts to explicit unknown/unavailable, and exposes eligibility
+  plus exact reasons in text as well as JSON. The dependency-focused gate is
+  136 passed; Black/Ruff/diff check clean.
+- DeepSeek re-review PASS, zero blockers after 16 adversarial probes and 17
+  focused tests: 23 finalized events, 406,035 tokens / `$0.011077041726`.
+  P2-4: 1 author + 2 reviews, about 13 min. Cumulative newly metered P2-4
+  spend `$0.096676649504` (running OpenRouter total `$0.118958094972`, including
+  P2-3's retained GLM and last re-review receipts only where knowable).
