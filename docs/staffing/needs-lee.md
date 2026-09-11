@@ -1,5 +1,17 @@
 # Phase 0 needs Lee
 
+## Phase 3 — blocking after the authorized P3-6 rerun (2026-09-11)
+
+- Restore eligibility/headroom for the attested
+  `codex-gpt-5-6-sol-low-openai-sub` supervisor route, or govern a replacement
+  supervisor identity for the acceptance session. The router refused the A2
+  same-route repair before launch when this route became `likely_exhausted`.
+- Authorize another independent P3-6 acceptance session after the build
+  supervisor fixes the discovered crew-binding defect in `/supervise`. The
+  plan-authorized single rerun was consumed. A2 remains an uncommitted
+  candidate requiring a real-import multiprocessing regression and reduction
+  to, or a governed amendment of, its 520-line bound. P3-7 is dependency-blocked.
+
 ## Blocking
 
 None.

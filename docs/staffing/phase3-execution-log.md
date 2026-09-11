@@ -121,3 +121,41 @@ usage basis and knowable cost, verdict, findings, next action, and escalation.
   `/supervise` for Claude Code, Codex, Chief OMP, and OpenCode. Immediate
   `shims diff --command supervise` and default `/crew` diff both exited 0;
   `/crew` remains unchanged. P3-5 metered spend `$0.1536711108`.
+
+## P3-6 — Independent acceptance run (genuine stop)
+
+- The first separate Sol Low Codex process received only the installed
+  `/supervise` body, this repository's acceptance-plan path, and crew
+  `sol-low-glm-pi`. It accepted A1 as reviewed commit `6631b02`, but its A2
+  review found one High: the new ledger transaction was not held by the two
+  production import functions. It removed attributable forbidden reviewer
+  scratch, restored `.gitignore`, rolled up evidence, and exited with census
+  empty. A2 remained uncommitted.
+- Reconciliation of D204–D213 found no missing authority: D213 ruling 6
+  authorizes concurrency control for the multiple import writers. The
+  two-file A2 ownership was a P3-0 packetization defect. Commit `fe8ac00`
+  corrected the packet to include `staffing/import_evidence.py` and both
+  focused import test modules without weakening the skill's fail-closed guard.
+- The one P3-6 rerun again received only the installed body, plan path, and
+  crew name. It inherited the attributable A2 candidate, wrapped both real
+  import read/decide/append paths, and ran the focused oracle: 76 passed.
+  Supervisor diff inspection rejected the candidate because the multiprocessing
+  regression still calls a test-local surrogate; deleting either production
+  transaction leaves the named oracle green. The candidate is also 690 changed
+  lines (519 additions, 171 deletions) against the corrected packet's
+  520-line estimate. Both are
+  contract-blocking until repaired.
+- The rerun prepared the required same-route repair linked to
+  `router-run-45d4197f5b4542fda72e5a421c12062a`, but `run` refused before
+  launch because the attested supervisor route
+  `codex-gpt-5-6-sol-low-openai-sub` had become `likely_exhausted`. No repair
+  attempt row was invented. Final `census --json`: `live: []`, `cleaned: []`.
+- Acceptance also exposed a protocol defect: after `staff --mode crew`, the
+  installed loop invoked `run` without the crew-selected `--route`, so A1/A2
+  implementation attempts were auto-selected to Gemini rather than the crew's
+  GLM route. This must be fixed and re-accepted in a newly authorized session;
+  the plan's single rerun has been consumed.
+- P3-6 is not accepted. P3-7 did not start; no Astra closure or D214 claim was
+  made. Full independent-process reports are retained at
+  `/home/lee/projects/chief-of-staff/tmp/staffing-p3/acceptance-final.md` and
+  `acceptance-rerun-final.md`.

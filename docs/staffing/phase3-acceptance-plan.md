@@ -19,7 +19,7 @@ Execute both packets through the installed `/supervise` protocol with crew
 ## A2 — Concurrent import-writer control
 
 - Kind: `impl`
-- Declared size: 4 files, at most 520 changed lines
+- Declared size: 5 files, at most 520 changed lines
 - Owned paths: `src/lee_llm_router/staffing/ledger.py`,
   `src/lee_llm_router/staffing/import_evidence.py`,
   `tests/test_staffing_ledger.py`,
