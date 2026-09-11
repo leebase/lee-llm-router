@@ -365,3 +365,74 @@ list/marginal estimate.
   leak on validate/read paths. DeepSeek re-review PASS with zero blockers;
   commit `b0cc89c`. Supervisor reproduced all failures closed, 536 real rows
   valid, 1236 passed/1 skip, Black/Ruff clean before commit.
+
+## P1-9 continuation — final remediation and acceptance (2026-09-11)
+
+The fresh supervisor accepted the handoff repair only after an independent
+DeepSeek review (56 focused tests), then ran the full 1268-test suite and
+committed `dcc098b`. The one authorized post-fix Claude Sonnet re-proof used
+the `335ef28` flags exactly once: `router-run-c821f17601dd4720ac62a87d16782c99`
+exited 1 after about one second with an empty terminal stream; usage and cost
+are unavailable, and the relative scratch-workdir oracle also failed to
+launch. No third Claude call was made. Current attested proofs are GLM
+`router-run-8ef05d0eb7524ae488160d366f864ed5` (3933 input, 98 output, 0 cached,
+4031 total, 3504 ms, list=marginal `$0.000319475`) and Sol Low
+`router-run-0704aa774f5947d2829ce36cc85daf8a` (63782 input, 263 output, 52736
+cached, 64045 total, 13509 ms, list=marginal `$0.0705384`). Both have oracle
+pass, supervisor attestation, and `verified_success: true`.
+
+The final review sequence was intentionally exhaustive. Each FAIL was treated
+as a blocking packet boundary and fully remediated before the next review:
+
+| Packet | Attempts / wall clock | Staffing and outcome |
+|---|---:|---|
+| handoff capture-failure repair | 1 independent review, about 10 min | DeepSeek PASS; `dcc098b` |
+| Astra findings 1–3 (capture/cost) | GLM author + DeepSeek review, about 20 min | PASS; `7d20d6c` |
+| Astra findings 4–6 (run governance/persistence) | GLM author + DeepSeek review, about 22 min | PASS; `d93cbc8` |
+| Astra findings 7–8 (benchmark/proof truth) | GLM author + two independent reviews, about 25 min | PASS; `94f4583` |
+| first residual capture/cost | GLM timeout, Luna XHigh escalation, DeepSeek review, about 29 min | PASS; `ec55520` |
+| first residual benchmark/rollup | GLM author + DeepSeek review, about 24 min | PASS; `d06b5ec` |
+| three completed-worker residuals | GLM ceiling + DeepSeek review, about 20 min | PASS; `b22d7cc`; author usage 81550 tokens, `$0.00131254`; review 60779, `$0.001838971438` |
+| mixed Claude aggregate | GLM author, about 6 min | merged with next repair; 46273 tokens, `$0.000962215` |
+| huge median + engine-validation breakdown | GLM author, about 9 min | merged repair; 64443 tokens, `$0.00127897` |
+| independent combined review | DeepSeek, about 14 min | PASS, 1345/1 full; 104423 tokens, `$0.009395603028` |
+| OpenCode lower-bound repair | GLM author, about 2 min | 48 focused; 18474 tokens, `$0.00042791` |
+| >4300-digit JSON boundary | GLM timeout + Luna XHigh escalation, about 25 min | DeepSeek review PASS; GLM 59658 tokens/`$0.00097519`, Luna 204307/`$0.00499352` |
+| final boundary review | DeepSeek, about 10 min | PASS, 1355/1 full; 69870 tokens, `$0.001809090986` |
+| Astra whole-diff gates | four completed reviews, about 36 min total | three FAIL verdicts drove remediation; final `/tmp/p1-astra-final-gate3.out` PASS, 0 blocking/High/Medium |
+
+This continuation consumed about four supervisor hours (roughly 02:10–06:10
+Central) and 27 staffed author/reviewer dispatches, including the whole-diff
+Astra reviews. The preceding supervisor's authoritative tables retain each earlier
+packet's attempts and wall clock; together the two close sessions were about
+eight hours. OpenRouter continuation costs with terminal receipts sum to
+`$0.055222509792`; timed/empty provider receipts and Astra/Codex subscription
+usage have no metered charge asserted. Subscription execution equivalents are
+kept separate from metered spend.
+
+### Final observed gates 1–4
+
+1. Dated JSON explains at 2026-09-15 and 2026-10-01 expose fee, `kind`, and
+   `effective_from` for every channel. Anthropic and Gemini are `$100`
+   effective 2026-09-09 and `$20` effective 2026-09-30.
+2. The current GLM and Sol records above are exact saved-output/ledger matches,
+   verified successes, and appear in rollup. The authorized Claude re-proof
+   failure remains disclosed with unavailable usage/cost; no substitute or
+   extra Claude call was invented.
+3. Benchmark re-imports were `imported=0 skipped=102` twice. Agent-Orch had 11
+   newly arrived source attempts, then the immediate re-import was
+   `imported=0 skipped=525`, proving idempotency at the observed source state.
+4. Final ledger: 652 validating rows (454 Agent-Orch, 186 benchmark history,
+   12 router-run), 636 provider-reported and 16 unavailable; zero missing
+   usage source/reason and zero tokenless cost figures. Rollup supersedes
+   benchmark corrections to 559 effective attempts in 13 groups, with 362
+   verified passes and 360 engine-validation passes. Full suite: 1355 passed,
+   1 skipped. Black/Ruff are clean for all 37 source files and all Phase-1
+   touched tests; repository-wide test formatting has pre-existing unrelated
+   failures and was not rewritten.
+
+Final Astra Low whole-diff review of `96ffa00..b7ee687` passed with **0
+contract-blocking, 0 High, and 0 Medium**. Its only remaining classifications
+are Low hardening (text explain omits JSON's tier `kind`) and a Low future
+concern (import uniqueness assumes serialized writers). No worker or reviewer
+was left running.

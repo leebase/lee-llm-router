@@ -418,3 +418,20 @@ dispatch. Two choices require Lee/Chief authority: authorize one post-fix
 Claude Sonnet reproof, or explicitly accept the failed pre-fix record plus the
 reviewed fake-boundary remediation as gate evidence. No Gemini substitution or
 second Claude call was invented.
+
+## Resolved by Chief, Phase 1 round 4 (2026-09-10)
+
+See `docs/staffing/chief-answers-p1-4.md`: one post-fix Claude Sonnet re-proof authorized;
+Astra final-review ceiling 1200 s with a three-way split fallback; `run --supervisor-route`
+attests the caller so `verified_success` can be true; one attested GLM proof; then close.
+
+## Phase 1 close (2026-09-11)
+
+No Phase 1 implementation decision remains for Lee. The authorized second
+Claude Sonnet proof failed with empty stream evidence and unavailable usage;
+the failure is preserved and no third call was made. Current attested GLM and
+Sol proofs pass, gates 1–4 pass, and the final Astra Low whole-diff review has
+0 contract-blocking, 0 High, and 0 Medium findings. Chief still owns the D210
+seal. Two non-blocking Phase 2 candidates remain: bring text explain's tier
+`kind` to parity with JSON, and decide whether import writers need concurrency
+control beyond the current serialized-writer assumption.
