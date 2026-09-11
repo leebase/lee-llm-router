@@ -89,6 +89,7 @@ import math
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import threading
@@ -1605,6 +1606,404 @@ def _build_argv(resolution: Resolution, prompt: str) -> list[str]:
     return list(resolution.dispatch_command)
 
 
+_PROCESS_GROUP_KILL_GRACE_SECONDS = 0.5
+"""Seconds a worker process group gets to exit after a graceful TERM
+before the ceiling kill escalates to SIGKILL on the whole group."""
+
+_WORKER_PROVENANCE_ENV = "LEE_LLM_ROUTER_WORKER_PROVENANCE"
+"""Private inherited identity used to find Linux workers after reparenting.
+
+A fresh value is placed only in the real worker's environment. Descendants
+inherit it across ``fork``/``exec``, including descendants that start a new
+session and outlive an intermediate parent. It is never added to the router's
+own environment or to injected fake ``Popen`` calls.
+"""
+
+
+@dataclass
+class _ProcessRef:
+    """A process identity used while terminating a Linux process tree.
+
+    A PID is not an identity: it can be reused after a process exits. Linux
+    pidfds make the signal operation identity-safe; the ``start_time`` check
+    is the fallback for older Linux kernels and also protects discovery from
+    accidentally following a reused PID.
+    """
+
+    pid: int
+    start_time: int
+    depth: int
+    pidfd: int | None = None
+
+
+def _real_popen_injected(popen: Callable[..., Any]) -> bool:
+    """Whether a spawner is known to delegate to real ``subprocess.Popen``.
+
+    Identity with the mutable ``_DEFAULT_POPEN`` is deliberately insufficient:
+    tests replace that boundary with fakes, which must receive neither POSIX
+    launch flags nor a copied environment. The private attribute is set only
+    on this module's argv/cwd wrapper around the real spawner.
+    """
+    return (
+        popen is subprocess.Popen
+        or getattr(popen, "_lee_llm_router_real_popen", False) is True
+    )
+
+
+def _linux_process_record(pid: int) -> tuple[int, int] | None:
+    """Return ``(ppid, starttime)`` from Linux ``/proc/<pid>/stat``.
+
+    The executable name is parenthesized and may itself contain spaces or
+    closing parentheses, so parsing starts after the final ``)`` rather than
+    splitting the whole record naively. ``starttime`` is field 22, measured
+    from boot; unlike a PID it remains tied to one process incarnation.
+    """
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
+    except (OSError, UnicodeError):
+        return None
+    closing_name = stat.rfind(")")
+    if closing_name < 0:
+        return None
+    fields = stat[closing_name + 2 :].split()
+    if len(fields) < 20:
+        return None
+    try:
+        return int(fields[1]), int(fields[19])
+    except ValueError:
+        return None
+
+
+def _linux_process_table() -> dict[int, tuple[int, int]]:
+    """Take one best-effort ``pid -> (ppid, starttime)`` process snapshot."""
+    table: dict[int, tuple[int, int]] = {}
+    try:
+        entries = os.scandir("/proc")
+    except OSError:
+        return table
+    with entries:
+        for entry in entries:
+            if not entry.name.isdigit():
+                continue
+            record = _linux_process_record(int(entry.name))
+            if record is not None:
+                table[int(entry.name)] = record
+    return table
+
+
+def _linux_process_has_marker(pid: int, marker: bytes) -> bool:
+    """Whether one process has the exact inherited provenance entry.
+
+    Reading ``environ`` can fail under ``hidepid`` or after process exit. That
+    is a normal miss: callers retain process-group and PPID-tree fallbacks and
+    must never broaden a failed lookup into an unscoped signal.
+    """
+    try:
+        environ = Path(f"/proc/{pid}/environ").read_bytes()
+    except OSError:
+        return False
+    return marker in environ.split(b"\0")
+
+
+class _LinuxDescendantTree:
+    """Discover and kill a worker's recursive Linux descendant tree.
+
+    A process group is not a process tree: a descendant can call
+    ``setsid(2)`` and escape the worker's group while remaining its child.
+    This tracker follows PPID links in ``/proc`` and retains identities that
+    were discovered before a parent is killed. On timeout it stops the root,
+    repeatedly stops newly discovered descendants, then kills the frozen
+    identities. Stopping first closes the fork/discovery race: once every
+    known generation is stopped, no member can create another generation.
+    """
+
+    _MAX_FREEZE_PASSES = 20
+
+    def __init__(
+        self, root_pid: int, root_start_time: int, provenance_marker: bytes | None
+    ) -> None:
+        self._root = _ProcessRef(root_pid, root_start_time, 0)
+        self._provenance_marker = provenance_marker
+        self._known: dict[int, _ProcessRef] = {}
+        self._stale: set[int] = set()
+
+    @staticmethod
+    def available() -> bool:
+        """Whether this Linux-specific tree boundary can inspect ``/proc``."""
+        return os.name == "posix" and sys.platform.startswith("linux")
+
+    def _remember(
+        self, candidates: Sequence[_ProcessRef], *, marker_verified: bool = False
+    ) -> None:
+        for candidate in candidates:
+            if candidate.pid in self._stale:
+                if not marker_verified:
+                    continue
+                # The exact fresh marker proves this reused PID belongs to the
+                # worker too; an ancestry-only candidate cannot make that leap.
+                self._stale.remove(candidate.pid)
+            previous = self._known.get(candidate.pid)
+            if previous is None:
+                self._known[candidate.pid] = candidate
+            elif previous.start_time != candidate.start_time:
+                self._close_ref(previous)
+                del self._known[candidate.pid]
+                self._stale.add(candidate.pid)
+            else:
+                previous.depth = min(previous.depth, candidate.depth)
+
+    def _descendants_from_table(
+        self, table: Mapping[int, tuple[int, int]]
+    ) -> list[_ProcessRef]:
+        root_record = table.get(self._root.pid)
+        if root_record is None or root_record[1] != self._root.start_time:
+            return []
+        children: dict[int, list[tuple[int, int]]] = {}
+        for pid, (ppid, start_time) in table.items():
+            children.setdefault(ppid, []).append((pid, start_time))
+        found: list[_ProcessRef] = []
+        frontier = [(self._root.pid, 0)]
+        seen = {self._root.pid}
+        while frontier:
+            parent, depth = frontier.pop()
+            for pid, start_time in children.get(parent, ()):
+                if pid in seen:
+                    continue
+                seen.add(pid)
+                found.append(_ProcessRef(pid, start_time, depth + 1))
+                frontier.append((pid, depth + 1))
+        return found
+
+    def refresh(self, *, include_marked: bool = False) -> list[_ProcessRef]:
+        """Refresh known identities from ancestry and optionally the marker.
+
+        PPID discovery runs on every supervisor poll, retaining a descendant
+        after it reparents. At timeout, marker discovery additionally recovers
+        descendants whose whole ancestry was born and disappeared between two
+        polls. Only the exact per-launch random environment entry is accepted.
+        """
+        table = _linux_process_table()
+        for pid, ref in tuple(self._known.items()):
+            current = table.get(pid)
+            if current is None or current[1] != ref.start_time:
+                self._close_ref(ref)
+                del self._known[pid]
+                self._stale.add(pid)
+        self._remember(self._descendants_from_table(table))
+        if include_marked and self._provenance_marker is not None:
+            marked = [
+                _ProcessRef(pid, start_time, 1)
+                for pid, (_ppid, start_time) in table.items()
+                if pid != self._root.pid
+                and _linux_process_has_marker(pid, self._provenance_marker)
+            ]
+            self._remember(marked, marker_verified=True)
+        return list(self._known.values())
+
+    @staticmethod
+    def _close_ref(ref: _ProcessRef) -> None:
+        if ref.pidfd is not None:
+            try:
+                os.close(ref.pidfd)
+            except OSError:
+                pass
+            ref.pidfd = None
+
+    @staticmethod
+    def _pidfd_send(ref: _ProcessRef, sig: signal.Signals) -> bool:
+        """Signal one identity, using a pidfd whenever the kernel supports it."""
+        if ref.pidfd is None:
+            current = _linux_process_record(ref.pid)
+            if current is None or current[1] != ref.start_time:
+                return False
+            pidfd_open = getattr(os, "pidfd_open", None)
+            if callable(pidfd_open):
+                try:
+                    ref.pidfd = pidfd_open(ref.pid)
+                except OSError:
+                    return False
+                # The pidfd now pins the incarnation. This second check
+                # rejects a reuse that raced the first /proc read.
+                current = _linux_process_record(ref.pid)
+                if current is None or current[1] != ref.start_time:
+                    _LinuxDescendantTree._close_ref(ref)
+                    return False
+        try:
+            pidfd_send_signal = getattr(signal, "pidfd_send_signal", None)
+            if ref.pidfd is not None and callable(pidfd_send_signal):
+                pidfd_send_signal(ref.pidfd, sig)
+            else:
+                # This is only the old-kernel fallback. The identity check
+                # above is the strongest protection available without pidfds.
+                os.kill(ref.pid, sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            return False
+        return True
+
+    def _signal_newest_first(self, sig: signal.Signals) -> None:
+        for ref in sorted(
+            self._known.values(), key=lambda item: item.depth, reverse=True
+        ):
+            self._pidfd_send(ref, sig)
+
+    def terminate(self, kill_group: Callable[[int], None]) -> None:
+        """Freeze and kill all discovered generations, then close pidfds."""
+        try:
+            self.refresh(include_marked=True)
+            # Stop the root first. It cannot fork while we stabilize the
+            # descendant snapshot, while already-running descendants are
+            # caught by the repeated marker/ancestry passes below.
+            self._pidfd_send(self._root, signal.SIGSTOP)
+            previous_pids: frozenset[int] = frozenset()
+            for _ in range(self._MAX_FREEZE_PASSES):
+                self.refresh(include_marked=True)
+                self._signal_newest_first(signal.SIGSTOP)
+                current_pids = frozenset(self._known)
+                if current_pids == previous_pids:
+                    break
+                previous_pids = current_pids
+                time.sleep(0.005)
+            self.refresh(include_marked=True)
+            self._signal_newest_first(signal.SIGKILL)
+            self._pidfd_send(self._root, signal.SIGKILL)
+            # The original group catches any same-group process missed by a
+            # procfs race. ``kill_group`` refuses the supervisor's own group.
+            kill_group(signal.SIGKILL)
+        finally:
+            self._close_ref(self._root)
+            for ref in self._known.values():
+                self._close_ref(ref)
+
+
+class _ProcessGroupProxy:
+    """Wrapper around a real ``subprocess.Popen`` launched as a session leader.
+
+    Real POSIX workers are session leaders. On Linux, a timeout kills the
+    recursive PPID tree as well as the original process group, so a
+    descendant that calls ``start_new_session=True`` cannot survive by
+    escaping that group. The fallback retains the process-group behavior on
+    other POSIX systems. Signals are never sent to the supervisor's group.
+    """
+
+    def __init__(
+        self, proc: subprocess.Popen, provenance_marker: bytes | None = None
+    ) -> None:
+        self._proc = proc
+        try:
+            self._pgid: int | None = os.getpgid(proc.pid)
+        except (OSError, AttributeError):
+            self._pgid = None
+        root_record = (
+            _linux_process_record(proc.pid)
+            if _LinuxDescendantTree.available()
+            else None
+        )
+        self._tree = (
+            _LinuxDescendantTree(proc.pid, root_record[1], provenance_marker)
+            if root_record is not None
+            else None
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._proc, name)
+
+    def _group_id(self) -> int | None:
+        """The child's process group id, or ``None`` when unavailable."""
+        if not hasattr(os, "killpg"):
+            return None
+        pgid = self._pgid
+        if pgid is None:
+            return None
+        # Never signal the parent's own group: a child that somehow shares
+        # our process group must be killed directly, not by killpg.
+        try:
+            if pgid == os.getpgid(0):
+                return None
+        except OSError:
+            return None
+        return pgid
+
+    def _kill_group(self, sig: int) -> None:
+        pgid = self._group_id()
+        if pgid is None:
+            return
+        try:
+            os.killpg(pgid, sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+    def _fallback_kill(self) -> None:
+        """Kill the original group when Linux tree discovery is unavailable."""
+        self._kill_group(signal.SIGTERM)
+        deadline = time.monotonic() + _PROCESS_GROUP_KILL_GRACE_SECONDS
+        while time.monotonic() < deadline:
+            try:
+                pgid = self._group_id()
+                if pgid is None:
+                    break
+                os.killpg(pgid, 0)
+            except ProcessLookupError:
+                break
+            except (PermissionError, OSError):
+                break
+            else:
+                time.sleep(0.01)
+        self._kill_group(signal.SIGKILL)
+        try:
+            self._proc.kill()
+        except Exception:
+            pass
+
+    def poll(self) -> int | None:
+        """Poll the worker while continuously retaining descendant identities."""
+        if self._tree is not None:
+            try:
+                self._tree.refresh()
+            except Exception:
+                # Procfs tracking is an additional Linux containment layer.
+                # Failure narrows cleanup to the worker's isolated group; it
+                # never justifies signaling a process whose identity is unknown.
+                pass
+        return self._proc.poll()
+
+    def kill(self) -> None:
+        """Terminate the worker tree without touching the supervisor."""
+        if self._tree is None:
+            self._fallback_kill()
+            return
+        try:
+            self._tree.terminate(self._kill_group)
+        except Exception:
+            # A procfs race must not leave the direct worker alive. The
+            # fallback group kill is still scoped to this session.
+            self._fallback_kill()
+        try:
+            self._proc.kill()
+        except Exception:
+            pass
+
+    def wait(self, timeout: float | None = None) -> Any:
+        """Reap the direct child, then defensively reap group leftovers."""
+        try:
+            code = self._proc.wait(timeout=timeout)
+        finally:
+            self._reap_group()
+        return code
+
+    def _reap_group(self) -> None:
+        """Best-effort reaping of any group members still our children."""
+        pgid = self._group_id()
+        if pgid is None:
+            return
+        while True:
+            try:
+                pid, _status = os.waitpid(-pgid, os.WNOHANG)
+            except (ChildProcessError, OSError):
+                return
+            if pid == 0:
+                return
+
+
 def run_supervised_dispatch(
     resolution: Resolution,
     prompt: str,
@@ -1687,12 +2086,31 @@ def run_supervised_dispatch(
                 target_err.write(chunk.decode("utf-8", errors="replace"))
                 target_err.flush()
 
-    proc = popen(
-        argv,
-        stdin=subprocess.PIPE if resolution.prompt_delivery == "stdin" else None,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    launch_kwargs: dict[str, Any] = {
+        "stdin": subprocess.PIPE if resolution.prompt_delivery == "stdin" else None,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+    }
+    # Astra P2-10: isolate real POSIX workers in a session. On Linux, also
+    # inject a fresh identity into only the child's environment. Unlike a PPID
+    # chain, that identity survives both setsid and reparenting when a short-
+    # lived intermediate exits before the next supervisor poll. Fakes receive
+    # neither the platform flag nor an environment override.
+    real_popen = _real_popen_injected(popen)
+    provenance_marker: bytes | None = None
+    if os.name == "posix" and real_popen:
+        launch_kwargs["start_new_session"] = True
+        if _LinuxDescendantTree.available():
+            provenance_value = uuid.uuid4().hex
+            child_env = os.environ.copy()
+            child_env[_WORKER_PROVENANCE_ENV] = provenance_value
+            launch_kwargs["env"] = child_env
+            provenance_marker = f"{_WORKER_PROVENANCE_ENV}={provenance_value}".encode(
+                "ascii"
+            )
+    proc = popen(argv, **launch_kwargs)
+    if os.name == "posix" and isinstance(proc, subprocess.Popen):
+        proc = _ProcessGroupProxy(proc, provenance_marker)
 
     stdin_thread: threading.Thread | None = None
     if resolution.prompt_delivery == "stdin":
@@ -1888,6 +2306,13 @@ def dispatch_route(
             kwargs["cwd"] = cwd
         return base_popen(child_argv, **kwargs)
 
+    # Let the supervision layer apply real-process containment without
+    # mistaking a monkeypatched ``_DEFAULT_POPEN`` fake for the real spawner.
+    setattr(
+        safe_popen,
+        "_lee_llm_router_real_popen",
+        _real_popen_injected(base_popen),
+    )
     popen_fn: Callable[..., Any] = safe_popen
 
     resolution = _dispatch_resolution(route, argv)

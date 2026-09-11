@@ -381,9 +381,9 @@ def test_reviewer_independence_provenance_cites_chief_round15_and_archive(
     for rule in policy.reviewer_independence:
         assert rule.decision.strip(), f"{rule.reviewer_ref}: empty decision"
         assert rule.source.strip(), f"{rule.reviewer_ref}: empty source"
-        assert "Chief round 15" in rule.decision and "Chief round 15" in rule.source, (
-            f"{rule.reviewer_ref}: decision/source must cite Chief round 15"
-        )
+        assert (
+            "Chief round 15" in rule.decision and "Chief round 15" in rule.source
+        ), f"{rule.reviewer_ref}: decision/source must cite Chief round 15"
         assert (
             "chief-answers-15.md" in rule.source
         ), f"{rule.reviewer_ref}: source must cite chief-answers-15.md"

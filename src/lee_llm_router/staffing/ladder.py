@@ -12,7 +12,6 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from statistics import median
 from typing import Any
 
 from lee_llm_router.staffing.proof import ProofStatus
@@ -190,36 +189,33 @@ def _repair_probability(
 def supervisor_overhead_from_rows(
     rows: Iterable[object], *, supervisor_route: str | None = None
 ) -> tuple[float | None, int]:
-    """Return a supervisor route's median marginal attempt cost.
+    """Return the supervisor overhead median from attributable observations.
 
-    The v2 ledger has no synthetic supervisor-overhead field.  Instead, rows
-    carrying ``supervisor_route`` attest which route supervised the work; the
-    function cross-references that identity to the supervisor route's own
-    schema-valid attempt rows and uses their ``cost.usd_marginal`` values.
-    Explicitly ineligible rows are ignored.  Fewer than five matched cost
-    observations return ``None``: omission means unavailable, never zero.
+    Deriving ``s`` requires *attributable* supervision-cost observations: an
+    observation that prices the supervision itself.  ``supervisor_route`` on
+    an attempt row only attests which route supervised that attempt's work;
+    the row's ``cost.usd_marginal`` is the cost of the supervised (worker)
+    attempt, not the cost of the supervision it received.  Attempt-record v2
+    has no supervision-cost field and no supervision record kind, so no row
+    can carry an attributable observation, and the supervisor route's own
+    attempt costs are never repurposed as ``s``.
+
+    The function therefore fails closed: it counts the eligible rows that
+    attest the supervisor's identity (for the unavailable disclosure) and
+    always returns ``None`` — omission means unavailable, never zero and
+    never a borrowed worker cost.  The ``>=5`` gate applies to attributable
+    supervision-cost observations; attempt-v2 can never supply one.
     """
 
     materialized = tuple(rows)
-    attested_routes = {
-        route_id
+    attested = sum(
+        1
         for row in materialized
         if isinstance(row, Mapping) and row.get("eligible") is not False
         if (route_id := _route_ref_id(row.get("supervisor_route"))) is not None
         if supervisor_route is None or route_id == supervisor_route
-    }
-    samples: list[float] = []
-    for row in materialized:
-        if not isinstance(row, Mapping) or row.get("eligible") is False:
-            continue
-        if _route_id(row) not in attested_routes:
-            continue
-        value = _finite_nonnegative(_field(row.get("cost"), "usd_marginal"))
-        if value is not None:
-            samples.append(value)
-    if len(samples) < MINIMUM_SAMPLE_SIZE:
-        return None, len(samples)
-    return float(median(samples)), len(samples)
+    )
+    return None, attested
 
 
 def _normalise_rung(value: LadderInput | Mapping[str, Any]) -> LadderInput:
@@ -376,9 +372,12 @@ def calculate_ladder(
         reasons.append("verification expected cost unavailable")
     if supervisor_cost is None:
         reasons.append(
-            "supervisor overhead unavailable: "
-            f"{supervisor_n} eligible rows with supervisor_route; need "
-            f"{MINIMUM_SAMPLE_SIZE}"
+            "supervisor overhead unavailable: attempt-record v2 carries no "
+            "attributable supervision-cost observation (its cost fields price "
+            "the worker attempt, not the supervision), so the median cannot "
+            f"be derived ({supervisor_n} eligible rows attest "
+            f"supervisor_route; need {MINIMUM_SAMPLE_SIZE} attributable "
+            "observations)"
         )
 
     if all(value is not None for value in expected):

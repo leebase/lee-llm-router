@@ -31,30 +31,38 @@ evidence and gates cheap trials.  The caller supplies route scope explicitly;
 this module never maps a class to a model or route and never guesses a route
 identifier.
 
-Demand (ruling 2) is taken from the P2-0 rollup's ``token_medians`` and
-``wall_clock_median_ms`` at the same join level — never recomputed from
-sums, means, or the raw attempts.  Only groups with the exact requested
-``route_id`` whose ``class_key`` matches at the used level contribute their
-medians; when several class groups match within that route, their medians
-are pooled and the exact median of the pool is emitted.  Unavailable medians
-stay JSON ``null`` in the rollup and are emitted as the explicit string
-``"unknown"`` here; when no median is usable at all, the whole demand is the
-literal string ``"unknown"`` and no expected-cost figure exists.  Exact
-half-integer medians remain the lossless ``"<whole>.5"`` decimal strings the
-rollup emits (see :mod:`lee_llm_router.staffing.rollup`): when a single usable
-median is consumed it is emitted verbatim, preserving its exact type.
+Demand (ruling 2) is computed over the *effective comparable attempt
+population* at the used join level: the same supersession-filtered,
+route-scoped, level-matched rows that produce ``n`` and ``k``.  Each token
+component and the wall-clock median is the exact median of that population's
+observed counters — not a median of subgroup medians, which would misstate
+unequal populations.  Supersession and dedup semantics are the rollup's own
+(``_without_superseded_benchmark_lines``): exactly one preferred benchmark
+record represents each source run, so legacy and duplicate raw-v6 lines never
+both contribute.
+Unavailable values stay unavailable: a component with no observed counter is
+the explicit string ``"unknown"``, and when no median is usable at all the
+whole demand is the literal string ``"unknown"`` and no expected-cost figure
+exists.  At the exact level this population median is identical to the
+accepted P2-0 rollup group's median (same rows, same aggregation); at coarser
+levels it is the truthful population median the rollup's per-class groups
+cannot express.  The ``rollup`` argument is still accepted for caller
+compatibility but is no longer consulted: the joined attempt population is
+the authoritative demand source, and a caller-supplied rollup can never
+disagree with it.
 """
 
 from __future__ import annotations
 
-from fractions import Fraction
 from typing import Any, Iterable, Mapping
 
-from lee_llm_router.staffing.json_int import int_to_decimal
 from lee_llm_router.staffing.rollup import (
     MINIMUM_SAMPLE_SIZE,
     TOKEN_FIELDS,
+    _counter,
+    _exact_median,
     _route_id,
+    _token_values,
     _without_superseded_benchmark_lines,
 )
 
@@ -158,11 +166,6 @@ def _target_route_id(route_id: object) -> str | None:
     )
 
 
-def _group_matches_route(group: Mapping[str, Any], route_id: str | None) -> bool:
-    """Match only an explicitly emitted rollup route field, without guessing."""
-    return "route_id" in group and group.get("route_id") == route_id
-
-
 def _target_components(class_key: object) -> list[str]:
     """Split the target class key, refusing unavailable or empty keys."""
     key = _string_or_none(class_key)
@@ -209,139 +212,28 @@ def _matches_at_width(
     return components[:width] == target[:width]
 
 
-def _rollup_groups(rollup: object) -> list[Mapping[str, Any]]:
-    """Extract the groups of an accepted P2-0 ``evidence rollup`` shape.
-
-    Accepts either the rollup object ``{"groups": [...]}`` or a bare
-    iterable of groups.  Anything else is treated as an empty rollup: a
-    malformed input can never contribute a demand median.
-    """
-    if isinstance(rollup, Mapping):
-        groups = rollup.get("groups")
-        if isinstance(groups, list):
-            return [group for group in groups if isinstance(group, Mapping)]
-        return []
-    if isinstance(rollup, Iterable) and not isinstance(rollup, (str, bytes)):
-        return [group for group in rollup if isinstance(group, Mapping)]
-    return []
-
-
-def _group_class_key(group: Mapping[str, Any]) -> str | None:
-    """Read a rollup group's class key; an unkeyed group matches nothing."""
-    return _string_or_none(group.get("class_key"))
-
-
-def _usable_median_fraction(value: object) -> Fraction | None:
-    """Convert one rollup median into an exact fraction, else ``None``.
-
-    Accepts exactly the median shapes the rollup emits: a nonnegative
-    ``int``, a ``float`` (consumed at its exact binary value), and the
-    lossless ``"<whole>.5"`` decimal string.  Booleans, nulls, and anything
-    unparseable are unusable and are excluded from the demand pool.
-    """
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return Fraction(value)
-    if isinstance(value, float):
-        return Fraction(value)
-    if isinstance(value, str) and value.endswith(".5"):
-        try:
-            whole = int(value[:-2])
-        except ValueError:
-            return None
-        return Fraction(whole) + Fraction(1, 2)
-    return None
-
-
-def _emit_exact(value: Fraction) -> int | float | str:
-    """Emit an exact pooled median in the rollup's JSON-safe conventions.
-
-    Medians of half-integer medians stay integers or half-integers.  An
-    integer is emitted as ``int``; a half-integer as ``float`` when exactly
-    representable (53 significand bits, identical to the rollup rule) and
-    otherwise as the lossless ``"<whole>.5"`` decimal string rendered
-    through the bounded converter.  The final float branch is reachable only
-    from non-half floats the committed rollup never emits.
-    """
-    if value.denominator == 1:
-        return int(value)
-    if value.denominator == 2 and value.numerator >= 0:
-        numerator = value.numerator
-        if numerator.bit_length() <= 53:
-            return float(value)
-        return f"{int_to_decimal(numerator // 2)}.5"
-    return float(value)
-
-
-def _pooled_median(values: list[object]) -> int | float | str | None:
-    """Pool the usable medians of matching groups into one demand value.
-
-    With no usable value the field is unavailable (``None``).  When every
-    usable value is equal the first is emitted verbatim, preserving the
-    rollup's exact type (``int``, ``float``, or the exact decimal string).
-    Otherwise the exact median over the pooled values is emitted: with an
-    odd pool its middle value, with an even pool the exact mean of the two
-    middle values, both computed on exact rationals without rounding.
-    """
-    usable = [
-        (value, fraction)
-        for value, fraction in (
-            (value, _usable_median_fraction(value)) for value in values
-        )
-        if fraction is not None
-    ]
-    if not usable:
-        return None
-    if len(usable) == len(values) and all(
-        fraction == usable[0][1] for _, fraction in usable[1:]
-    ):
-        return usable[0][0]
-    ordered = sorted(fraction for _, fraction in usable)
-    count = len(ordered)
-    if count % 2 == 1:
-        return _emit_exact(ordered[count // 2])
-    return _emit_exact((ordered[count // 2 - 1] + ordered[count // 2]) / 2)
-
-
 def _demand_at_level(
-    groups: list[Mapping[str, Any]],
-    target: list[str],
-    width: int,
-    *,
-    exact: bool,
+    joined: list[Mapping[str, Any]],
 ) -> dict[str, Any] | str:
-    """Build the D211 ruling 2 demand from rollup medians at one level.
+    """Build the D211 ruling 2 demand over the joined attempt population.
 
-    Only groups whose ``class_key`` matches at the used join level
-    contribute.  Each token component and the wall-clock median pool the
-    matching groups' non-null medians; a field with no usable median is the
-    explicit string ``"unknown"``.  When no median at all is usable the
-    whole demand is the literal string ``"unknown"`` and no expected-cost
-    figure exists.
+    Each token component and the wall-clock median are the exact medians of
+    the joined records' own observed counters at the used join level — the
+    same supersession-filtered, route-scoped rows that produce ``n`` and
+    ``k``.  A component with no observed counter is the explicit string
+    ``"unknown"``; when no median at all is usable the whole demand is the
+    literal string ``"unknown"`` and no expected-cost figure exists.
     """
-    matching = [
-        group
-        for group in groups
-        if (key := _group_class_key(group)) is not None
-        and _matches_at_width(key, target, width, exact=exact)
-    ]
     tokens: dict[str, int | float | str | None] = {}
     for field in TOKEN_FIELDS:
-        values: list[object] = []
-        for group in matching:
-            medians = group.get("token_medians")
-            if not isinstance(medians, Mapping):
-                continue
-            if medians.get(field) is not None:
-                values.append(medians[field])
-        tokens[field] = _pooled_median(values)
-    wall_values: list[object] = []
-    for group in matching:
-        median = group.get("wall_clock_median_ms")
-        if median is not None:
-            wall_values.append(median)
-    wall_clock_ms = _pooled_median(wall_values)
+        values = _token_values(joined, field)
+        tokens[field] = _exact_median(values) if values else None
+    wall_values = [
+        value
+        for value in (_counter(record.get("wall_clock_ms")) for record in joined)
+        if value is not None
+    ]
+    wall_clock_ms = _exact_median(wall_values) if wall_values else None
 
     if all(value is None for value in (*tokens.values(), wall_clock_ms)):
         return DEMAND_UNKNOWN
@@ -451,19 +343,23 @@ def join_evidence(
 
     Args:
         route_id: The exact route scope.  A non-empty string is compared
-            byte-for-byte; ``None`` explicitly selects records and rollup
-            groups whose route is unavailable.  No route alias is inferred.
+            byte-for-byte; ``None`` explicitly selects records whose route
+            is unavailable.  No route alias is inferred.
         class_key: The target ``class_record.class_key``.  Must be a
             non-empty string; the join never guesses or rewrites a key.
         records: Attempt records already validated by
             :func:`lee_llm_router.staffing.ledger.read_attempts` (or
             equivalent); they are consumed truthfully after applying the
             accepted rollup supersession view.
-        rollup: Optional accepted P2-0 ``evidence rollup`` shape — the
-            ``{"groups": [...]}`` object or a bare iterable of groups —
-            normally :func:`lee_llm_router.staffing.rollup.build_rollup`
-            output over the same records.  It supplies the demand medians;
-            without it every demand field is explicitly ``"unknown"``.
+        rollup: Accepted but no longer consulted for demand; retained so
+            existing callers (which pass
+            :func:`lee_llm_router.staffing.rollup.build_rollup` output over
+            the same records) stay source-compatible.  The demand medians
+            are computed over the joined attempt population itself, which is
+            the supersession-filtered population the rollup aggregates; at
+            the exact join level the two agree exactly, and at coarse levels
+            the population median is the truthful value a pool of per-class
+            group medians cannot express.
 
     Returns:
         An :class:`EvidenceJoin` whose :meth:`~EvidenceJoin.as_dict` carries
@@ -494,7 +390,6 @@ def join_evidence(
 
     joined: list[Mapping[str, Any]] = []
     used = EVIDENCE_LEVEL_NONE
-    used_width = 0
     for level, width in levels:
         joined = [
             record
@@ -506,7 +401,6 @@ def join_evidence(
         ]
         if joined:
             used = level
-            used_width = width
             break
 
     prior_n = sum(
@@ -516,21 +410,17 @@ def join_evidence(
         1 for record in joined if _record_kind(record) == ROUTER_RECORD_KIND
     )
     if used == EVIDENCE_LEVEL_NONE:
-        # No comparable evidence exists at any level, so no rollup group can
-        # match either: the demand is the explicit unknown, never a guess.
+        # No comparable evidence exists at any level, so there is no attempt
+        # population to aggregate: the demand is the explicit unknown, never
+        # a guess.
         demand: dict[str, Any] | str = DEMAND_UNKNOWN
     else:
-        route_groups = [
-            group
-            for group in _rollup_groups(rollup)
-            if _group_matches_route(group, target_route_id)
-        ]
-        demand = _demand_at_level(
-            route_groups,
-            target,
-            used_width,
-            exact=used == EVIDENCE_LEVEL_EXACT,
-        )
+        # The demand population is exactly the joined rows at the used join
+        # level.  The caller-supplied rollup is accepted but not consulted:
+        # the joined attempts are the authoritative, supersession-filtered
+        # population, and a median over it is the truthful demand at every
+        # level (identical to the rollup group's median at the exact level).
+        demand = _demand_at_level(joined)
     return EvidenceJoin(
         level=used,
         n=len(joined),

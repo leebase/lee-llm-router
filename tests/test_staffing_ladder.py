@@ -1,11 +1,18 @@
-"""Hand-computed tests for pure D211 ladder arithmetic."""
+"""Hand-computed tests for pure D211 ladder arithmetic.
+
+Finding 4 semantics: attempt-record v2 has no attributable supervision-cost
+field or record kind, so supervisor overhead is always unavailable — the
+supervisor route's own worker attempt costs are never repurposed as ``s``.
+Every ladder that would need ``s`` therefore fails closed, and the tests
+assert the proof-first, marginal-price fallback ordering instead of argmin
+arithmetic.
+"""
 
 from __future__ import annotations
 
 import pytest
 
 from lee_llm_router.staffing.ladder import (
-    EXPECTED_COST_AVAILABLE,
     EXPECTED_COST_UNAVAILABLE,
     LadderInput,
     calculate_ladder,
@@ -79,36 +86,72 @@ def calculate(rungs, **kwargs):
     )
 
 
-def test_one_rung_terminal_and_exact_shape():
+def assert_s_fail_closed(result):
+    """Every rung's s and E are unavailable with the fail-closed reason."""
+    reason = " ".join(result["unavailable_reasons"])
+    assert "supervisor overhead unavailable" in reason
+    assert "attributable supervision-cost" in reason
+    assert "need 5" in reason
+    assert result["expected_cost_status"] == EXPECTED_COST_UNAVAILABLE
+    for row in result["rungs"]:
+        assert row["s"] == EXPECTED_COST_UNAVAILABLE
+        assert row["E"] == EXPECTED_COST_UNAVAILABLE
+
+
+def test_supervisor_overhead_fails_closed_without_attributable_cost():
+    """Even five attested rows plus five same-route marginal costs never
+    produce s: those costs price the worker attempts, not the supervision."""
+    rows = supervisor_rows((0.1, 0.2, 0.3, 0.4, 0.5))
+    assert supervisor_overhead_from_rows(rows, supervisor_route="supervisor") == (
+        None,
+        5,
+    )
+    assert supervisor_overhead_from_rows(rows) == (None, 5)
+
+
+def test_worker_costs_of_the_supervisor_route_are_never_repurposed():
+    result = calculate([rung("r1")])
+    assert_s_fail_closed(result)
+
+
+def test_fewer_than_five_attestations_still_fail_closed():
+    four = supervisor_rows((0.1,) * 4)
+    assert supervisor_overhead_from_rows(four, supervisor_route="supervisor") == (
+        None,
+        4,
+    )
+    result = calculate([rung("r1")], attempt_records=four)
+    assert_s_fail_closed(result)
+    assert result["rungs"][0]["a"] == pytest.approx(1.0)
+
+
+def test_one_rung_shape_with_fail_closed_s():
     result = calculate([rung("r1")])
 
-    assert result["expected_cost_status"] == EXPECTED_COST_AVAILABLE
     assert result["argmin_start"] == "r1"
     assert result["escalation"] == ["r1"]
     assert set(result["rungs"][0]) == RUNG_KEYS
-    # 1.1 + .5 * (1.1 + .5 * 5) = 2.9
     row = result["rungs"][0]
     assert row["route"] == "r1"
     assert {
-        key: value for key, value in row.items() if key != "route"
-    } == pytest.approx(
-        {"a": 1.0, "v": 0.0, "s": 0.1, "q": 0.5, "q_prime": 0.5, "E": 2.9}
-    )
+        key: value for key, value in row.items() if key not in ("route", "s", "E")
+    } == pytest.approx({"a": 1.0, "v": 0.0, "q": 0.5, "q_prime": 0.5})
+    assert_s_fail_closed(result)
 
 
-def test_two_rungs_are_computed_backwards_by_hand():
+def test_each_known_term_is_still_computed_while_s_is_unavailable():
     result = calculate([rung("r1", a=0.1, n=2, k=0), rung("r2", a=2, n=2, k=2)])
     by_route = {row["route"]: row for row in result["rungs"]}
 
-    # E2 = 2.1 + .25 * (2.1 + .25 * 5) = 2.9375
-    assert by_route["r2"]["E"] == pytest.approx(2.9375)
-    # E1 = .2 + .75 * (.2 + .75 * E2)
-    assert by_route["r1"]["E"] == pytest.approx(2.00234375)
+    assert by_route["r1"]["a"] == pytest.approx(0.1)
+    assert by_route["r2"]["a"] == pytest.approx(2.0)
+    assert_s_fail_closed(result)
+    # The fallback orders by current marginal price, so the cheap rung leads.
     assert result["argmin_start"] == "r1"
     assert result["escalation"] == ["r1", "r2"]
 
 
-def test_three_rungs_and_argmin_can_skip_first():
+def test_fallback_orders_three_rungs_by_marginal_price():
     result = calculate(
         [
             rung("expensive", a=10, n=5, k=0),
@@ -116,12 +159,10 @@ def test_three_rungs_and_argmin_can_skip_first():
             rung("last", a=1, n=5, k=4),
         ]
     )
-    by_route = {row["route"]: row for row in result["rungs"]}
 
-    assert by_route["last"]["E"] == pytest.approx(1.1 + (2 / 7) * (1.1 + (2 / 7) * 5))
-    assert by_route["expensive"]["E"] > by_route["middle"]["E"]
+    assert_s_fail_closed(result)
     assert result["argmin_start"] == "middle"
-    assert result["escalation"] == ["middle", "last"]
+    assert result["escalation"] == ["middle", "last", "expensive"]
 
 
 def repair_rows(count, passes):
@@ -142,6 +183,7 @@ def test_q_prime_stays_q_below_repair_sample_threshold():
     row = result["rungs"][0]
     assert row["q"] == pytest.approx(0.3)
     assert row["q_prime"] == pytest.approx(0.3)
+    assert_s_fail_closed(result)
 
 
 def test_q_prime_uses_its_own_laplace_estimate_at_five_repairs():
@@ -151,26 +193,8 @@ def test_q_prime_uses_its_own_laplace_estimate_at_five_repairs():
     assert row["q_prime"] == pytest.approx(5 / 7)
 
 
-def test_supervisor_overhead_requires_five_eligible_attested_rows():
-    four = supervisor_rows((0.1,) * 4)
-    assert supervisor_overhead_from_rows(four, supervisor_route="supervisor") == (
-        None,
-        4,
-    )
-    result = calculate([rung("r1")], attempt_records=four)
-    assert result["rungs"][0]["s"] == EXPECTED_COST_UNAVAILABLE
-    assert result["rungs"][0]["E"] == EXPECTED_COST_UNAVAILABLE
-    assert "need 5" in result["unavailable_reasons"][-1]
-
-    rows = supervisor_rows((0.1, 0.2, 0.3, 0.4, 0.5))
-    assert supervisor_overhead_from_rows(rows, supervisor_route="supervisor") == (
-        0.3,
-        5,
-    )
-
-
-def test_rows_without_supervisor_route_or_explicitly_ineligible_are_excluded():
-    rows = supervisor_rows((0.2,) * 5)
+def test_rows_without_supervisor_route_or_explicitly_ineligible_do_not_attest():
+    rows = supervisor_rows()
     rows.extend(
         [
             {
@@ -185,8 +209,10 @@ def test_rows_without_supervisor_route_or_explicitly_ineligible_are_excluded():
             },
         ]
     )
+    # Only the five eligible attesting rows count toward the disclosure;
+    # the unattested and explicitly ineligible rows add nothing.
     assert supervisor_overhead_from_rows(rows, supervisor_route="supervisor") == (
-        0.2,
+        None,
         5,
     )
 
@@ -197,13 +223,16 @@ def test_judge_v_is_explicit_selected_independent_reviewer_expected_cost():
     )
     row = result["rungs"][0]
     assert row["v"] == pytest.approx(0.4)
-    assert row["E"] == pytest.approx(1.5 + 0.5 * (1.5 + 0.5 * 5))
+    assert row["a"] == pytest.approx(1.0)
+    assert row["q"] == pytest.approx(0.5)
+    assert_s_fail_closed(result)
 
 
 def test_unknown_judge_cost_makes_expected_cost_unavailable():
     result = calculate([rung("r1")], oracle_type="judge")
     assert result["expected_cost_status"] == EXPECTED_COST_UNAVAILABLE
     assert result["rungs"][0]["v"] == EXPECTED_COST_UNAVAILABLE
+    assert_s_fail_closed(result)
 
 
 @pytest.mark.parametrize(
@@ -227,6 +256,7 @@ def test_unknown_demand_pricing_or_evidence_is_explicit(changed, field):
     result = calculate([base])
     row = result["rungs"][0]
     assert row[field] == EXPECTED_COST_UNAVAILABLE
+    assert row["s"] == EXPECTED_COST_UNAVAILABLE
     assert row["E"] == EXPECTED_COST_UNAVAILABLE
     assert result["expected_cost_status"] == EXPECTED_COST_UNAVAILABLE
 
@@ -252,20 +282,20 @@ def test_attempt_cost_uses_only_input_output_medians_and_marginal_prices():
     assert row["a"] == pytest.approx(0.8)
 
 
-def test_unavailable_arithmetic_fallback_is_proof_then_price_and_stable():
+def test_proven_rung_leads_the_fallback_even_when_more_expensive():
     rungs = [
         LadderInput("cheap-unproven", "unknown", pricing(0.01, 0.01), evidence()),
-        LadderInput(
-            "proven-tie-a",
-            "unknown",
-            pricing(0.02, 0.03),
-            evidence(),
-            ProofStatus.PROVEN,
-        ),
         LadderInput(
             "proven-cheap",
             "unknown",
             pricing(0.01, 0.02),
+            evidence(),
+            ProofStatus.PROVEN,
+        ),
+        LadderInput(
+            "proven-tie-a",
+            "unknown",
+            pricing(0.02, 0.03),
             evidence(),
             ProofStatus.PROVEN,
         ),

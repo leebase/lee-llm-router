@@ -11,12 +11,13 @@ rendered as ``null``, never as a fabricated zero.  Thus a nullable optional
 counter remains visibly unavailable, while a partially observed component is
 explicitly an aggregate of the observed values only.
 
-The append-only ledger can describe one benchmark source run twice: the
-pre-repair legacy crew-run line and the deterministic ``benchmark:v6:<run_id>``
-correction a governed re-import appends for it.  History is never rewritten,
-but the correction supersedes its legacy source attempt in the aggregation, so
-every distinct source run is counted exactly once.  Runs without a correction,
-and all non-benchmark records, pass through unchanged.
+The append-only ledger can describe one benchmark source run more than once:
+the pre-repair legacy crew-run line, its deterministic
+``benchmark:v6:<run_id>`` correction, or duplicate raw-v6 lines.  History is
+never rewritten, but aggregation materializes exactly one preferred effective
+record per source run.  The canonical correction wins over other raw-v6 lines,
+raw-v6 wins over legacy, and remaining ties use stable attempt-id ordering.
+All non-benchmark records pass through unchanged.
 
 Medians are exact and every validated ledger integer is accepted: an odd
 sample reports its middle counter, and an even sample reports the exact
@@ -296,44 +297,71 @@ def _group_record(
     }
 
 
+def _benchmark_preference_key(
+    run_id: str, record: Mapping[str, Any]
+) -> tuple[int, str, str]:
+    """Rank one benchmark line for the effective view of ``run_id``.
+
+    The importer's deterministic correction id is the canonical winner.  A
+    raw-v6 line with another id is still preferred to a legacy line, because
+    it carries the repaired source shape.  Attempt ids provide a stable
+    order for duplicate raw-v6 (or legacy) lines; the serialized record is a
+    final tie-breaker for the adversarial case of repeated ids with different
+    facts.  No ledger order is consulted.
+    """
+    attempt_id = record["attempt_id"]
+    canonical_id = f"{BENCHMARK_CORRECTION_PREFIX}{run_id}"
+    if is_benchmark_v6_record(record):
+        if attempt_id == canonical_id:
+            rank = 0
+        elif attempt_id.startswith(BENCHMARK_CORRECTION_PREFIX):
+            rank = 1
+        else:
+            rank = 2
+    else:
+        rank = 3
+    return rank, attempt_id, dump_json(dict(record), sort_keys=True)
+
+
 def _without_superseded_benchmark_lines(
     records: list[Mapping[str, Any]],
 ) -> list[Mapping[str, Any]]:
-    """Drop legacy benchmark lines superseded by their truthful correction.
+    """Materialize one preferred benchmark record per source run.
 
-    A governed benchmark re-import appends one deterministic
-    ``benchmark:v6:<run_id>`` correction per pre-repair legacy crew-run line
-    and never rewrites the append-only ledger.  Aggregation must still count
-    each distinct source run exactly once, so when a raw v6 record describes
-    a run, every legacy-shaped line describing that same run is superseded
-    and excluded here.  Lines stay in the ledger; only this rollup view
-    changes.  Runs without a correction, records whose source run id cannot
-    be read, and all non-benchmark records pass through unchanged.  Should
-    multiple raw v6 records ever describe one run, the correction-prefixed
-    attempt id wins deterministically and otherwise the first committed
-    record.
+    A governed benchmark re-import appends a deterministic correction instead
+    of rewriting a legacy crew-run line.  A source can also contain duplicate
+    raw-v6 lines, so merely dropping legacy lines is insufficient: every
+    recognized benchmark shape for a run competes for one effective slot.
+    Preference is the canonical ``benchmark:v6:<run_id>`` correction, then
+    another correction-prefixed raw-v6 line, then any other raw-v6 line, and
+    finally legacy lines.  Stable attempt-id/record ordering resolves ties,
+    making the effective population independent of ledger input order.
+    Records with no readable benchmark source id and non-benchmark records
+    pass through unchanged.
     """
-    raw_v6_by_run: dict[str, Mapping[str, Any]] = {}
+    candidates_by_run: dict[str, list[Mapping[str, Any]]] = {}
     for record in records:
         run_id = benchmark_source_run_id(record)
-        if run_id is None or not is_benchmark_v6_record(record):
-            continue
-        current = raw_v6_by_run.get(run_id)
-        if current is None or (
-            not current["attempt_id"].startswith(BENCHMARK_CORRECTION_PREFIX)
-            and record["attempt_id"].startswith(BENCHMARK_CORRECTION_PREFIX)
-        ):
-            raw_v6_by_run[run_id] = record
+        if run_id is not None:
+            candidates_by_run.setdefault(run_id, []).append(record)
+
+    winners = {
+        run_id: min(
+            candidates,
+            key=lambda candidate: _benchmark_preference_key(run_id, candidate),
+        )
+        for run_id, candidates in candidates_by_run.items()
+    }
+
     kept: list[Mapping[str, Any]] = []
+    emitted_runs: set[str] = set()
     for record in records:
         run_id = benchmark_source_run_id(record)
-        if (
-            run_id is not None
-            and not is_benchmark_v6_record(record)
-            and run_id in raw_v6_by_run
-        ):
-            continue
-        kept.append(record)
+        if run_id is None:
+            kept.append(record)
+        elif run_id not in emitted_runs:
+            kept.append(winners[run_id])
+            emitted_runs.add(run_id)
     return kept
 
 
@@ -351,10 +379,10 @@ def build_rollup(
         ``null`` rather than silently dropped; such a group is visibly
         unkeyed and is never converted into a guessed identifier.
 
-        A benchmark source run described by both a pre-repair legacy crew-run
-        line and its raw v6 correction is aggregated once — the correction
-        supersedes the legacy line, which remains in the ledger but is
-        excluded from the counts, tokens, and pass statistics here.
+        Every recognized benchmark source run is aggregated once.  Its
+        effective row prefers the canonical correction, then other raw-v6
+        rows, then legacy history; discarded historical/duplicate lines stay
+        in the ledger but are excluded from counts and aggregates here.
     """
     materialized = _without_superseded_benchmark_lines(list(records))
     grouped: dict[tuple[str | None, str | None], list[Mapping[str, Any]]] = {}

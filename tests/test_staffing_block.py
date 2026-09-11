@@ -64,15 +64,15 @@ def ladder_unavailable(reasons, routes=("r1", "r2"), escalation=None):
     }
 
 
-def evidence(level="drop_size_band", n=5, k=3, low=False):
+def evidence(level="drop_size_band", n=5, k=3, low=False, prior_n=2, posterior_n=3):
     return {
         "level": level,
         "n": n,
         "k": k,
         "estimate": (k + 1) / (n + 2),
         "low_evidence": low,
-        "prior_n": 2,
-        "posterior_n": 3,
+        "prior_n": prior_n,
+        "posterior_n": posterior_n,
     }
 
 
@@ -108,7 +108,8 @@ def test_computable_auto_block_golden_text():
             "- r1 (channel openrouter, headroom 0.42, badge ON TRACK, "
             "eligible, proven)",
             "- r2 (channel openrouter, headroom 0.9, badge COLD, eligible, proven)",
-            "Reason: accepted 3/5 comparable (drop_size_band), estimate 0.571429",
+            "Reason: accepted 3/5 comparable (drop_size_band), prior 2 benchmark, "
+            "posterior 3 production, estimate 0.571429",
             "Expected cost: $0.0123 (argmin r1)",
             "Escalation: r1 -> r2 -> human ($5.0000 policy terminal, beyond the "
             "never-automatic boundary)",
@@ -127,7 +128,11 @@ def test_unavailable_auto_block_golden_text():
             row("r-unproven"),
             row("r-proven"),
         ],
-        evidence_by_route={"r-proven": evidence(level="none", n=0, k=0, low=True)},
+        evidence_by_route={
+            "r-proven": evidence(
+                level="none", n=0, k=0, low=True, prior_n=0, posterior_n=0
+            )
+        },
         proof_status_by_route={"r-proven": "proven"},
         ladder_result=ladder_unavailable(
             ["demand or marginal pricing unavailable"],
@@ -146,7 +151,8 @@ def test_unavailable_auto_block_golden_text():
             "unknown, eligible, unproven)",
             "- r-proven (channel openrouter, headroom unknown, badge "
             "unknown, eligible, proven)",
-            "Reason: accepted 0/0 comparable (none), low evidence",
+            "Reason: accepted 0/0 comparable (none), prior 0 benchmark, "
+            "posterior 0 production, low evidence",
             "Expected cost: unavailable (demand or marginal pricing unavailable)",
             "Escalation: r-proven -> r-unproven -> human ($5.0000 policy terminal, "
             "beyond the never-automatic boundary)",
@@ -164,7 +170,9 @@ def test_no_comparable_evidence_never_shows_estimate():
         role="review",
         class_key="review/judge/none/s/python",
         eligibility_rows=[row("r1")],
-        evidence_by_route={"r1": evidence(level="none", n=0, k=0, low=True)},
+        evidence_by_route={
+            "r1": evidence(level="none", n=0, k=0, low=True, prior_n=0, posterior_n=0)
+        },
         proof_status_by_route={"r1": "proven"},
         ladder_result=ladder_available(argmin="r1", escalation=("r1",)),
     )
@@ -185,6 +193,60 @@ def test_no_comparable_evidence_never_shows_estimate():
     shown = render_json(block2)
     assert shown["reason"]["estimate"] == comparable["estimate"]
     assert "estimate" in render_text(block2)
+
+
+def test_reason_carries_prior_and_posterior_counts_in_text_and_json():
+    """Finding 6 regression: the reason carries the benchmark-prior and
+    production-posterior counts, and text and JSON stay in parity."""
+    for prior_n, posterior_n in [(5, 0), (0, 5), (2, 3), (0, 0)]:
+        block = build_auto_block(
+            role="impl",
+            class_key="impl/deterministic/none/s/python",
+            eligibility_rows=[row("r1")],
+            evidence_by_route={
+                "r1": evidence(prior_n=prior_n, posterior_n=posterior_n)
+            },
+            ladder_result=ladder_available(),
+        )
+        payload = render_json(block)
+        text = render_text(block)
+
+        assert payload["reason"]["prior_n"] == prior_n
+        assert payload["reason"]["posterior_n"] == posterior_n
+        assert f"prior {prior_n} benchmark" in text
+        assert f"posterior {posterior_n} production" in text
+        # The mixed split is rendered with both counts even at the extremes:
+        # an all-prior or all-posterior join never hides the other bucket.
+        assert (
+            f"accepted 3/5 comparable (drop_size_band), prior {prior_n} "
+            f"benchmark, posterior {posterior_n} production" in text
+        )
+
+
+def test_reason_counts_follow_the_evidence_join_summary():
+    join_summary = {
+        "level": "drop_size_band",
+        "n": 5,
+        "k": 3,
+        "estimate": 4 / 7,
+        "low_evidence": False,
+        "prior_n": 4,
+        "posterior_n": 1,
+    }
+    block = build_auto_block(
+        role="impl",
+        class_key="impl/deterministic/none/s/python",
+        eligibility_rows=[row("r1")],
+        evidence_by_route={"r1": join_summary},
+        ladder_result=ladder_available(),
+    )
+    payload = render_json(block)
+    assert payload["reason"]["prior_n"] == 4
+    assert payload["reason"]["posterior_n"] == 1
+    assert (
+        "Reason: accepted 3/5 comparable (drop_size_band), prior 4 benchmark, "
+        "posterior 1 production, estimate 0.571429" in render_text(block)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +317,7 @@ def test_independent_reviewer_selected_with_author_route():
         "eligible": True,
         "reason": None,
         "independence_evaluated": True,
+        "independence_reference": "author",
     }
 
 
@@ -288,6 +351,30 @@ def test_independence_not_evaluated_disclosure():
     )
     assert "independence not evaluated (no --author-route)" in render_text(block)
     assert render_json(block)["review"]["independence_evaluated"] is False
+    assert render_json(block)["review"]["independence_reference"] is None
+
+
+def test_explicit_author_reference_disclosed_with_selected_excluded():
+    """An explicit author reference is disclosed verbatim, and the reviewed
+    worker is disclosed as excluded too — the block never claims independence
+    from the selected worker when the reference was a different route."""
+    block = build_auto_block(
+        role="impl",
+        class_key="impl/deterministic/none/s/python",
+        eligibility_rows=[row("worker"), row("reviewer")],
+        ladder_result=ladder_available(argmin="worker", escalation=("worker",)),
+        selected_route="worker",
+        review_route="reviewer",
+        review_eligible=True,
+        review_independence_evaluated=True,
+        review_independence_reference="author",
+    )
+    text = render_text(block)
+    assert (
+        "Review: reviewer (eligible, independent of author author; "
+        "selected worker also excluded)"
+    ) in text
+    assert render_json(block)["review"]["independence_reference"] == "author"
 
 
 # ---------------------------------------------------------------------------
@@ -412,6 +499,76 @@ def test_nonfinite_or_missing_available_cost_becomes_unavailable():
         assert payload["expected_cost"]["reasons"] == [
             "argmin expected cost unavailable"
         ]
+
+
+# ---------------------------------------------------------------------------
+# Proof-first override: reconciliation to the actual selected route
+# ---------------------------------------------------------------------------
+
+
+def test_proof_first_override_reconciles_cost_and_escalation_suffix():
+    """Proof-first policy may select a rung other than the pure argmin; the
+    expected cost and escalation suffix must belong to the selected route,
+    with the rejected argmin still disclosed as the ladder argmin."""
+    ladder = {
+        "rungs": [
+            {"route": "r-cheap", "E": 0.005},
+            {"route": "r-proven", "E": 0.0123456},
+            {"route": "r-last", "E": 0.02},
+        ],
+        "argmin_start": "r-cheap",
+        "escalation": ["r-cheap", "r-proven", "r-last"],
+        "expected_cost_status": "available",
+        "unavailable_reasons": [],
+    }
+    block = build_auto_block(
+        role="impl",
+        class_key="impl/deterministic/none/s/python",
+        eligibility_rows=[row("r-cheap"), row("r-proven"), row("r-last")],
+        proof_status_by_route={"r-proven": "proven"},
+        ladder_result=ladder,
+        selected_route="r-proven",
+    )
+    payload = render_json(block)
+    assert payload["selected_route"] == "r-proven"
+    assert payload["expected_cost"] == {
+        "status": "available",
+        "usd": 0.0123456,
+        "argmin_route": "r-cheap",
+    }
+    assert payload["escalation"] == ["r-proven", "r-last"]
+    assert (
+        "Expected cost: $0.0123 (selected r-proven; ladder argmin r-cheap)"
+        in render_text(block)
+    )
+
+
+def test_selected_rung_without_usable_cost_fails_closed():
+    ladder = {
+        "rungs": [
+            {"route": "r-cheap", "E": 0.005},
+            {"route": "r-proven", "E": float("nan")},
+        ],
+        "argmin_start": "r-cheap",
+        "escalation": ["r-cheap", "r-proven"],
+        "expected_cost_status": "available",
+        "unavailable_reasons": [],
+    }
+    block = build_auto_block(
+        role="impl",
+        class_key="impl/deterministic/none/s/python",
+        eligibility_rows=[row("r-cheap"), row("r-proven")],
+        proof_status_by_route={"r-proven": "proven"},
+        ladder_result=ladder,
+        selected_route="r-proven",
+    )
+    payload = render_json(block)
+    assert payload["expected_cost"]["status"] == "unavailable"
+    assert payload["expected_cost"]["usd"] is None
+    assert payload["expected_cost"]["reasons"] == ["selected expected cost unavailable"]
+    assert "Expected cost: unavailable (selected expected cost unavailable)" in (
+        render_text(block)
+    )
 
 
 def test_reason_unavailable_when_no_evidence_join():

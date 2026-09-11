@@ -215,3 +215,38 @@ dispatches record the same fields as `run`.
   retained tests, and docs, then returned PASS — zero findings: 67 events,
   3,164,084 tokens / `$0.071798462762`. P2-9 newly metered OpenRouter spend
   `$0.117078632762`; running knowable OpenRouter total `$0.543088185116`.
+
+## P2-10 — Final literal gate and release review
+
+- The supervisor reran the literal scratch contract: dated `auto` changed
+  selection at the terms boundary, both saved crews matched exactly,
+  never-automatic bind refused every non-Lee authorization without a write,
+  and exact `--authorized-by lee` appended one event. Replay remained 42/42;
+  installed four-harness shim parity and the removed-module census were clean.
+- Initial Astra Low review found six release findings: descendant cleanup,
+  reviewer/worker independence, proof-first cost/suffix reconciliation,
+  unattributable supervision overhead, median-of-medians demand, and missing
+  prior/posterior disclosure. Rule B split these into three existing-topic
+  repair packets. GLM implemented the first pass; supervisor inspection and
+  1,459/1 tests closed four findings. Independent DeepSeek review passed.
+- Two Astra reruns adversarially exposed deeper variants: `setsid` descendants,
+  duplicate raw-v6 benchmark rows, and then an already-reparented sleeping
+  orphan. The implementation ladder escalated the affected packets to Luna
+  XHigh and finally Sol High. Final containment uses isolated process groups,
+  Linux PID/start-time and pidfd identity guards, continuous ancestry tracking,
+  and a per-launch inherited provenance marker so timeout cleanup also finds
+  new-session orphans after ancestry disappears. Benchmark aggregation now
+  chooses one deterministic canonical effective row per source run across
+  correction, raw-v6, and legacy rows.
+- Final cross-family DeepSeek review reproduced the orphan and dedup cases and
+  found no actionable release defect. The final Astra Low gate reported
+  Blocking 0 / High 0 / Medium 0 / Low 0 and PASS. Its independent checks:
+  1,467 passed/1 skipped, replay 42, focused staffing/eligibility/shims 160,
+  Black 75 files, Ruff/diff clean, literal CLI and installed shim parity clean,
+  and no leaked regression workers.
+- P2-10 OpenRouter author/reviewer receipts: 276 finalized events,
+  17,202,255 provider-reported tokens, `$0.369372049286` metered. Running
+  knowable OpenRouter total is `$0.912460234402`, below the `$10` ceiling.
+  Luna/Sol/Astra subscription runs separately reported 148 finalized events,
+  7,073,725 tokens and `$8.03709036` execution equivalent; these are not
+  metered spend.

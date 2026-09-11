@@ -419,7 +419,7 @@ def test_summary_returns_exactly_the_contract_keys_in_order() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_demand_consumes_rollup_medians_verbatim_at_exact_level() -> None:
+def test_demand_medians_match_the_rollup_at_the_exact_level() -> None:
     records = [
         _record(
             attempt_id=f"demand-{index}",
@@ -436,7 +436,8 @@ def test_demand_consumes_rollup_medians_verbatim_at_exact_level() -> None:
     joined = join_evidence("route-a", CLASS_KEY, records, rollup)
 
     group = rollup["groups"][0]
-    # Consumed verbatim per field; a null median field stays explicit.
+    # Same population, same aggregation: the population median equals the
+    # rollup group's median verbatim per field; a null median stays explicit.
     assert joined.demand == {
         "tokens": {
             **group["token_medians"],
@@ -541,12 +542,15 @@ def test_demand_unknown_when_no_usable_median() -> None:
     assert joined.demand == DEMAND_UNKNOWN
 
 
-def test_demand_unknown_without_a_rollup() -> None:
+def test_demand_is_computed_from_records_without_a_rollup() -> None:
+    """The joined attempt population is the demand source, not the rollup."""
     records = [_record(attempt_id="solo-1")]
 
     joined = join_evidence("route-a", CLASS_KEY, records)
 
-    assert joined.demand == DEMAND_UNKNOWN
+    assert joined.demand["tokens"]["input_tokens"] == 10
+    assert joined.demand["tokens"]["output_tokens"] == 5
+    assert joined.demand["wall_clock_ms"] == 100
 
 
 def test_demand_null_median_field_is_explicitly_unknown() -> None:
@@ -568,10 +572,10 @@ def test_demand_null_median_field_is_explicitly_unknown() -> None:
     assert joined.demand["wall_clock_ms"] == DEMAND_UNKNOWN
 
 
-def test_demand_uses_groups_at_the_used_join_level() -> None:
+def test_demand_uses_joined_records_at_the_used_join_level() -> None:
     records = [
         # Joins at drop_language: different language, same first four
-        # components; the rollup group's medians must be consumed there.
+        # components; only this level's rows feed the demand population.
         _record(
             attempt_id="go-1",
             class_key="impl/deterministic/none/s/go",
@@ -580,8 +584,8 @@ def test_demand_uses_groups_at_the_used_join_level() -> None:
             total_tokens=None,
             wall_clock_ms=70,
         ),
-        # Matches only at drop_size_band: its medians must not leak into
-        # the drop_language demand.
+        # Matches only at drop_size_band: its counters must not leak into
+        # the drop_language demand population.
         _record(
             attempt_id="xs-1",
             class_key="impl/deterministic/none/xs/go",
@@ -591,7 +595,7 @@ def test_demand_uses_groups_at_the_used_join_level() -> None:
             wall_clock_ms=900,
         ),
         # An exact class match on another route must not enter this route's
-        # coarse-level demand pool.
+        # coarse-level demand population.
         _record(
             attempt_id="other-route-exact",
             route_id="route-b",
@@ -610,29 +614,141 @@ def test_demand_uses_groups_at_the_used_join_level() -> None:
     assert joined.demand["wall_clock_ms"] == 70
 
 
-def test_demand_ignores_nonmatching_and_unkeyed_groups() -> None:
-    matching = _record(attempt_id="solo-1", input_tokens=3, output_tokens=1)
-    stranger = _record(
-        attempt_id="stranger-1",
-        class_key="review/judge/none/xs/markdown",
-        input_tokens=99,
-        output_tokens=1,
-        total_tokens=None,
-        wall_clock_ms=999,
+def test_coarse_demand_is_the_population_median_not_median_of_medians():
+    """Finding 5 regression: nine small attempts in one class subgroup and
+    one huge attempt in another, both joined at drop_language.  The truthful
+    demand is the population median (10), not the median of the two subgroup
+    medians (500,005) that unequal populations would misstate."""
+    records = [
+        *(
+            _record(
+                attempt_id=f"small-{index}",
+                class_key="impl/deterministic/none/s/go",
+                input_tokens=10,
+                output_tokens=1,
+                total_tokens=None,
+                wall_clock_ms=1000,
+            )
+            for index in range(9)
+        ),
+        _record(
+            attempt_id="large-1",
+            class_key="impl/deterministic/none/s/rust",
+            input_tokens=1_000_000,
+            output_tokens=1,
+            total_tokens=None,
+            wall_clock_ms=1000,
+        ),
+    ]
+    rollup = build_rollup(records)
+    # The rollup's two class groups each have a usable median: pooling their
+    # medians would give 500005, the exact wrong answer this repair forbids.
+    medians = sorted(
+        group["token_medians"]["input_tokens"]
+        for group in rollup["groups"]
+        if group["route_id"] == "route-a"
     )
-    stranger["class_record"] = None
-    stranger["router_event"]["route_id"] = "route-stranger"
-    rollup = build_rollup([matching, stranger])
-    # The stranger rolls up into a visibly unkeyed group: it must not join.
-    assert any(group["class_key"] is None for group in rollup["groups"])
+    assert medians == [10, 1_000_000]
 
-    joined = join_evidence("route-a", CLASS_KEY, [matching], rollup)
+    joined = join_evidence("route-a", CLASS_KEY, records, rollup)
 
-    assert joined.demand["tokens"]["input_tokens"] == 3
-    assert joined.demand["wall_clock_ms"] == 100
+    assert joined.evidence_level == "drop_language"
+    assert joined.n == 10
+    assert joined.demand["tokens"]["input_tokens"] == 10
+    assert joined.demand["wall_clock_ms"] == 1000
 
 
-def test_demand_ignores_malformed_group_medians() -> None:
+def test_supersession_counts_each_benchmark_run_once_in_demand() -> None:
+    """Finding 5 semantics: the demand population is the supersession-filtered
+    effective rows, so a corrected run never contributes twice."""
+    legacy = _legacy_benchmark_record("fixture-run-demand")
+    correction = _benchmark_v6_record("fixture-run-demand")
+    records = [legacy, correction]
+
+    joined = join_evidence(None, BENCHMARK_CLASS_KEY, records)
+
+    assert (joined.n, joined.prior_n) == (1, 1)
+    assert joined.demand["tokens"]["input_tokens"] == 101
+    assert joined.demand["wall_clock_ms"] == 290000
+
+
+def test_join_deduplicates_duplicate_raw_v6_in_favor_of_canonical_correction():
+    """The Astra reproducer has one effective row and a 290000-ms demand."""
+    correction = _benchmark_v6_record("astra-dedup")
+    duplicate_raw = _benchmark_v6_record("astra-dedup")
+    duplicate_raw["attempt_id"] = "benchmark:astra-dedup"
+    duplicate_raw["wall_clock_ms"] = 10
+    duplicate_raw["benchmark_run"]["elapsed_ms"] = 10
+    records = [duplicate_raw, correction]
+
+    rollup = build_rollup(records)
+    group = next(
+        group for group in rollup["groups"] if group["class_key"] == BENCHMARK_CLASS_KEY
+    )
+    joined = join_evidence(None, BENCHMARK_CLASS_KEY, records, rollup)
+
+    assert group["attempts"] == 1
+    assert group["wall_clock_median_ms"] == 290000
+    assert (joined.n, joined.prior_n) == (1, 1)
+    assert joined.demand["wall_clock_ms"] == 290000
+
+
+def test_join_dedup_preference_is_order_independent_with_legacy_and_raw_variants():
+    """All duplicate shapes resolve to the same canonical correction."""
+    correction = _benchmark_v6_record("astra-join-order")
+    duplicate_raw = _benchmark_v6_record("astra-join-order")
+    duplicate_raw["attempt_id"] = "benchmark:raw:astra-join-order"
+    duplicate_raw["wall_clock_ms"] = 10
+    duplicate_raw["benchmark_run"]["elapsed_ms"] = 10
+    legacy = _legacy_benchmark_record("astra-join-order")
+
+    forward = join_evidence(
+        None,
+        BENCHMARK_CLASS_KEY,
+        [duplicate_raw, legacy, correction],
+    )
+    backward = join_evidence(
+        None,
+        BENCHMARK_CLASS_KEY,
+        [correction, legacy, duplicate_raw],
+    )
+
+    assert forward.as_dict() == backward.as_dict()
+    assert forward.demand == backward.demand
+    assert (forward.n, forward.prior_n) == (1, 1)
+    assert forward.demand["wall_clock_ms"] == 290000
+
+
+def test_join_duplicate_raw_v6_without_canonical_correction_is_stable():
+    """The shared fallback tiebreaker does not depend on record order."""
+    low_id = _benchmark_v6_record("astra-join-tiebreak")
+    low_id["attempt_id"] = "benchmark:raw-a"
+    low_id["wall_clock_ms"] = 11
+    low_id["benchmark_run"]["elapsed_ms"] = 11
+    high_id = _benchmark_v6_record("astra-join-tiebreak")
+    high_id["attempt_id"] = "benchmark:raw-z"
+    high_id["wall_clock_ms"] = 22
+    high_id["benchmark_run"]["elapsed_ms"] = 22
+
+    forward = join_evidence(
+        None,
+        BENCHMARK_CLASS_KEY,
+        [high_id, low_id],
+    )
+    backward = join_evidence(
+        None,
+        BENCHMARK_CLASS_KEY,
+        [low_id, high_id],
+    )
+
+    assert forward.as_dict() == backward.as_dict()
+    assert forward.n == 1
+    assert forward.demand["wall_clock_ms"] == 11
+
+
+def test_demand_ignores_malformed_rollup_groups() -> None:
+    """A malformed caller-supplied rollup can never affect the demand: the
+    population of joined records is the sole source."""
     records = [_record(attempt_id="solo-1")]
     broken = [
         {"class_key": CLASS_KEY},  # no token_medians at all
@@ -646,11 +762,13 @@ def test_demand_ignores_malformed_group_medians() -> None:
             "token_medians": {"input_tokens": "abc", "output_tokens": []},
             "wall_clock_median_ms": None,
         },
+        "not-a-group",
     ]
 
     joined = join_evidence("route-a", CLASS_KEY, records, {"groups": broken})
 
-    assert joined.demand == DEMAND_UNKNOWN
+    assert joined.demand["tokens"]["input_tokens"] == 10
+    assert joined.demand["wall_clock_ms"] == 100
 
 
 # ---------------------------------------------------------------------------
@@ -730,7 +848,9 @@ def test_join_consumes_the_committed_ledger_rollup_shape(
     rollup = rollup_ledger()
 
     # D211: prior/posterior and n/k come from the validated typed ledger
-    # rows; the rollup is the demand aggregate and supplies no counts.
+    # D211: prior/posterior and n/k come from the validated typed ledger
+    # rows; the demand medians come from the joined rows themselves, so the
+    # rollup supplies neither counts nor figures here.
     records = read_attempts(ledger)
     joined = join_evidence("route-a", CLASS_KEY, records, rollup)
     assert joined.evidence_level == "exact"

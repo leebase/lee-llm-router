@@ -632,6 +632,77 @@ def test_correction_supersedes_its_legacy_source_attempt_in_rollup() -> None:
     )
 
 
+def test_canonical_correction_deduplicates_duplicate_raw_v6_rollup_rows() -> None:
+    """The exact Astra reproducer keeps the 290000-ms correction only."""
+    correction = _benchmark_v6_record("astra-dedup")
+    duplicate_raw = _benchmark_v6_record("astra-dedup")
+    duplicate_raw["attempt_id"] = "benchmark:astra-dedup"
+    duplicate_raw["wall_clock_ms"] = 10
+    duplicate_raw["benchmark_run"]["elapsed_ms"] = 10
+    validate_attempt(duplicate_raw)
+
+    group = build_rollup([duplicate_raw, correction])["groups"][0]
+
+    assert group["attempts"] == 1
+    assert group["wall_clock_median_ms"] == 290000
+    assert group["comparison_eligible"] is False
+
+
+def test_benchmark_effective_population_is_order_independent_with_adversarial_rows():
+    """Canonical correction wins regardless of order or competing class facts."""
+    correction = _benchmark_v6_record("astra-ordering")
+    duplicate_raw = _benchmark_v6_record("astra-ordering")
+    duplicate_raw["attempt_id"] = "benchmark:raw:astra-ordering"
+    duplicate_raw["wall_clock_ms"] = 10
+    duplicate_raw["benchmark_run"]["elapsed_ms"] = 10
+    adversarial_class = {
+        "class_key": "review/judge/none/xs/markdown",
+        "role": "review",
+        "oracle_type": "judge",
+        "domain_tags": [],
+        "size_band": "xs",
+        "language": "markdown",
+    }
+    duplicate_raw["class_record"] = copy.deepcopy(adversarial_class)
+    duplicate_raw["benchmark_run"]["class"] = copy.deepcopy(adversarial_class)
+    validate_attempt(duplicate_raw)
+    legacy = _legacy_benchmark_record("astra-ordering")
+    unrelated = _record(attempt_id="router-adversary", route_id="route-z")
+
+    forward = build_rollup([duplicate_raw, legacy, unrelated, correction])
+    backward = build_rollup([correction, unrelated, legacy, duplicate_raw])
+
+    assert render_rollup(forward) == render_rollup(backward)
+    benchmark_group = next(
+        group
+        for group in forward["groups"]
+        if group["class_key"] == "impl/deterministic/none/m/python"
+    )
+    assert benchmark_group["attempts"] == 1
+    assert benchmark_group["wall_clock_median_ms"] == 290000
+
+
+def test_duplicate_raw_v6_without_canonical_correction_has_stable_tiebreak():
+    """Duplicate repaired rows still select one row without ledger-order bias."""
+    low_id = _benchmark_v6_record("astra-tiebreak")
+    low_id["attempt_id"] = "benchmark:raw-a"
+    low_id["wall_clock_ms"] = 11
+    low_id["benchmark_run"]["elapsed_ms"] = 11
+    high_id = _benchmark_v6_record("astra-tiebreak")
+    high_id["attempt_id"] = "benchmark:raw-z"
+    high_id["wall_clock_ms"] = 22
+    high_id["benchmark_run"]["elapsed_ms"] = 22
+    validate_attempt(low_id)
+    validate_attempt(high_id)
+
+    forward = build_rollup([high_id, low_id])
+    backward = build_rollup([low_id, high_id])
+
+    assert render_rollup(forward) == render_rollup(backward)
+    assert forward["groups"][0]["attempts"] == 1
+    assert forward["groups"][0]["wall_clock_median_ms"] == 11
+
+
 def test_legacy_benchmark_line_without_correction_still_counts() -> None:
     """Supersession requires an actual raw v6 correction for the run."""
     legacy = _legacy_benchmark_record("run-2")

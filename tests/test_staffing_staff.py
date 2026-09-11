@@ -7,6 +7,7 @@ prompted and no real router state is touched.
 
 from __future__ import annotations
 
+import importlib
 import json
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -118,6 +119,75 @@ def _worker(payload: dict, route_id: str) -> dict:
     return next(row for row in payload["workers"] if row["route_id"] == route_id)
 
 
+# ---------------------------------------------------------------------------
+# Available-arithmetic composition helpers (D211 rulings 1–4 all satisfied)
+# ---------------------------------------------------------------------------
+
+
+def _unproven_record(route_id: str, class_key: str = CLASS_KEY) -> dict:
+    """Evidence without proof: usage unknown, no verified success."""
+    return {
+        "record_kind": "router_run",
+        "router_event": {"route_id": route_id},
+        "class_record": {"class_key": class_key},
+        "usage": {"basis": "unknown"},
+    }
+
+
+def _supervisor_records(n: int = 5, class_key: str = CLASS_KEY) -> list[dict]:
+    """Rows attesting one supervisor route with known marginal costs."""
+    return [
+        {
+            "record_kind": "router_run",
+            "router_event": {"route_id": GLM_OPENROUTER},
+            "class_record": {"class_key": class_key},
+            "usage": {"basis": "unknown"},
+            "supervisor_route": GLM_OPENROUTER,
+            "cost": {"usd_marginal": 0.01},
+        }
+        for _ in range(n)
+    ]
+
+
+def _known_demand_rollup(catalog, class_key: str = CLASS_KEY) -> dict:
+    """A rollup group with usable token medians for every catalog route."""
+    return {
+        "groups": [
+            {
+                "route_id": route.route_id,
+                "class_key": class_key,
+                "token_medians": {
+                    "input_tokens": 1000,
+                    "output_tokens": 100,
+                    "cached_input_tokens": None,
+                    "reasoning_tokens": None,
+                    "total_tokens": 1100,
+                },
+                "wall_clock_median_ms": 5000,
+            }
+            for route in catalog.routes.routes
+        ]
+    }
+
+
+def _available_arithmetic(catalog, availability, **kwargs):
+    """An auto composition where the ladder arithmetic is fully available."""
+    records = _supervisor_records() + [
+        _unproven_record(route.route_id) for route in catalog.routes.routes
+    ]
+    # Observed usage makes the route proven for the proof boundary, while the
+    # unsuccessful outcome keeps its ladder probability low enough that the
+    # pure arithmetic argmin remains a different, unproven route.
+    records.append(_router_record(SOL_HIGH))
+    return _auto(
+        catalog,
+        availability,
+        rollup=_known_demand_rollup(catalog),
+        attempt_records=records,
+        **kwargs,
+    )
+
+
 def test_auto_is_proof_first_when_expected_cost_is_unavailable(
     catalog, availability
 ) -> None:
@@ -205,6 +275,8 @@ def test_auto_unknown_evidence_and_demand_are_explicit(catalog, availability) ->
         "level": "none",
         "n": 0,
         "k": 0,
+        "prior_n": 0,
+        "posterior_n": 0,
         "low_evidence": True,
     }
     assert "evidence unavailable" in no_evidence.payload["expected_cost"]["reasons"]
@@ -234,11 +306,124 @@ def test_auto_computes_an_independent_review_route(catalog, availability) -> Non
     assert review["route_id"] is not None
     assert review["eligible"] is True
     assert review["independence_evaluated"] is True
+    assert review["independence_reference"] == SOL_HIGH
     by_id = {route.route_id: route for route in catalog.routes.routes}
     selected_family, _ = resolve_route_family(by_id[result.payload["selected_route"]])
     review_family, _ = resolve_route_family(by_id[review["route_id"]])
     assert review_family != selected_family
     assert f"independent of {SOL_HIGH}" in result.text
+
+
+def test_auto_proof_first_override_reconciles_cost_and_escalation(
+    catalog, availability, monkeypatch
+) -> None:
+    """Finding 3 regression: with arithmetic available, proof-first may
+    override the pure argmin; the block's expected cost and escalation
+    suffix must then belong to the actual selected route."""
+    staff_module = importlib.import_module("lee_llm_router.staffing.staff")
+    ladder_order = []
+
+    def available_ladder(rungs, **_kwargs):
+        routes = [rung.route for rung in rungs]
+        argmin = next(route for route in routes if route != SOL_HIGH)
+        ordered = [argmin, SOL_HIGH] + [
+            route for route in routes if route not in (argmin, SOL_HIGH)
+        ]
+        ladder_order.extend(ordered)
+        return {
+            "rungs": [
+                {"route": route, "E": 0.01 + index / 100}
+                for index, route in enumerate(ordered)
+            ],
+            "argmin_start": argmin,
+            "escalation": ordered,
+            "expected_cost_status": "available",
+            "unavailable_reasons": [],
+        }
+
+    monkeypatch.setattr(staff_module, "calculate_ladder", available_ladder)
+    result = _auto(
+        catalog,
+        availability,
+        attempt_records=[_router_record(SOL_HIGH)],
+    )
+    payload = result.payload
+
+    assert payload["expected_cost"]["status"] == "available"
+    argmin = payload["expected_cost"]["argmin_route"]
+    selected = payload["selected_route"]
+    assert selected != argmin
+    assert _worker(payload, argmin)["proof_status"] == "unproven"
+    assert _worker(payload, selected)["proof_status"] == "proven"
+
+    # The published figure is the selected route's own expected cost, and the
+    # escalation chain is the eligible-rung suffix starting at the selected
+    # route — not the rejected argmin's suffix.
+    assert payload["escalation"] == ladder_order[ladder_order.index(selected) :]
+    assert payload["escalation"][0] == selected
+    assert argmin not in payload["escalation"][: payload["escalation"].index(selected)]
+    assert payload["expected_cost"]["usd"] > 0
+    assert f"(selected {selected}; ladder argmin {argmin})" in result.text
+    assert "auto never selects an unproven route" in result.text
+
+
+def test_auto_explicit_author_review_is_truthful_and_excludes_selected(
+    catalog, availability
+) -> None:
+    """Finding 2 regression: with an explicit author reference, the review
+    disclosure names that reference (not the selected worker), and the
+    reviewed worker's route and family are excluded even though the naive
+    cheapest reviewer would have been the selected worker itself."""
+    by_id = {route.route_id: route for route in catalog.routes.routes}
+    result = _auto(
+        catalog,
+        availability,
+        author_route_id=GLM_OPENROUTER,
+        attempt_records=[_router_record(SOL_HIGH)],
+    )
+    review = result.payload["review"]
+
+    assert result.payload["selected_route"] == SOL_HIGH
+    assert review["independence_evaluated"] is True
+    assert review["independence_reference"] == GLM_OPENROUTER
+    assert review["route_id"] is not None
+    assert review["route_id"] != SOL_HIGH
+    selected_family, _ = resolve_route_family(by_id[SOL_HIGH])
+    author_family, _ = resolve_route_family(by_id[GLM_OPENROUTER])
+    review_family, _ = resolve_route_family(by_id[review["route_id"]])
+    assert review_family not in (selected_family, author_family)
+    assert f"independent of author {GLM_OPENROUTER}" in result.text
+    assert f"selected {SOL_HIGH} also excluded" in result.text
+
+
+def test_auto_explicit_author_review_never_picks_the_selected_worker(
+    catalog, availability
+) -> None:
+    """Fail closed: the naive marginal-price reviewer for this composition is
+    the selected worker itself; the selected route and its family are always
+    excluded from the review choice too."""
+    deepseek = "opencode-opencode-go-deepseek-v4-flash-opencode-go"
+    result = _auto(
+        catalog,
+        availability,
+        author_route_id=GLM_OPENROUTER,
+        attempt_records=[_router_record(deepseek)],
+    )
+    review = result.payload["review"]
+
+    assert result.payload["selected_route"] == deepseek
+    assert review["independence_reference"] == GLM_OPENROUTER
+    assert review["route_id"] != deepseek
+    by_id = {route.route_id: route for route in catalog.routes.routes}
+    selected_family, _ = resolve_route_family(by_id[deepseek])
+    review_family, _ = resolve_route_family(by_id[review["route_id"]])
+    assert review_family != selected_family
+
+
+def test_auto_unknown_author_route_fails_closed(catalog, availability) -> None:
+    with pytest.raises(StaffServiceError) as excinfo:
+        _auto(catalog, availability, author_route_id="not-in-catalog")
+    assert "author_route_id" in str(excinfo.value)
 
 
 def test_auto_renderers_are_stable_and_equivalent(catalog, availability) -> None:

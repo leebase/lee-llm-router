@@ -1022,7 +1022,7 @@ def test_unknown_provider_label_returns_empty_channels(unknown_label: str) -> No
 
 
 def test_microsecond_resets_at_timestamp_parsing() -> None:
-    """Timestamps carrying microseconds parse into aware UTC with microseconds intact."""
+    """A microsecond timestamp parses into aware UTC without losing precision."""
     raw_stamp = "2026-09-08T02:20:21.278000-05:00"
     parsed = _safe_timestamp(raw_stamp)
     assert parsed is not None

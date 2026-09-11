@@ -18,8 +18,11 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
+import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Sequence
@@ -36,8 +39,10 @@ from lee_llm_router.staffing import load_staffing_catalog
 from lee_llm_router.staffing.catalog import Route as StaffingRoute
 from lee_llm_router.staffing.json_int import int_from_decimal, int_to_decimal
 from lee_llm_router.staffing.run import (
+    Resolution,
     _usage_for_harness,
     build_dispatch_command,
+    run_supervised_dispatch,
     select_route,
     validate_attempt_metadata,
 )
@@ -1711,6 +1716,305 @@ def test_run_timeout_kills_child_and_reports_124(
     assert "exit_code=124, timed_out=True" in payload["provenance"]["notes"][0]
     assert payload["wall_clock_ms"] > 0
     _assert_output_matches_single_append(captured, scratch_state)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX-only")
+def test_worker_ceiling_kill_terminates_whole_process_group(tmp_path) -> None:
+    """Astra P2-10 finding 1 regression: the ceiling kill kills descendants.
+
+    A real worker is launched through the default real ``subprocess.Popen``
+    in its own session/process group, spawns a ``sleep`` descendant, and
+    hits a short wall-clock ceiling. The dispatch returns 124 and the
+    descendant process is gone — not just the immediate shell. PID reuse is
+    avoided by polling for the descendant's exact pid to become unreferencable
+    and by confirming ``/proc`` no longer lists it.
+    """
+    pid_file = tmp_path / "descendant.pid"
+    pgid_file = tmp_path / "worker.pgid"
+    script = (
+        "sleep 300 & echo $! > {pid}; "
+        "ps -o pgid= -p $$ > {pgid} 2>/dev/null; "
+        "wait"
+    ).format(pid=shlex.quote(str(pid_file)), pgid=shlex.quote(str(pgid_file)))
+    resolution = Resolution(
+        worker_id="process-group-regression",
+        dispatch_command=["/bin/sh", "-c", script],
+        prompt_delivery="argv",
+    )
+
+    code = run_supervised_dispatch(
+        resolution,
+        "unused-prompt",
+        max_minutes=2.0 / 60.0,  # 2-second wall-clock ceiling
+        popen=subprocess.Popen,
+        clock=time.monotonic,
+        sleep=time.sleep,
+        poll_seconds=0.05,
+        sink=lambda _chunk: None,
+        err_sink=lambda _chunk: None,
+    )
+
+    assert code == 124
+    descendant_pid = int(pid_file.read_text())
+    # The worker ran as a session/group leader, so it was killable as a
+    # group. When ``ps`` is available, verify its pgid was not the test
+    # runner's own group.
+    if pgid_file.exists() and pgid_file.read_text().strip():
+        worker_pgid = int(pgid_file.read_text())
+        assert worker_pgid != os.getpgid(0)
+
+    # The descendant must be gone: poll its exact pid until unreferencable,
+    # then confirm /proc agrees (guards against zombie or PID-reuse reads).
+    gone_deadline = time.monotonic() + 10.0
+    while time.monotonic() < gone_deadline:
+        try:
+            os.kill(descendant_pid, 0)
+        except ProcessLookupError:
+            break
+        except PermissionError:
+            time.sleep(0.05)
+        else:
+            time.sleep(0.05)
+    else:
+        pytest.fail(f"descendant {descendant_pid} survived the worker ceiling kill")
+    assert not Path(f"/proc/{descendant_pid}").exists()
+
+
+@pytest.mark.skipif(
+    not (os.name == "posix" and sys.platform.startswith("linux")),
+    reason="recursive process-tree discovery uses Linux /proc",
+)
+def test_worker_ceiling_kill_terminates_escaped_recursive_descendants(
+    tmp_path,
+) -> None:
+    """A new-session child and its child die at the worker's ceiling.
+
+    Process-group-only cleanup does not touch ``detached`` or ``grandchild``:
+    the former calls ``start_new_session=True`` and the latter inherits its
+    new session. The recorded start times make the post-kill assertion robust
+    against PID reuse, and the ``finally`` block prevents a failed regression
+    from leaking real processes into the test runner.
+    """
+    pid_file = tmp_path / "escaped-descendants.txt"
+    worker_pgid_file = tmp_path / "worker-pgid"
+    child_code = (
+        "import os, pathlib, subprocess, sys, time\n"
+        f"grandchild = subprocess.Popen([{sys.executable!r}, '-c', "
+        "'import time; time.sleep(300)'])\n"
+        "def start_time(pid):\n"
+        "    return pathlib.Path('/proc/' + str(pid) + '/stat').read_text()"
+        ".rsplit(')', 1)[1].split()[19]\n"
+        f"pathlib.Path({str(pid_file)!r}).write_text(\n"
+        "    ' '.join((str(os.getpid()), str(os.getsid(0)), str(grandchild.pid), "
+        "start_time(os.getpid()), start_time(grandchild.pid)))\n"
+        ")\n"
+        "time.sleep(300)\n"
+    )
+    worker_code = (
+        "import os, pathlib, subprocess, sys, time\n"
+        f"pathlib.Path({str(worker_pgid_file)!r}).write_text(str(os.getpgrp()))\n"
+        "subprocess.Popen("
+        f"[{sys.executable!r}, '-c', {child_code!r}], "
+        "start_new_session=True)\n"
+        "time.sleep(300)\n"
+    )
+    resolution = Resolution(
+        worker_id="escaped-process-tree-regression",
+        dispatch_command=[sys.executable, "-c", worker_code],
+        prompt_delivery="argv",
+    )
+
+    try:
+        code = run_supervised_dispatch(
+            resolution,
+            "unused-prompt",
+            max_minutes=2.0 / 60.0,
+            popen=subprocess.Popen,
+            clock=time.monotonic,
+            sleep=time.sleep,
+            poll_seconds=0.05,
+            sink=lambda _chunk: None,
+            err_sink=lambda _chunk: None,
+        )
+        assert code == 124
+        detached_pid, detached_sid, grandchild_pid, detached_start, grandchild_start = (
+            pid_file.read_text().split()
+        )
+        assert int(detached_sid) != int(worker_pgid_file.read_text())
+        for pid_text, start_time in (
+            (detached_pid, detached_start),
+            (grandchild_pid, grandchild_start),
+        ):
+            pid = int(pid_text)
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                try:
+                    stat = Path(f"/proc/{pid}/stat").read_text()
+                except FileNotFoundError:
+                    break
+                current_start = stat.rsplit(")", 1)[1].split()[19]
+                if current_start != start_time:
+                    break  # The original process is gone; the PID was reused.
+                time.sleep(0.05)
+            else:
+                pytest.fail(f"escaped descendant {pid} survived the ceiling kill")
+    finally:
+        # Cleanup is identity-checked so a reused PID cannot kill an unrelated
+        # test process if this regression fails before its assertions finish.
+        if pid_file.exists():
+            fields = pid_file.read_text().split()
+            for pid_text, start_time in (
+                (fields[0], fields[3]),
+                (fields[2], fields[4]),
+            ):
+                pid = int(pid_text)
+                try:
+                    stat = Path(f"/proc/{pid}/stat").read_text()
+                    current_start = stat.rsplit(")", 1)[1].split()[19]
+                except FileNotFoundError:
+                    continue
+                if current_start == start_time:
+                    try:
+                        os.kill(pid, 9)
+                    except ProcessLookupError:
+                        pass
+
+
+@pytest.mark.skipif(
+    not (os.name == "posix" and sys.platform.startswith("linux")),
+    reason="inherited provenance discovery uses Linux /proc",
+)
+def test_worker_ceiling_kills_reparented_orphan_after_ancestry_disappears(
+    tmp_path: Path,
+) -> None:
+    """Astra High reproducer: kill a reparented, new-session grandchild.
+
+    The worker launches a short-lived intermediate Python process. That
+    process launches a sleeping grandchild with ``start_new_session=True``
+    and redirected standard streams, then exits. The worker confirms that the
+    grandchild is sleeping under pid 1 and remains alive until its two-second
+    ceiling. At cleanup no live PPID chain connects the orphan to the worker,
+    so process-group-only or timeout-time ancestry discovery cannot find it.
+    """
+    observation_file = tmp_path / "reparented-grandchild.txt"
+    grandchild_file = tmp_path / "grandchild-identity.txt"
+    intermediate_code = (
+        "import pathlib, subprocess, sys\n"
+        "grandchild = subprocess.Popen("
+        f"[{sys.executable!r}, '-c', 'import time; time.sleep(300)'], "
+        "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
+        "stderr=subprocess.DEVNULL, start_new_session=True)\n"
+        f"stat = pathlib.Path('/proc/' + str(grandchild.pid) + '/stat')"
+        ".read_text().rsplit(')', 1)[1].split()\n"
+        f"pathlib.Path({str(grandchild_file)!r}).write_text("
+        "f'{grandchild.pid} {stat[19]}')\n"
+    )
+    worker_code = (
+        "import pathlib, subprocess, sys, time\n"
+        f"intermediate = subprocess.Popen([{sys.executable!r}, '-c', "
+        f"{intermediate_code!r}])\n"
+        "intermediate.wait()\n"
+        f"identity = pathlib.Path({str(grandchild_file)!r}).read_text()\n"
+        "pid_text, start_time = identity.split()\n"
+        "pid = int(pid_text)\n"
+        "for _ in range(200):\n"
+        "    stat = pathlib.Path('/proc/' + pid_text + '/stat').read_text()"
+        ".rsplit(')', 1)[1].split()\n"
+        "    if stat[0] == 'S' and int(stat[1]) == 1:\n"
+        f"        pathlib.Path({str(observation_file)!r}).write_text("
+        "f'{pid} {start_time} {intermediate.pid} {stat[0]} {stat[1]}')\n"
+        "        break\n"
+        "    time.sleep(0.005)\n"
+        "else:\n"
+        "    raise RuntimeError('grandchild did not become a sleeping orphan')\n"
+        "time.sleep(300)\n"
+    )
+    resolution = Resolution(
+        worker_id="reparented-orphan-regression",
+        dispatch_command=[sys.executable, "-c", worker_code],
+        prompt_delivery="argv",
+    )
+
+    identity: tuple[int, str] | None = None
+    try:
+        code = run_supervised_dispatch(
+            resolution,
+            "unused-prompt",
+            max_minutes=2.0 / 60.0,
+            popen=subprocess.Popen,
+            clock=time.monotonic,
+            sleep=time.sleep,
+            poll_seconds=0.05,
+            sink=lambda _chunk: None,
+            err_sink=lambda _chunk: None,
+        )
+
+        assert code == 124
+        pid_text, start_time, intermediate_pid, state, ppid = (
+            observation_file.read_text().split()
+        )
+        identity = (int(pid_text), start_time)
+        assert state == "S"
+        assert int(ppid) == 1
+        assert not Path(f"/proc/{intermediate_pid}").exists()
+
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            try:
+                stat = Path(f"/proc/{pid_text}/stat").read_text()
+            except FileNotFoundError:
+                break
+            if stat.rsplit(")", 1)[1].split()[19] != start_time:
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail(f"reparented grandchild {pid_text} survived the ceiling kill")
+    finally:
+        # Identity-check emergency cleanup: a failing regression must not leak
+        # the real sleeper or risk killing a process that reused its PID.
+        if identity is None and grandchild_file.exists():
+            pid_text, start_time = grandchild_file.read_text().split()
+            identity = (int(pid_text), start_time)
+        if identity is not None:
+            pid, start_time = identity
+            try:
+                stat = Path(f"/proc/{pid}/stat").read_text()
+            except FileNotFoundError:
+                pass
+            else:
+                if stat.rsplit(")", 1)[1].split()[19] == start_time:
+                    try:
+                        os.kill(pid, 9)
+                    except ProcessLookupError:
+                        pass
+
+
+def test_fake_worker_launch_gets_no_process_group_flag() -> None:
+    """Injected fake Popens stay untouched: no POSIX-only flag, no wrapping."""
+    launcher = LaunchRecorder(never_exits=True)
+    resolution = Resolution(
+        worker_id="fake-boundary",
+        dispatch_command=["fake-worker", "{prompt}"],
+        prompt_delivery="argv",
+    )
+    clock = AdvancingClock(step=60.0)
+
+    code = run_supervised_dispatch(
+        resolution,
+        "prompt-text",
+        popen=launcher,
+        clock=clock,
+        sleep=lambda _s: None,
+        poll_seconds=0.05,
+        sink=lambda _chunk: None,
+        err_sink=lambda _chunk: None,
+    )
+
+    assert code == 124
+    proc = launcher.processes[0]
+    assert isinstance(proc, FakeProcess)  # never wrapped in a group proxy
+    assert "start_new_session" not in proc.popen_kwargs
+    assert "env" not in proc.popen_kwargs
 
 
 # ---------------------------------------------------------------------------

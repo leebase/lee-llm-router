@@ -13,17 +13,28 @@ Facts carried (each absent fact explicit, never invented):
 * **Workers** — every caller-supplied eligibility row, in input order, with
   route, channel, headroom, badge, and D211 proof status;
 * the **Reason** for the selected route — ``accepted k/n comparable (level)``
-  from the evidence join.  The Laplace estimate is shown only together with
-  ``k``/``n`` and the used level; with no comparable evidence at all the
-  reason is the explicit unavailable disclosure;
+  from the evidence join, together with the join's benchmark-prior count
+  (``prior_n``) and production-posterior count (``posterior_n``).  The
+  Laplace estimate is shown only together with ``k``/``n`` and the used
+  level; with no comparable evidence at all the reason is the explicit
+  unavailable disclosure;
 * the **Expected cost** — the ladder's argmin expected cost, or the literal
   ``unavailable`` with the ladder's stated reasons (D211 ruling 3);
 * **Escalation** — the ladder's escalation chain, which stops at the human
   terminal cost and never crosses the never-automatic boundary; the
   never-automatic routes themselves are listed as bind-only;
 * an independent **Review** route — named only when the caller passes one,
-  with its eligibility, its exclusion reason, and whether author-route
-  independence was evaluated.
+  with its eligibility, its exclusion reason, whether author-route
+  independence was evaluated, and which route was the actual author
+  independence reference (an explicit ``--author-route`` when supplied,
+  otherwise the selected worker); the reviewed route and its model family
+  are always excluded from the review choice;
+* the **Expected cost** and **Escalation** of the *actual selected route*:
+  when proof-first selection overrides the ladder's pure argmin, the
+  expected cost is the selected rung's own ``E`` and the escalation chain
+  is the ladder's suffix starting at the selected route — the rejected
+  argmin is disclosed as the ladder argmin, never silently reused as the
+  selected route's figures.
 
 Text and JSON carry exactly the same facts: :func:`render_json` is the
 structured form of :func:`render_text`.  Input order is preserved
@@ -191,15 +202,20 @@ def _worker_facts(row: object, proof_status: object) -> WorkerFacts:
 class ReasonFacts:
     """The selected route's evidence join, verbatim from the caller.
 
-    ``level``, ``n``, and ``k`` come from the accepted evidence join; the
-    estimate is carried only when all three are present and the level is
-    comparable (never ``none``) — the disclosure never shows an estimate
-    without ``k``/``n`` and the level.
+    ``level``, ``n``, and ``k`` come from the accepted evidence join, together
+    with its benchmark-prior count (``prior_n``, the joined ``benchmark_run``
+    rows) and production-posterior count (``posterior_n``, the joined
+    ``router_run`` rows); both are carried and rendered in text and JSON.  The
+    estimate is carried only when ``level``/``n``/``k`` are present and the
+    level is comparable (never ``none``) — the disclosure never shows an
+    estimate without ``k``/``n`` and the level.
     """
 
     level: str
     n: int
     k: int
+    prior_n: int
+    posterior_n: int
     estimate: float | None
     low_evidence: bool
 
@@ -209,6 +225,8 @@ class ReasonFacts:
             "level": self.level,
             "n": self.n,
             "k": self.k,
+            "prior_n": self.prior_n,
+            "posterior_n": self.posterior_n,
         }
         if self.estimate is not None:
             payload["estimate"] = self.estimate
@@ -218,6 +236,10 @@ class ReasonFacts:
     def as_text(self) -> str:
         """The ``accepted k/n comparable (level)`` reason line."""
         accepted = f"accepted {self.k}/{self.n} comparable ({self.level})"
+        accepted += (
+            f", prior {self.prior_n} benchmark, "
+            f"posterior {self.posterior_n} production"
+        )
         if self.low_evidence:
             accepted += ", low evidence"
         if self.estimate is not None:
@@ -235,6 +257,13 @@ def _reason_facts(evidence: object) -> ReasonFacts | None:
         return None
     if not isinstance(n, int) or not isinstance(k, int) or n < 0 or k < 0 or k > n:
         return None
+
+    def _count(name: str) -> int:
+        value = _field(evidence, name)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return 0
+        return value
+
     # The estimate is disclosed only with k/n and a comparable level; the
     # bare Laplace prior at the "none" level is never a disclosed estimate.
     if level == "none":
@@ -244,7 +273,13 @@ def _reason_facts(evidence: object) -> ReasonFacts | None:
         estimate = _float_or_none(raw_estimate)
     low_evidence = bool(_field(evidence, "low_evidence", n < 5))
     return ReasonFacts(
-        level=level, n=n, k=k, estimate=estimate, low_evidence=low_evidence
+        level=level,
+        n=n,
+        k=k,
+        prior_n=_count("prior_n"),
+        posterior_n=_count("posterior_n"),
+        estimate=estimate,
+        low_evidence=low_evidence,
     )
 
 
@@ -269,6 +304,7 @@ class StaffingBlock:
     review_eligible: bool | None
     review_reason: str | None
     review_independence_evaluated: bool
+    review_independence_reference: str | None
     human_escalation_cost_usd: float | None = field(default=None, repr=False)
 
     def as_dict(self) -> dict[str, Any]:
@@ -287,6 +323,11 @@ class StaffingBlock:
                 "argmin_route": self.argmin_route,
                 "reasons": list(self.expected_cost_unavailable_reasons),
             }
+        reference = (
+            self.review_independence_reference or self.selected_route
+            if self.review_independence_evaluated
+            else None
+        )
         review: dict[str, Any]
         if self.review_route is None:
             review = {
@@ -294,6 +335,7 @@ class StaffingBlock:
                 "eligible": None,
                 "reason": None,
                 "independence_evaluated": self.review_independence_evaluated,
+                "independence_reference": reference,
             }
         else:
             review = {
@@ -301,6 +343,7 @@ class StaffingBlock:
                 "eligible": self.review_eligible,
                 "reason": self.review_reason,
                 "independence_evaluated": self.review_independence_evaluated,
+                "independence_reference": reference,
             }
         return {
             "mode": MODE_AUTO,
@@ -345,6 +388,14 @@ class StaffingBlock:
     def _expected_cost_lines(self) -> list[str]:
         if self.expected_cost_available and self.expected_cost_usd is not None:
             argmin = self.argmin_route or _UNKNOWN
+            if self.selected_route is not None and self.selected_route != argmin:
+                # Proof-first overrode the ladder argmin: the figure and the
+                # suffix belong to the selected route; the rejected argmin is
+                # disclosed, never silently reused.
+                return [
+                    f"Expected cost: {_fmt_usd(self.expected_cost_usd)} "
+                    f"(selected {self.selected_route}; ladder argmin {argmin})"
+                ]
             return [
                 f"Expected cost: {_fmt_usd(self.expected_cost_usd)} "
                 f"(argmin {argmin})"
@@ -390,8 +441,15 @@ class StaffingBlock:
             else f"excluded ({self.review_reason or 'no reason supplied'})"
         )
         if self.review_independence_evaluated:
-            if self.review_eligible and self.selected_route is not None:
-                independence = f"independent of {self.selected_route}"
+            reference = self.review_independence_reference or self.selected_route
+            if self.review_eligible and reference is not None:
+                if self.selected_route is not None and self.selected_route != reference:
+                    independence = (
+                        f"independent of author {reference}; "
+                        f"selected {self.selected_route} also excluded"
+                    )
+                else:
+                    independence = f"independent of {reference}"
             elif self.review_reason and "independence" in self.review_reason:
                 independence = "not independent"
             else:
@@ -443,6 +501,7 @@ def build_auto_block(
     review_eligible: bool | None = None,
     review_reason: str | None = None,
     review_independence_evaluated: bool = False,
+    review_independence_reference: str | None = None,
     human_escalation_cost_usd: float | None = None,
 ) -> StaffingBlock:
     """Assemble the ``auto`` block from already-computed staffing facts.
@@ -463,7 +522,13 @@ def build_auto_block(
         ladder_result: The accepted :func:`calculate_ladder` output — its
             ``argmin_start``, ``escalation``, ``expected_cost_status``, and
             ``unavailable_reasons`` are consumed verbatim; the argmin
-            rung's ``E`` is the expected cost.
+            rung's ``E`` is the expected cost.  When ``selected_route``
+            names a different route than ``argmin_start`` (proof-first
+            policy overrode the pure argmin) while the expected cost is
+            available, the expected cost is re-taken from the selected
+            rung's own ``E`` and the escalation chain is re-derived as the
+            rung suffix starting at the selected route — the rejected
+            argmin stays disclosed as the ladder argmin.
         selected_route: Optional explicit selection.  When omitted it is
             the ladder's ``argmin_start`` when the expected cost is
             available, else the first eligible route in input order with
@@ -478,6 +543,11 @@ def build_auto_block(
             excluded.
         review_independence_evaluated: Whether author-route independence
             was evaluated for the review choice.
+        review_independence_reference: The actual author independence
+            reference: the explicit ``--author-route`` route id when one was
+            supplied, otherwise the selected worker the reviewer reviews.
+            Disclosed verbatim; when omitted it falls back to
+            ``selected_route`` so older callers stay truthful.
         human_escalation_cost_usd: The policy terminal cost, used only in
             the escalation line when the ladder could not compute an
             expected cost.
@@ -562,6 +632,30 @@ def build_auto_block(
         else None
     )
 
+    if expected_cost_available and selection is not None and selection != argmin_route:
+        # Proof-first overrode the pure argmin: reconcile the expected cost
+        # and the escalation suffix to the actual selected route.  The
+        # rejected argmin remains disclosed as the ladder argmin.
+        rung_entries = [
+            rung for rung in ladder_result.get("rungs", ()) if isinstance(rung, Mapping)
+        ]
+        rung_routes = [
+            rung.get("route")
+            for rung in rung_entries
+            if isinstance(rung.get("route"), str) and rung.get("route")
+        ]
+        selected_cost = None
+        if selection in rung_routes:
+            start = rung_routes.index(selection)
+            escalation = tuple(rung_routes[start:])
+            selected_cost = _float_or_none(rung_entries[start].get("E"))
+        if selected_cost is None:
+            expected_cost_available = False
+            expected_cost_usd = None
+            unavailable_reasons += ("selected expected cost unavailable",)
+        else:
+            expected_cost_usd = selected_cost
+
     never_automatic = tuple(
         worker.route_id
         for worker in workers
@@ -608,6 +702,7 @@ def build_auto_block(
         review_eligible=review_eligible,
         review_reason=review_reason,
         review_independence_evaluated=review_independence_evaluated,
+        review_independence_reference=review_independence_reference,
         human_escalation_cost_usd=(
             _float_or_none(human_escalation_cost_usd)
             if human_escalation_cost_usd is not None

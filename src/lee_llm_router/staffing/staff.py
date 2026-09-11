@@ -54,6 +54,7 @@ from lee_llm_router.staffing.eligibility import (
     EligibilityRow,
     StaffingEligibilityError,
     evaluate_eligibility,
+    resolve_route_family,
 )
 from lee_llm_router.staffing.evidence import join_evidence
 from lee_llm_router.staffing.ladder import LadderInput, calculate_ladder
@@ -319,6 +320,7 @@ def _select_review_route(
     language: str,
     at_date: date,
     author_route_id: str | None,
+    excluded_route_id: str | None,
     proof: Mapping[str, ProofStatus],
     openrouter_snapshot_path: str | Path | None,
     rate_table_path: str | Path | None,
@@ -330,6 +332,16 @@ def _select_review_route(
     only the evidence join key, never a route preference.  The route choice
     uses the same proof-before-price boundary as the auto worker choice, so an
     unproven reviewer cannot displace a proven eligible reviewer.
+
+    Independence is evaluated against the actual author reference — the
+    explicit ``author_route_id`` when supplied, otherwise the selected worker
+    being reviewed (``excluded_route_id``).  The reviewed worker's route and
+    model family are *always* excluded too, even when an explicit author
+    reference differs from it: a reviewer that could equal the reviewed
+    worker (or share its family) is not independent of it.  Every exclusion
+    carries the exact ``independence`` reason, so an explicit-author case is
+    truthful and fails closed rather than naming a reviewer that is not
+    independent.
     """
     try:
         rows = evaluate_eligibility(
@@ -348,13 +360,43 @@ def _select_review_route(
     except StaffingEligibilityError as exc:
         raise StaffServiceError(str(exc), kind="invalid_class", cause=exc) from exc
 
-    eligible = [row for row in rows if row.eligible]
+    evaluated = author_route_id is not None or excluded_route_id is not None
+    families = {
+        route.route_id: resolve_route_family(route)[0]
+        for route in catalog.routes.routes
+    }
+    excluded_family = (
+        families.get(excluded_route_id) if excluded_route_id is not None else None
+    )
+
+    def _independent(row: EligibilityRow) -> bool:
+        if excluded_route_id is not None and row.route_id == excluded_route_id:
+            return False
+        return not (
+            excluded_family is not None
+            and families.get(row.route_id) == excluded_family
+        )
+
+    effective_rows = tuple(
+        (
+            replace(
+                row,
+                reasons=row.reasons + ("independence",),
+                eligible=False,
+            )
+            if row.eligible and not _independent(row)
+            else row
+        )
+        for row in rows
+    )
+
+    eligible = [row for row in effective_rows if row.eligible]
     proven = [row for row in eligible if proof.get(row.route_id) is ProofStatus.PROVEN]
     candidates = proven or eligible
     if not candidates:
-        return None, author_route_id is not None, None
+        return None, evaluated, None
     selected = min(candidates, key=_marginal_price_sort_key)
-    return selected.route_id, author_route_id is not None, selected
+    return selected.route_id, evaluated, selected
 
 
 def _staff_auto(
@@ -437,6 +479,7 @@ def _staff_auto(
             language=language,
             at_date=at_date,
             author_route_id=author_route_id or worker_route,
+            excluded_route_id=worker_route,
             proof=proof,
             openrouter_snapshot_path=openrouter_snapshot_path,
             rate_table_path=rate_table_path,
@@ -498,6 +541,9 @@ def _staff_auto(
             "; ".join(review_row.reasons) or None if review_row is not None else None
         ),
         review_independence_evaluated=review_independence_evaluated,
+        review_independence_reference=(
+            (author_route_id or selected) if review_independence_evaluated else None
+        ),
     )
     return StaffResult(
         mode=MODE_AUTO,
