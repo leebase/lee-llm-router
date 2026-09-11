@@ -123,3 +123,34 @@ dispatches record the same fields as `run`.
   P2-4: 1 author + 2 reviews, about 13 min. Cumulative newly metered P2-4
   spend `$0.096676649504` (running OpenRouter total `$0.118958094972`, including
   P2-3's retained GLM and last re-review receipts only where knowable).
+
+## P2-5 — Staffing service and CLI
+
+- Rule B split the packet once into P2-5a service and P2-5b CLI. Both author
+  explains used the implementation class and selected the eligible first-rung
+  `pi-z-ai-glm-5-3-flash-openrouter`; exclusions remained likely-exhausted 7,
+  never-automatic 4, Gemini Pro role-scope 1, and unpriced/pricing 1.
+- P2-5a GLM reached the 590 s ceiling with a partial candidate (23 finalized
+  events, 583,424 provider-reported tokens / `$0.019297505`). Luna XHigh then
+  reached its 590 s ceiling after producing source without an accepted test
+  result (37 events, 5,647,369 subscription tokens / `$0.18599264` execution
+  equivalent). Sol High completed the bounded service and tests (20 events,
+  1,719,479 subscription tokens / `$1.830847` execution equivalent).
+- Supervisor read the complete service and tests. The service composes the
+  accepted eligibility, evidence, proof, ladder, and block modules; preserves
+  independent review and fixed-point judge-cost rules; returns exact saved
+  crews; and accepts bind only through the explicit human authorization path,
+  with exactly one normal event append. A DeepSeek/Pi cross-family review
+  PASSed with zero findings (58 events, 4,975,401 tokens / `$0.104628590268`).
+- P2-5b GLM implemented only `doctor.py` and the focused CLI tests. It reached
+  its 590 s ceiling while running the full suite, after its focused suite was
+  18/18 (49 events, 1,459,334 tokens / `$0.03326191`). Supervisor read the
+  complete diff and reran the combined gate: 44 focused passed, Black/Ruff
+  clean, and 1,593 passed/1 skipped repository-wide.
+- Combined independent review explain used `--author-route
+  pi-z-ai-glm-5-3-flash-openrouter`; DeepSeek/Pi was eligible and
+  cross-family. Its read-only review independently exercised both focused
+  suites and returned PASS — zero findings (23 events, 2,013,806 tokens /
+  `$0.054584700280`). P2-5: 4 author attempts + 2 reviews. Newly metered
+  OpenRouter spend `$0.211772705548`; running knowable OpenRouter total
+  `$0.330730800520`. Subscription execution equivalents remain separate.

@@ -2156,7 +2156,113 @@ def _try_fast_resolve(argv: list[str]) -> _FastResolveArgs | None:
     )
 
 
-def main(argv: list[str] | None = None) -> None:
+def _run_staff(args: argparse.Namespace) -> int:
+    """Run ``staff``: one deterministic staffing result; never dispatches.
+
+    D211 ruling 5 CLI contract: ``lee-llm-router staff --role R --class C
+    [--mode auto|crew NAME|bind ROUTE] [--author-route ID]
+    [--supervisor-route ID] [--authorized-by ID] [--reason TEXT]
+    [--at YYYY-MM-DD] [--json]``. The committed staffing catalog and the
+    current availability snapshot are loaded with the accepted helpers and
+    every decision is made by :func:`lee_llm_router.staffing.staff.staff` —
+    the CLI only parses the mode grammar and forwards arguments. Text output
+    is always the compact P2-4 block; ``--json`` emits the matching
+    structured payload. A service refusal prints one concise stderr line and
+    exits 3; success exits 0. Nothing is dispatched and no provider is
+    prompted. A successful ``bind`` appends exactly one event through the
+    normal event path (``$LEE_LLM_ROUTER_EVENTS_FILE`` or the per-host
+    default), keeping its authorization boundary intact.
+    """
+    from datetime import date
+    from pathlib import Path
+
+    from lee_llm_router.availability import load_availability
+    from lee_llm_router.staffing import StaffingCatalogError, load_staffing_catalog
+    from lee_llm_router.staffing.json_int import dump_json
+    from lee_llm_router.staffing.ledger import resolve_attempts_path
+    from lee_llm_router.staffing.staff import (
+        MODE_AUTO,
+        MODE_BIND,
+        MODE_CREW,
+        StaffServiceError,
+        render_staff_json,
+        render_staff_text,
+        staff,
+    )
+
+    def fail(message: str) -> int:
+        print(f"staff: {message}", file=sys.stderr)
+        return 3
+
+    words = args.mode
+    if words is None or (len(words) == 1 and words[0] == MODE_AUTO):
+        mode, crew_id, bind_route = MODE_AUTO, None, None
+    elif len(words) == 2 and words[0] == MODE_CREW and words[1]:
+        mode, crew_id, bind_route = MODE_CREW, words[1], None
+    elif len(words) == 2 and words[0] == MODE_BIND and words[1]:
+        mode, crew_id, bind_route = MODE_BIND, None, words[1]
+    else:
+        return fail(
+            "--mode: use 'auto', 'crew NAME', or 'bind ROUTE_ID', got "
+            + " ".join(words)
+        )
+
+    catalog_dir = (
+        Path(args.catalog_dir)
+        if args.catalog_dir is not None
+        else _default_catalog_dir()
+    )
+    try:
+        catalog = load_staffing_catalog(catalog_dir)
+    except StaffingCatalogError as exc:
+        return fail(f"catalog invalid: {exc}")
+    except Exception as exc:  # no traceback on unexpected catalog problems
+        return fail(f"catalog invalid: {exc}")
+
+    availability = load_availability(args.availability_file)
+    if args.availability_file is not None and availability.problem is not None:
+        return fail(f"availability snapshot unusable: {availability.problem}")
+
+    # The service owns the strict calendar-date boundary; an omitted --at
+    # falls back to today exactly like ``catalog explain`` and ``run``.
+    at_date: str | date = args.at if args.at is not None else date.today()
+
+    arguments: dict[str, object] = {
+        "mode": mode,
+        "role": args.role,
+        "class_key": args.class_string,
+        "at_date": at_date,
+    }
+    if mode == MODE_AUTO:
+        # Missing ledger files read as no evidence, exactly like the service
+        # contract; the file environment variable stays the test seam.
+        arguments["attempts_path"] = resolve_attempts_path()
+        if args.author_route is not None:
+            arguments["author_route_id"] = args.author_route
+        if args.supervisor_route is not None:
+            arguments["supervisor_route_id"] = args.supervisor_route
+    elif mode == MODE_CREW:
+        arguments["crew_id"] = crew_id
+    else:
+        arguments["bind_route"] = bind_route
+        arguments["authorized_by"] = args.authorized_by
+        arguments["reason"] = args.reason
+
+    try:
+        result = staff(catalog, availability, **arguments)
+    except StaffServiceError as exc:
+        return fail(str(exc))
+    except Exception as exc:  # no traceback on unexpected service problems
+        return fail(f"staffing service failed: {exc}")
+
+    if args.json:
+        print(dump_json(render_staff_json(result)))
+    else:
+        print(render_staff_text(result))
+    return 0
+
+
+def main(argv: list[str] | None = None):
     args_list = sys.argv[1:] if argv is None else list(argv)
     if args_list and args_list[0] == "resolve":
         fast_args = _try_fast_resolve(args_list[1:])
@@ -2774,6 +2880,104 @@ def main(argv: list[str] | None = None) -> None:
         help="Emit a JSON summary object instead of plain text",
     )
     run_parser.set_defaults(func=_run_run)
+
+    staff_parser = subparsers.add_parser(
+        "staff",
+        help="Compute one staffing result (auto, crew, bind); never dispatches",
+    )
+    staff_parser.add_argument(
+        "--role",
+        default=None,
+        metavar="ROLE",
+        help=(
+            "Class role (impl, plan, review, judge, prose); required by the "
+            "auto and bind modes, unused by crew"
+        ),
+    )
+    staff_parser.add_argument(
+        "--class",
+        default=None,
+        dest="class_string",
+        metavar="CLASS",
+        help=(
+            "Canonical five-segment class string "
+            "role/oracle_type/domain_tags/size_band/language; required by "
+            "the auto and bind modes, unused by crew"
+        ),
+    )
+    staff_parser.add_argument(
+        "--mode",
+        nargs="+",
+        default=None,
+        metavar="MODE",
+        help=(
+            "Staffing mode: 'auto' (default), 'crew NAME' for the exact "
+            "saved crew block, or 'bind ROUTE_ID' for the explicit human "
+            "override (requires --authorized-by and --reason; never-"
+            "automatic routes bind only with --authorized-by lee)"
+        ),
+    )
+    staff_parser.add_argument(
+        "--author-route",
+        default=None,
+        dest="author_route",
+        metavar="ROUTE_ID",
+        help=(
+            "Author route id forwarded to the auto eligibility path: for a "
+            "review/judge class the author route and every same-family "
+            "candidate are excluded (reason 'independence'); an unknown id "
+            "fails closed (exit 3)"
+        ),
+    )
+    staff_parser.add_argument(
+        "--supervisor-route",
+        default=None,
+        dest="supervisor_route",
+        metavar="ROUTE_ID",
+        help="Optional supervisor route id attested to the auto mode",
+    )
+    staff_parser.add_argument(
+        "--authorized-by",
+        default=None,
+        metavar="ID",
+        help=(
+            "Bind mode only: who authorized the explicit override; a "
+            "never-automatic route binds only with 'lee'"
+        ),
+    )
+    staff_parser.add_argument(
+        "--reason",
+        default=None,
+        metavar="TEXT",
+        help="Bind mode only: the recorded reason for the explicit override",
+    )
+    staff_parser.add_argument(
+        "--at",
+        default=None,
+        metavar="DATE",
+        help="ISO date (YYYY-MM-DD) for dated terms (default: today)",
+    )
+    staff_parser.add_argument(
+        "--availability-file",
+        metavar="PATH",
+        default=None,
+        help="Path to the availability snapshot (default: per-host default)",
+    )
+    staff_parser.add_argument(
+        "--catalog-dir",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Directory holding the six staffing catalog YAML documents "
+            "(default: the repo config/staffing directory)"
+        ),
+    )
+    staff_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the structured JSON payload instead of the compact block",
+    )
+    staff_parser.set_defaults(func=_run_staff)
 
     evidence_parser = subparsers.add_parser(
         "evidence",
