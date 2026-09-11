@@ -1024,8 +1024,8 @@ def _usage_from_claude_model_usage(
 
     Returns:
         A schema-valid v2 usage mapping: ``provider_reported`` with the
-        summed rows, or ``unavailable`` with a specific reason when a
-        row lacks required input/output counts.
+        reconciled rows, or ``unavailable`` with a specific reason when
+        a row lacks required input/output counts.
 
     Raises:
         LLMRouterError: With ``FailureType.CONTRACT_VIOLATION`` when a
@@ -1033,17 +1033,23 @@ def _usage_from_claude_model_usage(
             invalid, an optional cache counter or total is present but
             invalid, total contradicts components, a reported total is
             below the components its rows do report, the event total
-            contradicts the aggregate, or alias keys conflict.
+            contradicts the reconciled row aggregate, or alias keys
+            conflict.
     """
     input_tokens = 0
     output_tokens = 0
     cached_tokens_sum = 0
     cache_write_tokens_sum = 0
-    reported_total_sum = 0
 
     cached_read_presence = 0
     cache_write_presence = 0
-    row_total_presence = 0
+
+    # Per-row ``(exact_total, lower_bound)`` reconciliation figures: a
+    # reported row total is exact for that row, and so is the component
+    # sum of a row reporting both cache components; a row with neither
+    # contributes only its known-component lower bound, because an
+    # absent cache component is unknown and only adds tokens.
+    row_bounds: list[tuple[int | None, int]] = []
 
     num_rows = len(model_usage)
 
@@ -1104,6 +1110,17 @@ def _usage_from_claude_model_usage(
                     failure_type=FailureType.CONTRACT_VIOLATION,
                 )
 
+        if row_total_val is not None:
+            row_exact_total: int | None = row_total_val
+            row_lower_bound = row_total_val
+        elif cached_val is not None and cache_write_val is not None:
+            row_exact_total = row_known_components
+            row_lower_bound = row_known_components
+        else:
+            row_exact_total = None
+            row_lower_bound = row_known_components
+        row_bounds.append((row_exact_total, row_lower_bound))
+
         input_tokens += input_value
         output_tokens += output_value
 
@@ -1115,50 +1132,40 @@ def _usage_from_claude_model_usage(
             cache_write_tokens_sum += cache_write_val
             cache_write_presence += 1
 
-        if row_total_val is not None:
-            reported_total_sum += row_total_val
-            row_total_presence += 1
-
     if cached_read_presence == num_rows:
         aggregate_cached_tokens: int | None = cached_tokens_sum
     else:
         aggregate_cached_tokens = None
 
-    # D209 usage truth: a total stays unknown unless the source reports it
-    # or it is calculated from complete authoritative components. A cache
-    # component absent from every row is unknown, never zero, so the
-    # component sum is a calculable total only when every contributing row
-    # reports both cache components.
-    cache_complete = (
-        cached_read_presence == num_rows and cache_write_presence == num_rows
-    )
-    calculated_total: int | None = (
-        input_tokens + output_tokens + cached_tokens_sum + cache_write_tokens_sum
-        if cache_complete
-        else None
-    )
+    # D209 usage truth (Astra final-gate finding 1): the aggregate total
+    # reconciles every reported row total with the other rows' known
+    # component lower bounds. A row figure is exact when it reports a
+    # total or reports both cache components; otherwise its known
+    # components are only a lower bound. The aggregate total is exact
+    # only when every row is exact — reported row totals are never
+    # discarded just because other rows lack totals — and stays unknown
+    # when any row's cache evidence is unknown and unreported.
+    exact_row_totals: list[int] = []
+    aggregate_lower_bound = 0
+    all_rows_exact = True
+    for row_exact_total, row_lower_bound in row_bounds:
+        if row_exact_total is None:
+            all_rows_exact = False
+        else:
+            exact_row_totals.append(row_exact_total)
+        aggregate_lower_bound += row_lower_bound
 
-    if row_total_presence == num_rows:
-        if calculated_total is not None and reported_total_sum != calculated_total:
-            raise LLMRouterError(
-                "Claude result aggregate total contradicts its components",
-                failure_type=FailureType.CONTRACT_VIOLATION,
-            )
-        total_tokens = reported_total_sum
-    else:
-        total_tokens = calculated_total
+    total_tokens: int | None = sum(exact_row_totals) if all_rows_exact else None
 
-    # D209 usage truth: the event total can never be below the components
-    # the rows do report — cache evidence reported by any contributing
-    # row is a lower bound for the aggregate, because an absent cache
-    # component is unknown and only ever adds tokens. A smaller event
-    # total silently discards known cache-write evidence, so it is
-    # rejected instead of being billed without its cache component.
-    known_aggregate_components = input_tokens + output_tokens
-    if cached_read_presence:
-        known_aggregate_components += cached_tokens_sum
-    if cache_write_presence:
-        known_aggregate_components += cache_write_tokens_sum
+    # D209 usage truth: the event total can never contradict the
+    # reconciled row aggregate. When every row figure is exact, the
+    # summed row truth is the aggregate and the event total must equal
+    # it. When some row's cache is unknown, the summed known figures are
+    # only a lower bound — reported row totals and known cache evidence
+    # can never be reduced by a smaller event total, so one below the
+    # lower bound is rejected instead of silently discarding known row
+    # evidence; a total at or above the lower bound is consistent and
+    # becomes the aggregate.
     if event_total is not None:
         if total_tokens is not None and event_total != total_tokens:
             raise LLMRouterError(
@@ -1166,12 +1173,12 @@ def _usage_from_claude_model_usage(
                 failure_type=FailureType.CONTRACT_VIOLATION,
             )
         if total_tokens is None:
-            if event_total < known_aggregate_components:
+            if event_total < aggregate_lower_bound:
                 raise LLMRouterError(
                     f"Claude result event total {event_total} is below its "
-                    f"known components ({known_aggregate_components}); the "
-                    "absent cache components are unknown and cannot reduce "
-                    "the total",
+                    f"known components ({aggregate_lower_bound}); reported "
+                    "row totals and unknown cache components cannot be "
+                    "reduced by a smaller aggregate",
                     failure_type=FailureType.CONTRACT_VIOLATION,
                 )
             total_tokens = event_total

@@ -1226,3 +1226,218 @@ def test_partial_cache_rows_with_consistent_event_total_is_preserved():
         "total_tokens": 185,
     }
     _usage_validator().validate(result)
+
+
+# ---------------------------------------------------------------------------
+# Astra final-gate finding 1: reported row totals reconcile with the
+# other rows' known-component lower bounds; contradictory event totals
+# are rejected instead of accepted.
+# ---------------------------------------------------------------------------
+
+
+def _final_gate_receipt(**event_fields: object) -> str:
+    """The exact final-gate receipt shape: one total-reporting row with
+    absent cache counters, one complete-component row without a total,
+    and optionally the event's own totalTokens."""
+    return _result_event(
+        modelUsage={
+            "claude-sonnet-5": {
+                "inputTokens": 10,
+                "outputTokens": 2,
+                "totalTokens": 112,
+            },
+            "claude-haiku-4": {
+                "inputTokens": 20,
+                "outputTokens": 3,
+                "cacheReadInputTokens": 0,
+                "cacheCreationInputTokens": 0,
+            },
+        },
+        **event_fields,
+    )
+
+
+def test_final_gate_contradictory_event_total_below_reconciled_rows_raises():
+    """The exact final-gate blocker 1 reproducer must fail closed.
+
+    Row A reports totalTokens=112 (absent cache counters) and row B
+    reports complete components (20 + 3 + 0 + 0 = 23, no row total), so
+    the reconciled aggregate truth is 112 + 23 = 135. The event's own
+    totalTokens=35 was previously accepted as ``provider_reported``
+    because the reported row total was excluded from the aggregate and
+    35 merely covered input + output + known cache. It contradicts the
+    rows and must raise.
+    """
+    with pytest.raises(LLMRouterError) as exc_info:
+        capture_claude_usage(_final_gate_receipt(totalTokens=35))
+    assert exc_info.value.failure_type == FailureType.CONTRACT_VIOLATION
+    assert "event total contradicts" in str(exc_info.value)
+
+
+def test_final_gate_reconciled_rows_without_event_total():
+    """Valid neighbor: no event total keeps the reconciled row truth.
+
+    The reported row total (112) is never discarded just because the
+    other row lacks a total; together with the other row's complete
+    component sum (23) the aggregate total is exact at 135. Row A's
+    absent cache counters stay unknown, so ``cached_input_tokens``
+    stays null with no invented zero.
+    """
+    result = capture_claude_usage(_final_gate_receipt())
+
+    assert result == {
+        "basis": "provider_reported",
+        "source": CLAUDE_USAGE_SOURCE,
+        "input_tokens": 30,
+        "output_tokens": 5,
+        "cached_input_tokens": None,
+        "reasoning_tokens": None,
+        "total_tokens": 135,
+    }
+    _usage_validator().validate(result)
+
+
+def test_final_gate_event_total_equal_to_reconciled_rows_is_preserved():
+    """Valid neighbor: an event total matching the reconciled rows passes."""
+    result = capture_claude_usage(_final_gate_receipt(totalTokens=135))
+
+    assert result["total_tokens"] == 135
+    assert result["input_tokens"] == 30
+    assert result["output_tokens"] == 5
+    assert result["cached_input_tokens"] is None
+    _usage_validator().validate(result)
+
+
+def test_final_gate_event_total_above_exact_rows_contradicts():
+    """Event total above an exact row aggregate is also contradictory.
+
+    With both rows exact (a reported total and complete components),
+    the summed row truth 135 is the aggregate; any other event total,
+    higher included, contradicts it and raises.
+    """
+    with pytest.raises(LLMRouterError) as exc_info:
+        capture_claude_usage(_final_gate_receipt(totalTokens=140))
+    assert exc_info.value.failure_type == FailureType.CONTRACT_VIOLATION
+    assert "event total contradicts" in str(exc_info.value)
+
+
+def test_final_gate_mixed_unknown_cache_event_total_below_row_total_raises():
+    """Mixed rows with unknown cache still bound the event total from below.
+
+    Row B here lacks cache counters and a row total, so only its known
+    components (23) are a lower bound; row A's reported total (112) is
+    exact. The reconciled lower bound is 135, so the contradictory
+    event totalTokens=35 raises instead of being accepted.
+    """
+    output = _result_event(
+        totalTokens=35,
+        modelUsage={
+            "claude-sonnet-5": {
+                "inputTokens": 10,
+                "outputTokens": 2,
+                "totalTokens": 112,
+            },
+            "claude-haiku-4": {"inputTokens": 20, "outputTokens": 3},
+        },
+    )
+
+    with pytest.raises(LLMRouterError) as exc_info:
+        capture_claude_usage(output)
+    assert exc_info.value.failure_type == FailureType.CONTRACT_VIOLATION
+    assert "is below its known components" in str(exc_info.value)
+    assert "(135)" in str(exc_info.value)
+
+
+def test_final_gate_mixed_unknown_cache_event_total_at_lower_bound_is_preserved():
+    """Valid neighbor: event total at the reconciled lower bound fills it."""
+    output = _result_event(
+        totalTokens=135,
+        modelUsage={
+            "claude-sonnet-5": {
+                "inputTokens": 10,
+                "outputTokens": 2,
+                "totalTokens": 112,
+            },
+            "claude-haiku-4": {"inputTokens": 20, "outputTokens": 3},
+        },
+    )
+
+    result = capture_claude_usage(output)
+
+    assert result["total_tokens"] == 135
+    _usage_validator().validate(result)
+
+
+def test_final_gate_mixed_unknown_cache_event_total_above_lower_bound_is_preserved():
+    """Valid neighbor: an event total above the lower bound is consistent.
+
+    The unknown cache in the row without a total can only add tokens,
+    so event totalTokens=140 is consistent with the reconciled rows and
+    becomes the aggregate without inventing any counter.
+    """
+    output = _result_event(
+        totalTokens=140,
+        modelUsage={
+            "claude-sonnet-5": {
+                "inputTokens": 10,
+                "outputTokens": 2,
+                "totalTokens": 112,
+            },
+            "claude-haiku-4": {"inputTokens": 20, "outputTokens": 3},
+        },
+    )
+
+    result = capture_claude_usage(output)
+
+    assert result == {
+        "basis": "provider_reported",
+        "source": CLAUDE_USAGE_SOURCE,
+        "input_tokens": 30,
+        "output_tokens": 5,
+        "cached_input_tokens": None,
+        "reasoning_tokens": None,
+        "total_tokens": 140,
+    }
+    _usage_validator().validate(result)
+
+
+def test_final_gate_mixed_unknown_cache_without_event_total_keeps_total_unknown():
+    """Adjacent valid case: with an unknown-cache row and no event total,
+
+    the aggregate total stays unknown even though one row reports a
+    total — the other row's cache could add tokens beyond the 135
+    lower bound, and nothing is invented.
+    """
+    output = _result_event(
+        modelUsage={
+            "claude-sonnet-5": {
+                "inputTokens": 10,
+                "outputTokens": 2,
+                "totalTokens": 112,
+            },
+            "claude-haiku-4": {"inputTokens": 20, "outputTokens": 3},
+        },
+    )
+
+    result = capture_claude_usage(output)
+
+    assert result == {
+        "basis": "provider_reported",
+        "source": CLAUDE_USAGE_SOURCE,
+        "input_tokens": 30,
+        "output_tokens": 5,
+        "cached_input_tokens": None,
+        "reasoning_tokens": None,
+        "total_tokens": None,
+    }
+    _usage_validator().validate(result)
+
+
+def test_final_gate_regressions_are_schema_valid():
+    """The exact gate receipt shapes that yield usage validate against v2."""
+    validator = _usage_validator()
+    for mapping in (
+        capture_claude_usage(_final_gate_receipt()),
+        capture_claude_usage(_final_gate_receipt(totalTokens=135)),
+    ):
+        validator.validate(mapping)

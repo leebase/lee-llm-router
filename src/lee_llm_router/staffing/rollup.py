@@ -17,12 +17,26 @@ correction a governed re-import appends for it.  History is never rewritten,
 but the correction supersedes its legacy source attempt in the aggregation, so
 every distinct source run is counted exactly once.  Runs without a correction,
 and all non-benchmark records, pass through unchanged.
+
+Medians are exact and every validated ledger integer is accepted: an odd
+sample reports its middle counter, and an even sample reports the exact
+arithmetic mean of its two middle counters — an ``int`` when that mean is an
+integer, a ``float`` when the half-integer is exactly representable in binary
+floating point, and otherwise the exact ``"<whole>.5"`` decimal string,
+because no JSON number can carry the true value and rounding would invent
+precision.  Pass counting follows each record's own verdict shape: canonical
+v2 records carry the verdict string ``pass`` and break down by their class
+oracle type, while agent-orch imports (chief answer 3) carry the verdict
+object ``{"tier": "engine_validation"}`` whose pass fact is exactly the
+schema's ``verified_success`` equivalence (``worker_exit_code == 0`` and
+``validation_passed == true``); those passes count under the
+``engine_validation`` key.  Every record contributes to at most one breakdown
+key, so no pass is ever counted twice.
 """
 
 from __future__ import annotations
 
 import json
-from statistics import median
 from typing import Any, Iterable, Mapping
 
 from lee_llm_router.staffing.import_evidence import (
@@ -147,25 +161,53 @@ def _token_values(members: Iterable[Mapping[str, Any]], field: str) -> list[int]
     return values
 
 
+def _exact_median(values: list[int]) -> int | float | str:
+    """Return the exact median of integer counters as a JSON-safe value.
+
+    ``statistics.median`` divides the sum of the two middle values in
+    floating point, which raises :class:`OverflowError` for validated
+    counters such as ``10**400`` on an even sample and silently rounds any
+    total above 53 significand bits.  This helper keeps every emitted median
+    exact.  An odd sample returns its middle counter (an ``int``).  An even
+    sample returns the exact arithmetic mean of its two middle counters:
+    an ``int`` when the sum is even, a ``float`` when the half-integer is
+    exactly representable in binary floating point (sum ``bit_length <= 53``,
+    identical to what ``statistics.median`` returns there), and otherwise
+    the exact ``"<whole>.5"`` decimal string — no JSON number can carry the
+    true value, so rounding is never substituted for it.
+    """
+    ordered = sorted(values)
+    count = len(ordered)
+    if count % 2 == 1:
+        return ordered[count // 2]
+    total = ordered[count // 2 - 1] + ordered[count // 2]
+    if total % 2 == 0:
+        return total // 2
+    if total.bit_length() <= 53:
+        return total / 2
+    return f"{total // 2}.5"
+
+
 def _token_aggregates(
     members: list[Mapping[str, Any]],
-) -> tuple[dict[str, int | float | None], dict[str, int | float | None]]:
-    """Build component-wise sums and Python median values.
+) -> tuple[dict[str, int | float | str | None], dict[str, int | float | str | None]]:
+    """Build component-wise sums and exact median values.
 
     The grouping/counting approach follows the aggregation in
     ``/home/lee/projects/auto-orch/src/auto_orch/performance.py``
     (``summarize_observations``): collect members, count facts with ``sum``,
-    and sort emitted groups deterministically.  ``statistics.median`` is
-    intentional: odd samples return the middle
-    value and even samples return the arithmetic mean of the two middle
-    values.  No missing component is passed to ``sum`` as zero.
+    and sort emitted groups deterministically.  :func:`_exact_median` keeps
+    the ``statistics.median`` sample semantics (odd samples return the
+    middle value, even samples the arithmetic mean of the two middle values)
+    without its float-division overflow or rounding.  No missing component
+    is passed to ``sum`` as zero.
     """
-    sums: dict[str, int | float | None] = {}
-    medians: dict[str, int | float | None] = {}
+    sums: dict[str, int | float | str | None] = {}
+    medians: dict[str, int | float | str | None] = {}
     for field in TOKEN_FIELDS:
         values = _token_values(members, field)
         sums[field] = sum(values) if values else None
-        medians[field] = median(values) if values else None
+        medians[field] = _exact_median(values) if values else None
     return sums, medians
 
 
@@ -180,6 +222,34 @@ def _group_sort_key(key: tuple[str | None, str | None]) -> tuple[int, str, int, 
     )
 
 
+def _pass_oracle_type(record: Mapping[str, Any]) -> str | None:
+    """Return the breakdown key when the record counts as a pass.
+
+    Canonical v2 records pass when their verdict string is ``pass`` and are
+    broken down by the class oracle type chosen for the attempt.  Agent-Orch
+    imports (chief answer 3) instead carry the verdict object
+    ``{"tier": "engine_validation"}`` for every attempt: the tier names
+    agent-orch's own worker-exit/validation gate, never an oracle chosen by
+    this repository, and its pass fact is exactly the schema's
+    ``verified_success`` equivalence (``worker_exit_code == 0`` and
+    ``validation_passed == true``).  Those verified passes count under the
+    ``engine_validation`` key so the breakdown totals stay truthful.  A
+    record has exactly one verdict shape, so it can contribute to at most
+    one key and no pass is ever double counted.
+    """
+    verdict = record.get("verdict")
+    if isinstance(verdict, Mapping):
+        if (
+            verdict.get("tier") == "engine_validation"
+            and record.get("verified_success") is True
+        ):
+            return "engine_validation"
+        return None
+    if verdict == "pass":
+        return _oracle_type(record)
+    return None
+
+
 def _group_record(
     route_id: str | None,
     class_key: str | None,
@@ -188,9 +258,7 @@ def _group_record(
     """Render one route/class group in the stable field order."""
     pass_by_oracle_type: dict[str, int] = {}
     for record in members:
-        if record.get("verdict") != "pass":
-            continue
-        oracle_type = _oracle_type(record)
+        oracle_type = _pass_oracle_type(record)
         if oracle_type is not None:
             pass_by_oracle_type[oracle_type] = (
                 pass_by_oracle_type.get(oracle_type, 0) + 1
@@ -202,6 +270,7 @@ def _group_record(
         for value in (_counter(record.get("wall_clock_ms")) for record in members)
         if value is not None
     ]
+    wall_clock_median = _exact_median(wall_clocks) if wall_clocks else None
     return {
         "route_id": route_id,
         "class_key": class_key,
@@ -214,7 +283,7 @@ def _group_record(
         },
         "token_sums": token_sums,
         "token_medians": token_medians,
-        "wall_clock_median_ms": median(wall_clocks) if wall_clocks else None,
+        "wall_clock_median_ms": wall_clock_median,
         "usage_known": sum(1 for record in members if _known_usage(record)),
         "comparison_eligible": len(members) >= MINIMUM_SAMPLE_SIZE,
     }

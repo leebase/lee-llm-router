@@ -18,6 +18,7 @@ from lee_llm_router.staffing.ledger import (
     ATTEMPTS_STATE_ROOT_ENV_VAR,
     AttemptLedgerError,
     append_attempt,
+    validate_attempt,
 )
 from lee_llm_router.staffing.rollup import (
     build_rollup,
@@ -30,6 +31,12 @@ FIXTURE = (
     / "fixtures"
     / "staffing"
     / ("attempt-record-router-run-unavailable.json")
+)
+AGENT_ORCH_ATTEMPT_FIXTURE = (
+    Path(__file__).parent
+    / "fixtures"
+    / "staffing"
+    / ("attempt-record-agent-orch-raw-attempt.json")
 )
 
 
@@ -145,14 +152,17 @@ def test_fixture_ledger_rolls_up_multiple_groups_and_medians(tmp_path: Path) -> 
                     "reasoning_tokens": None,
                     "total_tokens": 36,
                 },
+                # Exact integer medians: every even sample here has an even
+                # two-middle sum, so the mean is emitted as an exact int
+                # instead of statistics.median's float.
                 "token_medians": {
-                    "input_tokens": 4.0,
-                    "output_tokens": 5.0,
+                    "input_tokens": 4,
+                    "output_tokens": 5,
                     "cached_input_tokens": 30,
                     "reasoning_tokens": None,
-                    "total_tokens": 9.0,
+                    "total_tokens": 9,
                 },
-                "wall_clock_median_ms": 400.0,
+                "wall_clock_median_ms": 400,
                 "usage_known": 4,
                 "comparison_eligible": False,
             },
@@ -210,6 +220,272 @@ def test_cli_path_uses_state_root_override_and_committed_validation(
     monkeypatch.setenv(ATTEMPTS_FILE_ENV_VAR, str(ledger))
     with pytest.raises(AttemptLedgerError, match=r":2: line is not valid JSON"):
         rollup_ledger()
+
+
+# ---------------------------------------------------------------------------
+# Exact medians for every validated counter (Astra final-gate blocker 2)
+# ---------------------------------------------------------------------------
+
+
+def _huge_group(members: list[dict]) -> dict:
+    """Roll up one route group and return it, validating every member first."""
+    for member in members:
+        validate_attempt(member)
+    return build_rollup(members)["groups"][0]
+
+
+def test_odd_huge_sample_median_is_the_exact_middle_counter() -> None:
+    """An odd sample of validated 10**400-scale counters stays exact."""
+    members = [
+        _record(
+            attempt_id=f"huge-odd-{index}",
+            route_id="route-huge-odd",
+            input_tokens=value,
+            output_tokens=value,
+            total_tokens=value,
+            wall_clock_ms=None,
+        )
+        for index, value in enumerate((10**400, 10**401, 10**402))
+    ]
+
+    group = _huge_group(members)
+
+    assert group["token_medians"]["input_tokens"] == 10**401
+    assert isinstance(group["token_medians"]["input_tokens"], int)
+    assert group["token_sums"]["input_tokens"] == 10**400 + 10**401 + 10**402
+
+
+def test_even_huge_sample_median_is_the_exact_integer_mean() -> None:
+    """The reproducer pair: two 10**400 counters aggregate without overflow."""
+    equal = [
+        _record(
+            attempt_id=f"huge-equal-{index}",
+            route_id="route-huge-equal",
+            input_tokens=10**400,
+            output_tokens=10**400,
+            total_tokens=10**400,
+            wall_clock_ms=None,
+        )
+        for index in range(2)
+    ]
+    # Same parity, unequal middles whose sum is even: still an exact int.
+    spread = [
+        _record(
+            attempt_id="huge-spread-0",
+            route_id="route-huge-spread",
+            input_tokens=10**400,
+            output_tokens=10**400,
+            total_tokens=10**400,
+            wall_clock_ms=None,
+        ),
+        _record(
+            attempt_id="huge-spread-1",
+            route_id="route-huge-spread",
+            input_tokens=10**400 + 2,
+            output_tokens=10**400 + 2,
+            total_tokens=10**400 + 2,
+            wall_clock_ms=None,
+        ),
+    ]
+
+    equal_group = _huge_group(equal)
+    spread_group = _huge_group(spread)
+
+    assert equal_group["token_medians"]["input_tokens"] == 10**400
+    assert spread_group["token_medians"]["input_tokens"] == 10**400 + 1
+    assert isinstance(spread_group["token_medians"]["input_tokens"], int)
+
+
+def test_even_huge_odd_sum_median_is_the_exact_decimal_string() -> None:
+    """A half-integer above float range stays exact; nothing is invented."""
+    members = [
+        _record(
+            attempt_id=f"huge-half-{index}",
+            route_id="route-huge-half",
+            input_tokens=10**400 + index,
+            output_tokens=10**400 + index,
+            total_tokens=10**400 + index,
+            wall_clock_ms=None,
+        )
+        for index in range(2)
+    ]
+
+    group = _huge_group(members)
+
+    expected = f"{10**400}.5"
+    assert group["token_medians"]["input_tokens"] == expected
+    assert isinstance(group["token_medians"]["input_tokens"], str)
+    # The exact decimal string must survive the rendered JSON round trip.
+    rendered = json.loads(render_rollup({"groups": [group]}))
+    assert rendered["groups"][0]["token_medians"]["input_tokens"] == expected
+
+
+def test_normal_medians_keep_exact_values_and_representations() -> None:
+    """Normal samples stay statistics.median-faithful: ints and exact floats."""
+    odd = [
+        _record(
+            attempt_id=f"normal-odd-{index}",
+            route_id="route-normal-odd",
+            input_tokens=value,
+            output_tokens=value,
+            wall_clock_ms=value * 100,
+        )
+        for index, value in enumerate((1, 2, 9))
+    ]
+    even_odd_sum = [
+        _record(
+            attempt_id="normal-half-0",
+            route_id="route-normal-half",
+            input_tokens=4,
+            output_tokens=4,
+            wall_clock_ms=300,
+        ),
+        _record(
+            attempt_id="normal-half-1",
+            route_id="route-normal-half",
+            input_tokens=5,
+            output_tokens=5,
+            wall_clock_ms=500,
+        ),
+    ]
+
+    odd_group = _huge_group(odd)
+    half_group = _huge_group(even_odd_sum)
+
+    assert odd_group["token_medians"]["input_tokens"] == 2
+    assert isinstance(odd_group["token_medians"]["input_tokens"], int)
+    assert odd_group["wall_clock_median_ms"] == 200
+    assert half_group["token_medians"]["input_tokens"] == 4.5
+    assert isinstance(half_group["token_medians"]["input_tokens"], float)
+    # An integral even-sample mean is the exact int, not a rounded float.
+    assert half_group["wall_clock_median_ms"] == 400
+    assert isinstance(half_group["wall_clock_median_ms"], int)
+
+
+# ---------------------------------------------------------------------------
+# Engine-validation pass breakdown (Astra final-gate blocker 3)
+# ---------------------------------------------------------------------------
+
+
+def _agent_orch_record(attempt_id: str, *, passed: bool) -> dict:
+    """A schema-valid agent-orch attempt copied from the reviewed fixture."""
+    record = json.loads(AGENT_ORCH_ATTEMPT_FIXTURE.read_text(encoding="utf-8"))
+    record["attempt_id"] = attempt_id
+    if not passed:
+        record["verified_success"] = False
+        payload = record["agent_orch_attempt"]
+        payload["worker_exit_code"] = 1
+        payload["validation_passed"] = False
+        payload["policy_decision"] = "FAIL"
+        payload["failure_classification"] = "validation_failed"
+    validate_attempt(record)
+    return record
+
+
+def test_engine_validation_passes_count_under_their_tier() -> None:
+    """Real agent-orch shape: verified passes break down as engine_validation."""
+    members = [
+        _agent_orch_record(f"agent-pass-{index}", passed=True) for index in range(2)
+    ] + [_agent_orch_record("agent-fail-1", passed=False)]
+
+    group = build_rollup(members)["groups"][0]
+
+    assert group["route_id"] is None
+    assert group["class_key"] is None
+    assert group["attempts"] == 3
+    assert group["verified_pass"] == 2
+    assert group["pass_by_oracle_type"] == {"engine_validation": 2}
+    # The breakdown covers exactly the verified passes: no double count.
+    assert sum(group["pass_by_oracle_type"].values()) == group["verified_pass"]
+
+
+def test_engine_validation_failures_are_never_passes() -> None:
+    """A nonzero worker exit or failed validation is not a pass anywhere."""
+    failed_exit = _agent_orch_record("agent-fail-exit", passed=False)
+    failed_exit["agent_orch_attempt"]["worker_exit_code"] = 1
+    failed_validation = _agent_orch_record("agent-fail-validation", passed=False)
+    failed_validation["agent_orch_attempt"]["worker_exit_code"] = 0
+    failed_validation["agent_orch_attempt"]["validation_passed"] = False
+
+    group = build_rollup([failed_exit, failed_validation])["groups"][0]
+
+    assert group["attempts"] == 2
+    assert group["verified_pass"] == 0
+    assert group["pass_by_oracle_type"] == {}
+
+
+def test_mixed_oracle_types_and_engine_validation_break_down_without_overlap() -> None:
+    """String-verdict passes use their oracle type; tier passes their tier."""
+    deterministic = [
+        _record(
+            attempt_id=f"mixed-det-{index}",
+            route_id="route-a",
+            verdict="pass",
+        )
+        for index in range(2)
+    ]
+    judge = _record(
+        attempt_id="mixed-judge-1",
+        route_id="route-b",
+        class_key="review/judge/none/xs/markdown",
+        oracle_type="judge",
+        verdict="pass",
+    )
+    unverified = _record(
+        attempt_id="mixed-unverified-1",
+        route_id="route-a",
+        verdict="unverified",
+    )
+    engine = _agent_orch_record("mixed-engine-pass-1", passed=True)
+    for record in [*deterministic, judge, unverified]:
+        validate_attempt(record)
+
+    groups = {
+        (group["route_id"], group["class_key"]): group
+        for group in build_rollup([*deterministic, judge, unverified, engine])["groups"]
+    }
+
+    oracle_group = groups[("route-a", "impl/deterministic/none/s/python")]
+    assert oracle_group["attempts"] == 3
+    assert oracle_group["pass_by_oracle_type"] == {"deterministic": 2}
+    # The unverified record counts no pass; the judge pass keeps its own
+    # oracle type in its own group.
+    assert groups[("route-b", "review/judge/none/xs/markdown")][
+        "pass_by_oracle_type"
+    ] == {"judge": 1}
+    # The engine-validation record lives in its own unkeyed group under its
+    # tier, never inside an oracle-type key: no overlap, no double count.
+    engine_group = groups[(None, None)]
+    assert engine_group["attempts"] == 1
+    assert engine_group["pass_by_oracle_type"] == {"engine_validation": 1}
+
+
+def test_engine_validation_rows_coexist_with_superseded_benchmark_lines() -> None:
+    """Supersession still counts a corrected run once beside agent-orch rows."""
+    legacy = _legacy_benchmark_record("run-9")
+    correction = _benchmark_v6_record("run-9")
+    engine_pass = _agent_orch_record("agent-coexist-pass", passed=True)
+    engine_fail = _agent_orch_record("agent-coexist-fail", passed=False)
+
+    groups = {
+        group["class_key"]: group
+        for group in build_rollup([legacy, correction, engine_pass, engine_fail])[
+            "groups"
+        ]
+    }
+    benchmark_group = groups["impl/deterministic/none/m/python"]
+    assert benchmark_group["attempts"] == 1
+    assert benchmark_group["pass_by_oracle_type"] == {"deterministic": 1}
+    # Pre-existing semantics are untouched: canonical verdict-pass records
+    # fill the breakdown while verified_pass keeps its own stricter count.
+    assert benchmark_group["verified_pass"] == 0
+    engine_group = groups[None]
+    assert engine_group["attempts"] == 2
+    assert engine_group["verified_pass"] == 1
+    assert engine_group["pass_by_oracle_type"] == {"engine_validation": 1}
+    assert sum(engine_group["pass_by_oracle_type"].values()) == (
+        engine_group["verified_pass"]
+    )
 
 
 # ---------------------------------------------------------------------------
