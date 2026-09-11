@@ -435,3 +435,14 @@ Sol proofs pass, gates 1–4 pass, and the final Astra Low whole-diff review has
 seal. Two non-blocking Phase 2 candidates remain: bring text explain's tier
 `kind` to parity with JSON, and decide whether import writers need concurrency
 control beyond the current serialized-writer assumption.
+
+## Phase 2 — 2026-09-11
+
+- No authority blocker at P2-0. D204–D211 and D189 cover execution,
+  consumption identities, the $10 ceiling, shim reinstall, and acceptance.
+- Safe contract interpretation: D211's root policy constant requires a small
+  strict-schema shape extension alongside the data row; otherwise the policy
+  loader rejects `policy.yaml`. This is mechanical representation of D211's
+  exact name/value, not a new policy decision, and is reviewed with P2-1.
+- Replay class keys in `phase2-contracts.md` apply the locked taxonomy to the
+  five trace facts. They join evidence only and encode no route choice.

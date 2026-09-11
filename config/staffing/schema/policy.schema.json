@@ -11,7 +11,8 @@
     "role_class",
     "role_floors",
     "reviewer_independence",
-    "spend_caps"
+    "spend_caps",
+    "human_escalation_cost_usd"
   ],
   "properties": {
     "never_automatic": {
@@ -49,6 +50,11 @@
       "type": "array",
       "items": { "$ref": "#/$defs/spendCap" },
       "uniqueItems": true
+    },
+    "human_escalation_cost_usd": {
+      "description": "Terminal human-escalation cost in USD for staffing ladder arithmetic (D211 ruling 3).",
+      "type": "number",
+      "const": 5.0
     }
   },
   "$defs": {

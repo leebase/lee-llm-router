@@ -270,3 +270,7 @@ reviewer_independence:
       different-family-than-author)
 
 spend_caps: []
+
+# D211 ruling 3: terminal cost used by staffing ladder arithmetic when
+# automated rungs are exhausted. Chief's placeholder; Lee may change it.
+human_escalation_cost_usd: 5.00
