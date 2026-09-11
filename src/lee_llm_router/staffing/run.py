@@ -62,6 +62,7 @@ first blocking gap in a fixed documented order) — never a claimed success.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import os
 import shlex
@@ -70,8 +71,11 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, Mapping, TextIO
+
+import yaml
 
 from lee_llm_router.availability import AvailabilitySnapshot
 from lee_llm_router.crews import HARNESS_PROVIDER_CHANNELS
@@ -80,6 +84,7 @@ from lee_llm_router.providers.antigravity_cli import AntigravityCLIProvider
 from lee_llm_router.providers.base import FailureType, LLMRouterError
 from lee_llm_router.providers.codex_cli import (
     CLAUDE_GOVERNED_CONFIG,
+    CODEX_USAGE_SOURCE,
     ClaudeCodeCLIProvider,
     CodexCLIProvider,
     capture_claude_usage,
@@ -99,6 +104,11 @@ from lee_llm_router.staffing.eligibility import (
     EligibilityRow,
     StaffingEligibilityError,
     evaluate_eligibility,
+)
+from lee_llm_router.staffing.terms import (
+    DEFAULT_OPENROUTER_SNAPSHOT_PATH,
+    DEFAULT_RATE_TABLE_PATH,
+    _verify_sha256,
 )
 from lee_llm_router.watchdog import DEFAULT_MAX_MINUTES, DEFAULT_STALL_MINUTES
 
@@ -226,6 +236,9 @@ without shell escape. Pi's ``--mode json`` usage capture is unaffected."""
 #: ``--permission-prompts none``; no bypass flag is ever emitted.
 
 
+_TOKENS_PER_1M = 1_000_000
+
+
 class RunSelectionError(Exception):
     """A ``run`` selection refusal: nothing launched, the CLI exits 3.
 
@@ -289,6 +302,9 @@ class SelectionOutcome:
     excluded: tuple[tuple[str, str], ...]
     pricing: EligibilityPrice | None = None
     supervisor_route: dict[str, Any] | None = None
+    cache_replacement_usd_per_token: float | None = None
+    cache_marginal_usd_per_token: float | None = None
+    cache_rates_checked: bool = False
 
 
 @dataclass(frozen=True)
@@ -502,6 +518,11 @@ def select_route(
                 f"{class_key!r} at {when.isoformat()}: {'; '.join(row.reasons)}",
                 kind="excluded",
             )
+        cache_repl, cache_marg = _resolve_cache_rates(
+            row.pricing,
+            openrouter_snapshot_path=openrouter_snapshot_path,
+            rate_table_path=rate_table_path,
+        )
         return SelectionOutcome(
             route=route,
             basis=SELECTION_BASIS_EXPLICIT,
@@ -513,6 +534,9 @@ def select_route(
             excluded=excluded,
             pricing=row.pricing,
             supervisor_route=attested_supervisor,
+            cache_replacement_usd_per_token=cache_repl,
+            cache_marginal_usd_per_token=cache_marg,
+            cache_rates_checked=True,
         )
 
     eligible = sorted(
@@ -526,6 +550,11 @@ def select_route(
         )
     selected = eligible[0]
     route = next(r for r in catalog.routes.routes if r.route_id == selected.route_id)
+    cache_repl, cache_marg = _resolve_cache_rates(
+        selected.pricing,
+        openrouter_snapshot_path=openrouter_snapshot_path,
+        rate_table_path=rate_table_path,
+    )
     return SelectionOutcome(
         route=route,
         basis=SELECTION_BASIS_EXPLAIN_CHEAPEST_ELIGIBLE,
@@ -537,6 +566,9 @@ def select_route(
         excluded=excluded,
         pricing=selected.pricing,
         supervisor_route=attested_supervisor,
+        cache_replacement_usd_per_token=cache_repl,
+        cache_marginal_usd_per_token=cache_marg,
+        cache_rates_checked=True,
     )
 
 
@@ -649,16 +681,147 @@ def _known_token_count(usage: Mapping[str, Any], field: str) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
+def _parse_cache_price(value: object) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if not isinstance(value, (str, int, float)):
+        return None
+    try:
+        parsed = Decimal(str(value))
+    except InvalidOperation:
+        return None
+    if not parsed.is_finite() or parsed < 0:
+        return None
+    return float(parsed)
+
+
+def _load_openrouter_cache_rates(path: Path) -> dict[str, float]:
+    try:
+        _verify_sha256(path)
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    rows = data.get("data") if isinstance(data, Mapping) else None
+    if not isinstance(rows, list):
+        return {}
+    rates: dict[str, float] = {}
+    for row in rows:
+        if not isinstance(row, Mapping) or not isinstance(row.get("id"), str):
+            continue
+        model_id = row["id"]
+        pricing = row.get("pricing")
+        if isinstance(pricing, Mapping):
+            parsed = _parse_cache_price(pricing.get("input_cache_read"))
+            if parsed is not None:
+                rates[model_id] = parsed
+    return rates
+
+
+def _load_rate_table_cache_rates(path: Path) -> dict[str, float]:
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    rates = data.get("rates") if isinstance(data, Mapping) else None
+    if not isinstance(rates, Mapping):
+        return {}
+    prices: dict[str, float] = {}
+    for model_id, row in rates.items():
+        if not isinstance(model_id, str) or not isinstance(row, Mapping):
+            continue
+        parsed = _parse_cache_price(row.get("cache_read_usd_per_1m"))
+        if parsed is not None:
+            prices[model_id] = parsed / _TOKENS_PER_1M
+    return prices
+
+
+def _resolve_cache_rates(
+    pricing: EligibilityPrice | None,
+    *,
+    openrouter_snapshot_path: str | Path | None = None,
+    rate_table_path: str | Path | None = None,
+) -> tuple[float | None, float | None]:
+    """Resolve replacement and marginal cache-read price per token.
+
+    Uses the authoritative P0-4 pricing sources named in ``pricing.source``:
+    either the pinned OpenRouter snapshot (``input_cache_read``) or the
+    agent-orch rate table (``cache_read_usd_per_1m``).
+
+    Returns:
+        ``(replacement_cache_rate, marginal_cache_rate)`` where each is a
+        nonnegative float, or ``(None, None)`` when no cache price is
+        sourced.
+    """
+    if pricing is None or not pricing.source:
+        return None, None
+
+    replacement_rate: float | None = None
+    if pricing.source.startswith("openrouter-snapshot:"):
+        model_id = pricing.source.split(":", 1)[1]
+        snap_path = (
+            Path(openrouter_snapshot_path)
+            if openrouter_snapshot_path is not None
+            else DEFAULT_OPENROUTER_SNAPSHOT_PATH
+        )
+        rates = _load_openrouter_cache_rates(snap_path)
+        replacement_rate = rates.get(model_id)
+
+    elif pricing.source.startswith("rate-table:"):
+        key = pricing.source.split(":", 1)[1]
+        rt_path = (
+            Path(rate_table_path)
+            if rate_table_path is not None
+            else DEFAULT_RATE_TABLE_PATH
+        )
+        rates = _load_rate_table_cache_rates(rt_path)
+        replacement_rate = rates.get(key)
+
+    if replacement_rate is None:
+        return None, None
+
+    marginal_rate = replacement_rate * pricing.multiplier
+    return replacement_rate, marginal_rate
+
+
+def _is_cached_input_subset(
+    outcome: SelectionOutcome, usage: Mapping[str, Any]
+) -> bool:
+    """Whether usage semantics treat cached input tokens as a subset of input.
+
+    Codex reports cached input and reasoning as subsets of input and output
+    respectively, with total = input + output. Pi, Claude, OMP, and
+    Antigravity treat cached tokens as separate counters (or history not
+    constrained by input).
+    """
+    if getattr(outcome.route, "harness", None) == "codex":
+        return True
+    if usage.get("source") == CODEX_USAGE_SOURCE:
+        return True
+    return False
+
+
 def _attempt_cost(
     outcome: SelectionOutcome, usage: Mapping[str, Any]
 ) -> tuple[dict[str, Any], str]:
     """Calculate list and marginal token cost from the selected P0-4 price.
 
-    The committed price API exposes the dated replacement input/output rates
-    and the badge-adjusted marginal rates.  Only those two required counters
-    are billed here; optional cache/reasoning/total counters remain evidence
-    and are never turned into estimates or sent through a second pricing
-    implementation.
+    The committed price API exposes the dated replacement input/output rates,
+    the badge-adjusted marginal rates, and authoritative cache-read rates from
+    the selected dated terms source.
+
+    When cached tokens are reported:
+    * If cached input is a subset of input (Codex), uncached input is separated
+      (``input_tokens - cached_input_tokens``). An invalid relationship where
+      cached input exceeds input fails closed as unavailable cost.
+    * If cached input is reported separately (Pi and other non-subset harnesses),
+      ``input_tokens`` is already uncached input and cached tokens are added at
+      the cache rate.
+    * Cache rates from authoritative P0-4 sources are applied when cached
+      tokens are present. If cached tokens are nonzero but cache price evidence
+      is unavailable for the model, cost fails closed as unavailable.
+    * Null/absent cached tokens do not bill cache and do not fabricate zeros.
+    * Reasoning tokens remain an evidence subset of output and are never billed
+      as an unknown extra counter.
     """
     if usage.get("basis") == "unavailable":
         return {"basis": ["unavailable"]}, "usage basis is unavailable"
@@ -672,21 +835,78 @@ def _attempt_cost(
 
     input_tokens = usage["input_tokens"]
     output_tokens = usage["output_tokens"]
+
+    cached_tokens: int | None = None
+    if "cached_input_tokens" in usage and usage["cached_input_tokens"] is not None:
+        if not _known_token_count(usage, "cached_input_tokens"):
+            return {"basis": ["unavailable"]}, "cached_input_tokens is invalid"
+        cached_tokens = usage["cached_input_tokens"]
+
+    is_subset = _is_cached_input_subset(outcome, usage)
+    if cached_tokens is not None and is_subset:
+        if cached_tokens > input_tokens:
+            return {
+                "basis": ["unavailable"]
+            }, "cached_input_tokens contradicts input_tokens"
+        uncached_input_tokens = input_tokens - cached_tokens
+    else:
+        uncached_input_tokens = input_tokens
+
+    cache_repl = outcome.cache_replacement_usd_per_token
+    cache_marg = outcome.cache_marginal_usd_per_token
+    if not outcome.cache_rates_checked and cache_repl is None:
+        cache_repl, cache_marg = _resolve_cache_rates(pricing)
+
+    cache_tokens_known = cached_tokens is not None and cached_tokens > 0
+    if cache_tokens_known:
+        if cache_repl is None:
+            return {
+                "basis": ["unavailable"]
+            }, "cache price is unavailable for the selected model"
+        if (
+            not isinstance(cache_repl, (int, float))
+            or isinstance(cache_repl, bool)
+            or not math.isfinite(cache_repl)
+            or cache_repl < 0
+        ):
+            return {"basis": ["unavailable"]}, "cache price is invalid"
+        if cache_marg is None:
+            cache_marg = cache_repl * pricing.multiplier
+        if (
+            not isinstance(cache_marg, (int, float))
+            or isinstance(cache_marg, bool)
+            or not math.isfinite(cache_marg)
+            or cache_marg < 0
+        ):
+            return {"basis": ["unavailable"]}, "cache price is invalid"
+
+    cache_cost_list = cached_tokens * cache_repl if cache_tokens_known else 0.0
+    cache_cost_marg = cached_tokens * cache_marg if cache_tokens_known else 0.0
+
     list_cost = (
-        input_tokens * pricing.replacement_input_usd_per_token
+        uncached_input_tokens * pricing.replacement_input_usd_per_token
         + output_tokens * pricing.replacement_output_usd_per_token
+        + cache_cost_list
     )
     marginal_cost = (
-        input_tokens * pricing.marginal_input_usd_per_token
+        uncached_input_tokens * pricing.marginal_input_usd_per_token
         + output_tokens * pricing.marginal_output_usd_per_token
+        + cache_cost_marg
     )
+
     if not math.isfinite(list_cost) or not math.isfinite(marginal_cost):
         return {"basis": ["unavailable"]}, "calculated cost is not finite"
+
+    note = (
+        "cost calculated from known input/output/cache counters"
+        if cached_tokens is not None and cached_tokens > 0
+        else "cost calculated from known input/output counters"
+    )
     return {
         "basis": ["list", "marginal"],
         "usd_list": list_cost,
         "usd_marginal": marginal_cost,
-    }, "cost calculated from known input/output counters"
+    }, note
 
 
 def build_attempt_record(

@@ -1784,3 +1784,411 @@ def test_run_calls_committed_append_once(
     assert code == 0
     payload = _assert_output_matches_single_append(captured, scratch_state)
     assert calls == [payload]
+
+
+# ---------------------------------------------------------------------------
+# P1-5 / Astra cache-pricing regression tests
+# ---------------------------------------------------------------------------
+
+
+def test_attempt_cost_glm_cache_pricing_regression(catalog_dir) -> None:
+    """GLM cache pricing regression: recorded usage bills cache tokens additively."""
+    from lee_llm_router.staffing.eligibility import EligibilityPrice
+    from lee_llm_router.staffing.run import SelectionOutcome, _attempt_cost
+
+    catalog = load_staffing_catalog(catalog_dir)
+    route = next(r for r in catalog.routes.routes if r.route_id == PI_ROUTE)
+    # z-ai/glm-5.3-flash: prompt=0.000000075, completion=0.00000025, cache=0.000000015
+    pricing = EligibilityPrice(
+        badge="NO DATA",
+        multiplier=1.0,
+        replacement_input_usd_per_token=0.000000075,
+        replacement_output_usd_per_token=0.00000025,
+        marginal_input_usd_per_token=0.000000075,
+        marginal_output_usd_per_token=0.00000025,
+        source="openrouter-snapshot:z-ai/glm-5.3-flash",
+    )
+    outcome = SelectionOutcome(
+        route=route,
+        basis="explicit",
+        reason="test GLM route",
+        explain_ref="explain",
+        excluded=(),
+        pricing=pricing,
+    )
+
+    # Finding reproducer: input=4501, output=457, cached=5440, reasoning=193
+    recorded_usage = {
+        "basis": "provider_reported",
+        "source": "pi --mode json events",
+        "input_tokens": 4501,
+        "output_tokens": 457,
+        "cached_input_tokens": 5440,
+        "reasoning_tokens": 193,
+        "total_tokens": 10398,
+    }
+
+    cost, note = _attempt_cost(outcome, recorded_usage)
+    assert cost["basis"] == ["list", "marginal"]
+    # Currently was 0.000451825 (omitting cache); must be 0.000533425 including cache
+    assert cost["usd_list"] == pytest.approx(0.000533425)
+    assert cost["usd_marginal"] == pytest.approx(0.000533425)
+    assert "cache" in note
+
+
+def test_attempt_cost_sol_cache_pricing_regression(catalog_dir) -> None:
+    """Sol cache pricing: cached tokens are an input subset at cache rate."""
+    from lee_llm_router.staffing.eligibility import EligibilityPrice
+    from lee_llm_router.staffing.run import SelectionOutcome, _attempt_cost
+
+    catalog = load_staffing_catalog(catalog_dir)
+    route = next(r for r in catalog.routes.routes if r.route_id == CODEX_ROUTE)
+    # gpt-5.6-sol: input=4.0/1M, output=20.0/1M, cache=0.40/1M.
+    pricing = EligibilityPrice(
+        badge="TOO FAST",
+        multiplier=1.0,
+        replacement_input_usd_per_token=0.000004,
+        replacement_output_usd_per_token=0.000020,
+        marginal_input_usd_per_token=0.000004,
+        marginal_output_usd_per_token=0.000020,
+        source="rate-table:gpt-5.6-sol",
+    )
+    outcome = SelectionOutcome(
+        route=route,
+        basis="explicit",
+        reason="test Sol route",
+        explain_ref="explain",
+        excluded=(),
+        pricing=pricing,
+    )
+
+    # Finding reproducer: input=59282, output=360, cached=51584, reasoning=18
+    # uncached input = 59282 - 51584 = 7698
+    # list cost = 7698 * 0.000004 + 51584 * 0.0000004 + 360 * 0.000020 = 0.0586256
+    recorded_usage = {
+        "basis": "provider_reported",
+        "source": "codex exec --json usage",
+        "input_tokens": 59282,
+        "output_tokens": 360,
+        "cached_input_tokens": 51584,
+        "reasoning_tokens": 18,
+        "total_tokens": 59642,
+    }
+
+    cost, note = _attempt_cost(outcome, recorded_usage)
+    assert cost["basis"] == ["list", "marginal"]
+    # Currently was 0.244328; must be 0.0586256 because cached is a subset
+    assert cost["usd_list"] == pytest.approx(0.0586256)
+    assert cost["usd_marginal"] == pytest.approx(0.0586256)
+    assert "cache" in note
+
+    # Also test with marginal multiplier 0.25 (ON TRACK)
+    pricing_on_track = EligibilityPrice(
+        badge="ON TRACK",
+        multiplier=0.25,
+        replacement_input_usd_per_token=0.000004,
+        replacement_output_usd_per_token=0.000020,
+        marginal_input_usd_per_token=0.000001,
+        marginal_output_usd_per_token=0.000005,
+        source="rate-table:gpt-5.6-sol",
+    )
+    outcome_on_track = SelectionOutcome(
+        route=route,
+        basis="explicit",
+        reason="test Sol route on track",
+        explain_ref="explain",
+        excluded=(),
+        pricing=pricing_on_track,
+    )
+    cost_ot, _ = _attempt_cost(outcome_on_track, recorded_usage)
+    assert cost_ot["usd_list"] == pytest.approx(0.0586256)
+    assert cost_ot["usd_marginal"] == pytest.approx(0.0586256 * 0.25)
+
+
+def test_attempt_cost_edge_case_null_cached_count(catalog_dir) -> None:
+    """Null cached count computes cost from input/output without fabricating zeroes."""
+    from lee_llm_router.staffing.eligibility import EligibilityPrice
+    from lee_llm_router.staffing.run import SelectionOutcome, _attempt_cost
+
+    catalog = load_staffing_catalog(catalog_dir)
+    route_sol = next(r for r in catalog.routes.routes if r.route_id == CODEX_ROUTE)
+    pricing_sol = EligibilityPrice(
+        badge="TOO FAST",
+        multiplier=1.0,
+        replacement_input_usd_per_token=0.000004,
+        replacement_output_usd_per_token=0.000020,
+        marginal_input_usd_per_token=0.000004,
+        marginal_output_usd_per_token=0.000020,
+        source="rate-table:gpt-5.6-sol",
+    )
+    outcome_sol = SelectionOutcome(
+        route=route_sol,
+        basis="explicit",
+        reason="test Sol route",
+        explain_ref="explain",
+        excluded=(),
+        pricing=pricing_sol,
+    )
+    # When cached_input_tokens is None, full input rate applies (no subset subtraction)
+    cost, note = _attempt_cost(
+        outcome_sol,
+        {
+            "basis": "provider_reported",
+            "input_tokens": 59282,
+            "output_tokens": 360,
+            "cached_input_tokens": None,
+        },
+    )
+    assert cost["basis"] == ["list", "marginal"]
+    assert cost["usd_list"] == pytest.approx(0.244328)
+    assert cost["usd_marginal"] == pytest.approx(0.244328)
+    assert "known input/output counters" in note
+
+    # GLM with cached None
+    route_glm = next(r for r in catalog.routes.routes if r.route_id == PI_ROUTE)
+    pricing_glm = EligibilityPrice(
+        badge="NO DATA",
+        multiplier=1.0,
+        replacement_input_usd_per_token=0.000000075,
+        replacement_output_usd_per_token=0.00000025,
+        marginal_input_usd_per_token=0.000000075,
+        marginal_output_usd_per_token=0.00000025,
+        source="openrouter-snapshot:z-ai/glm-5.3-flash",
+    )
+    outcome_glm = SelectionOutcome(
+        route=route_glm,
+        basis="explicit",
+        reason="test GLM route",
+        explain_ref="explain",
+        excluded=(),
+        pricing=pricing_glm,
+    )
+    cost_glm, _ = _attempt_cost(
+        outcome_glm,
+        {
+            "basis": "provider_reported",
+            "input_tokens": 4501,
+            "output_tokens": 457,
+            "cached_input_tokens": None,
+        },
+    )
+    assert cost_glm["basis"] == ["list", "marginal"]
+    assert cost_glm["usd_list"] == pytest.approx(0.000451825)
+
+
+def test_attempt_cost_edge_case_unavailable_price_evidence(catalog_dir) -> None:
+    """Missing cache evidence fails closed when reported cache is used."""
+    from lee_llm_router.staffing.eligibility import EligibilityPrice
+    from lee_llm_router.staffing.run import SelectionOutcome, _attempt_cost
+
+    catalog = load_staffing_catalog(catalog_dir)
+    route = next(r for r in catalog.routes.routes if r.route_id == PI_ROUTE)
+
+    # 1. Route has no pricing at all
+    outcome_no_price = SelectionOutcome(
+        route=route,
+        basis="explicit",
+        reason="no price",
+        explain_ref="explain",
+        excluded=(),
+        pricing=None,
+    )
+    cost, note = _attempt_cost(
+        outcome_no_price,
+        {
+            "basis": "provider_reported",
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cached_input_tokens": 20,
+        },
+    )
+    assert cost == {"basis": ["unavailable"]}
+    assert "no dated price" in note
+
+    # 2. Pricing source lists a model with no cache price in OpenRouter snapshot
+    # tencent/hy-mt2-1.8b has prompt/completion but NO input_cache_read
+    pricing_unpriced_cache = EligibilityPrice(
+        badge="NO DATA",
+        multiplier=1.0,
+        replacement_input_usd_per_token=0.000000044,
+        replacement_output_usd_per_token=0.000000177,
+        marginal_input_usd_per_token=0.000000044,
+        marginal_output_usd_per_token=0.000000177,
+        source="openrouter-snapshot:tencent/hy-mt2-1.8b",
+    )
+    outcome_unpriced = SelectionOutcome(
+        route=route,
+        basis="explicit",
+        reason="unpriced cache",
+        explain_ref="explain",
+        excluded=(),
+        pricing=pricing_unpriced_cache,
+    )
+    cost, note = _attempt_cost(
+        outcome_unpriced,
+        {
+            "basis": "provider_reported",
+            "input_tokens": 1000,
+            "output_tokens": 200,
+            "cached_input_tokens": 500,
+        },
+    )
+    assert cost == {"basis": ["unavailable"]}
+    assert "cache price is unavailable" in note
+
+    # 3. But if cached_input_tokens is 0, missing cache price does not block calculation
+    cost_zero, _ = _attempt_cost(
+        outcome_unpriced,
+        {
+            "basis": "provider_reported",
+            "input_tokens": 1000,
+            "output_tokens": 200,
+            "cached_input_tokens": 0,
+        },
+    )
+    assert cost_zero["basis"] == ["list", "marginal"]
+    assert cost_zero["usd_list"] == pytest.approx(
+        1000 * 0.000000044 + 200 * 0.000000177
+    )
+
+
+def test_attempt_cost_edge_case_invalid_relationship(catalog_dir) -> None:
+    """Invalid relationships and cached counter types fail closed."""
+    from lee_llm_router.staffing.eligibility import EligibilityPrice
+    from lee_llm_router.staffing.run import SelectionOutcome, _attempt_cost
+
+    catalog = load_staffing_catalog(catalog_dir)
+    route_sol = next(r for r in catalog.routes.routes if r.route_id == CODEX_ROUTE)
+    pricing_sol = EligibilityPrice(
+        badge="TOO FAST",
+        multiplier=1.0,
+        replacement_input_usd_per_token=0.000004,
+        replacement_output_usd_per_token=0.000020,
+        marginal_input_usd_per_token=0.000004,
+        marginal_output_usd_per_token=0.000020,
+        source="rate-table:gpt-5.6-sol",
+    )
+    outcome_sol = SelectionOutcome(
+        route=route_sol,
+        basis="explicit",
+        reason="test Sol route",
+        explain_ref="explain",
+        excluded=(),
+        pricing=pricing_sol,
+    )
+
+    # 1. Codex subset contradiction: cached > input
+    cost, note = _attempt_cost(
+        outcome_sol,
+        {
+            "basis": "provider_reported",
+            "source": "codex exec --json usage",
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cached_input_tokens": 150,
+        },
+    )
+    assert cost == {"basis": ["unavailable"]}
+    assert "cached_input_tokens contradicts input_tokens" in note
+
+    # 2. Negative cached tokens
+    cost_neg, note_neg = _attempt_cost(
+        outcome_sol,
+        {
+            "basis": "provider_reported",
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cached_input_tokens": -1,
+        },
+    )
+    assert cost_neg == {"basis": ["unavailable"]}
+    assert "cached_input_tokens is invalid" in note_neg
+
+    # 3. Non-integer cached tokens (bool)
+    cost_bool, note_bool = _attempt_cost(
+        outcome_sol,
+        {
+            "basis": "provider_reported",
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cached_input_tokens": True,
+        },
+    )
+    assert cost_bool == {"basis": ["unavailable"]}
+    assert "cached_input_tokens is invalid" in note_bool
+
+
+def test_run_cli_cache_pricing_end_to_end(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+) -> None:
+    """CLI end-to-end with fake subprocess applies cache accounting for Sol and GLM."""
+    # 1. Codex Sol run with recorded cache usage
+    sol_receipt = json.dumps(
+        {
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": 59282,
+                "output_tokens": 360,
+                "cached_input_tokens": 51584,
+                "reasoning_output_tokens": 18,
+                "total_tokens": 59642,
+            },
+        }
+    )
+    launcher_sol = LaunchRecorder(chunks=[(sol_receipt + "\n").encode()])
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        launcher=launcher_sol,
+    )
+    assert code == 0
+    payload_sol = _assert_output_matches_single_append(captured, scratch_state)
+    assert payload_sol["cost"]["basis"] == ["list", "marginal"]
+    assert payload_sol["cost"]["usd_list"] == pytest.approx(0.0586256)
+    # The healthy snapshot has openai-sub at "ON TRACK" (multiplier 0.25)
+    assert payload_sol["cost"]["usd_marginal"] == pytest.approx(0.0586256 * 0.25)
+    assert payload_sol["usage"]["cached_input_tokens"] == 51584
+    assert payload_sol["usage"]["reasoning_tokens"] == 18
+
+    # Clear attempts ledger for next run
+    scratch_state["attempts"].unlink()
+
+    # 2. Pi GLM run with recorded cache usage
+    glm_receipt = json.dumps(
+        {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "model": "z-ai/glm-5.3-flash",
+                "usage": {
+                    "input": 4501,
+                    "output": 457,
+                    "cacheRead": 5440,
+                    "cacheWrite": 0,
+                    "reasoning": 193,
+                },
+                "totalTokens": 10398,
+            },
+        }
+    )
+    launcher_glm = LaunchRecorder(chunks=[(glm_receipt + "\n").encode()])
+    code_glm, captured_glm = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=PI_ROUTE,
+        launcher=launcher_glm,
+    )
+    assert code_glm == 0
+    payload_glm = _assert_output_matches_single_append(captured_glm, scratch_state)
+    assert payload_glm["cost"]["basis"] == ["list", "marginal"]
+    assert payload_glm["cost"]["usd_list"] == pytest.approx(0.000533425)
+    assert payload_glm["cost"]["usd_marginal"] == pytest.approx(0.000533425)
+    assert payload_glm["usage"]["cached_input_tokens"] == 5440
+    assert payload_glm["usage"]["reasoning_tokens"] == 193
