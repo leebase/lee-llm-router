@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Sequence
@@ -26,8 +27,8 @@ from typing import Any, Sequence
 import pytest
 import yaml
 
-from lee_llm_router.doctor import main as cli_main
 from lee_llm_router.availability import load_availability
+from lee_llm_router.doctor import main as cli_main
 from lee_llm_router.providers.antigravity_cli import AGY_USAGE_SOURCE
 from lee_llm_router.providers.omp_cli import OMP_USAGE_SOURCE
 from lee_llm_router.providers.opencode_cli import OPENCODE_USAGE_SOURCE
@@ -3264,3 +3265,257 @@ def test_pre_dispatch_configuration_error_writes_no_ledger_record(
     assert len(calls) == 0
     assert not scratch_state["attempts"].exists()
     assert "workdir is not a directory" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# Astra final re-review: contract-blocking findings 1-3
+# ---------------------------------------------------------------------------
+
+
+def test_run_claude_contradictory_cache_total_preserves_worker_with_unavailable_cost(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """Finding 1: a Claude total below its known components never bills input/output.
+
+    The exact Astra re-review reproducer receipt — input=10, output=2,
+    cache_creation=100, absent cache-read, reported total=12 — previously
+    produced one schema-valid record with numeric list=marginal cost that
+    silently discarded the cache-write evidence. The contradictory total
+    now fails capture closed: the completed worker is still persisted
+    exactly once with unavailable usage (the contradiction diagnostic
+    preserving the known-component evidence) and unavailable cost.
+    """
+    receipt = json.dumps(
+        {
+            "type": "result",
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 2,
+                "cache_creation_input_tokens": 100,
+                "total_tokens": 12,
+            },
+        }
+    )
+    launcher = LaunchRecorder(chunks=[(receipt + "\n").encode("utf-8")])
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CLAUDE_ROUTE,
+        launcher=launcher,
+    )
+
+    assert code == 0
+    payload = _assert_output_matches_single_append(captured, scratch_state)
+    assert len(launcher.processes) == 1
+    assert payload["route"]["harness"] == "claude"
+    assert payload["usage"]["basis"] == "unavailable"
+    assert payload["usage"]["input_tokens"] is None
+    assert payload["usage"]["output_tokens"] is None
+    assert payload["usage"]["total_tokens"] is None
+    assert "is below its known components" in payload["usage"]["unavailable_reason"]
+    assert "112" in payload["usage"]["unavailable_reason"]
+    assert payload["cost"] == {"basis": ["unavailable"]}
+    assert payload["verified_success"] is False
+
+
+def test_run_claude_model_usage_contradictory_cache_total_is_unavailable_cost(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """Finding 1 on the modelUsage path: the contradictory row total fails closed."""
+    receipt = json.dumps(
+        {
+            "type": "result",
+            "modelUsage": {
+                "claude-sonnet-5": {
+                    "inputTokens": 10,
+                    "outputTokens": 2,
+                    "cacheCreationInputTokens": 100,
+                    "totalTokens": 12,
+                }
+            },
+        }
+    )
+    launcher = LaunchRecorder(chunks=[(receipt + "\n").encode("utf-8")])
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CLAUDE_ROUTE,
+        launcher=launcher,
+    )
+
+    assert code == 0
+    payload = _assert_output_matches_single_append(captured, scratch_state)
+    assert payload["usage"]["basis"] == "unavailable"
+    assert "is below its known components" in payload["usage"]["unavailable_reason"]
+    assert payload["cost"] == {"basis": ["unavailable"]}
+
+
+def test_run_claude_cache_write_total_preserves_evidence_without_numeric_cost(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """Valid neighbor: consistent cache-write evidence keeps truthful usage.
+
+    With the authoritative total at the known-component minimum (112 =
+    10 + 2 + 100 and an unknown, never-zero cache-read), the record keeps
+    the provider-reported tokens including the total that represents the
+    cache-write evidence — but the unrepresented remainder fails cost
+    closed instead of billing input/output only.
+    """
+    receipt = json.dumps(
+        {
+            "type": "result",
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 2,
+                "cache_creation_input_tokens": 100,
+                "total_tokens": 112,
+            },
+        }
+    )
+    launcher = LaunchRecorder(chunks=[(receipt + "\n").encode("utf-8")])
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CLAUDE_ROUTE,
+        launcher=launcher,
+    )
+
+    assert code == 0
+    payload = _assert_output_matches_single_append(captured, scratch_state)
+    assert payload["usage"]["basis"] == "provider_reported"
+    assert payload["usage"]["input_tokens"] == 10
+    assert payload["usage"]["output_tokens"] == 2
+    assert payload["usage"]["total_tokens"] == 112
+    assert payload["cost"] == {"basis": ["unavailable"]}
+    assert any(
+        "total_tokens includes cache-write tokens" in note
+        for note in payload["provenance"]["notes"]
+    )
+
+
+def test_run_codex_huge_token_integer_keeps_worker_with_unavailable_cost(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """Finding 2: a 10**400 token integer never loses the completed worker.
+
+    The valid JSON integer passes capture as truthful provider-reported
+    usage; previously the float price multiplication raised an uncaught
+    OverflowError after the worker completed, dropping the attempt. Now
+    exactly one schema-valid record persists with truthful usage and
+    unavailable cost.
+    """
+    receipt = json.dumps(
+        {
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": 10**400,
+                "output_tokens": 2,
+                "cached_input_tokens": 0,
+            },
+        }
+    )
+    launcher = LaunchRecorder(chunks=[(receipt + "\n").encode("utf-8")])
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        launcher=launcher,
+    )
+
+    assert code == 0
+    payload = _assert_output_matches_single_append(captured, scratch_state)
+    assert len(launcher.processes) == 1
+    assert payload["usage"]["basis"] == "provider_reported"
+    assert payload["usage"]["input_tokens"] == 10**400
+    assert payload["usage"]["output_tokens"] == 2
+    assert payload["usage"]["cached_input_tokens"] == 0
+    assert payload["cost"] == {"basis": ["unavailable"]}
+    assert any(
+        "representable float cost range" in note
+        for note in payload["provenance"]["notes"]
+    )
+    assert payload["verified_success"] is False
+
+
+class CleanupTimeoutOracleProcess(FakeProcess):
+    """Fake oracle that never exits and whose post-kill wait times out."""
+
+    def wait(self, timeout: float = 0.0) -> int:
+        if self.killed:
+            raise subprocess.TimeoutExpired(cmd=" ".join(self.argv), timeout=timeout)
+        return self._exit_code
+
+
+class CleanupTimeoutLaunchRecorder(SequencedLaunchRecorder):
+    """Sequenced recorder whose oracle's post-kill wait raises TimeoutExpired."""
+
+    def __call__(self, argv: list[str], **kwargs: Any) -> FakeProcess:
+        self.calls.append((list(argv), dict(kwargs)))
+        spec = dict(self.specs[len(self.processes)])
+        wait_raises = spec.pop("wait_raises_timeout", False)
+        if wait_raises:
+            proc: FakeProcess = CleanupTimeoutOracleProcess(argv, **spec, **kwargs)
+        else:
+            proc = FakeProcess(argv, **spec, **kwargs)
+        self.processes.append(proc)
+        return proc
+
+
+def test_run_oracle_cleanup_timeout_expired_preserves_completed_worker(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """Finding 3: a post-kill TimeoutExpired never drops the completed worker.
+
+    The oracle exceeds its budget, is killed, and its ``wait`` then raises
+    ``subprocess.TimeoutExpired`` — previously uncaught past the completed
+    worker. Now the timeout oracle evidence is preserved (exit 124,
+    timed_out) and exactly one schema-valid attempt with the governed
+    failure status is appended.
+    """
+    launcher = CleanupTimeoutLaunchRecorder(
+        [_worker_spec(), {"never_exits": True, "wait_raises_timeout": True}]
+    )
+    clock = AdvancingClock(step=60.0)
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=LUNA_ROUTE,
+        timeout=300,
+        launcher=launcher,
+        clock=clock,
+        extra=("--oracle", "oracle --check"),
+    )
+
+    assert code == 0
+    payload = _assert_output_matches_single_append(captured, scratch_state)
+    assert len(launcher.calls) == 2
+    assert launcher.processes[1].killed is True
+    # Worker evidence preserved verbatim.
+    assert payload["usage"]["basis"] == "provider_reported"
+    assert payload["usage"]["input_tokens"] == 10
+    assert payload["usage"]["output_tokens"] == 20
+    assert payload["usage"]["total_tokens"] == 30
+    # Failed/timeout oracle evidence preserved with the governed status.
+    assert payload["verdict"] == "fail"
+    assert payload["failure_class"] == "platform_timeout"
+    assert payload["oracle_cmd"] == "oracle --check"
+    assert (
+        "exit_code=124, timed_out=True, error=none"
+        in payload["provenance"]["notes"][-1]
+    )
+    assert payload["verified_success"] is False

@@ -1011,6 +1011,11 @@ def _attempt_cost(
       input/output/cache-read components is exactly the unrepresentable
       cache-write charge. Either gap fails closed as unavailable cost
       rather than billing a subset of the receipt.
+    * A valid JSON token integer has no size bound (finding 2). When the
+      known tokens exceed the representable float cost range, the
+      multiplication by float prices would raise ``OverflowError`` after
+      the worker has completed, so cost fails closed as unavailable while
+      the truthful usage and the completed attempt are preserved.
     """
     if usage.get("basis") == "unavailable":
         return {"basis": ["unavailable"]}, "usage basis is unavailable"
@@ -1137,8 +1142,6 @@ def _attempt_cost(
         ):
             return {"basis": ["unavailable"]}, "cache price is invalid"
 
-    cache_cost_list = cached_tokens * cache_repl if cache_tokens_known else 0.0
-    cache_cost_marg = cached_tokens * cache_marg if cache_tokens_known else 0.0
     billable_output_tokens = output_tokens
     if harness == "opencode":
         # OpenCode's ``output`` and ``reasoning`` fields are separate rather
@@ -1151,16 +1154,28 @@ def _attempt_cost(
             )
         billable_output_tokens += usage["reasoning_tokens"]
 
-    list_cost = (
-        uncached_input_tokens * pricing.replacement_input_usd_per_token
-        + billable_output_tokens * pricing.replacement_output_usd_per_token
-        + cache_cost_list
-    )
-    marginal_cost = (
-        uncached_input_tokens * pricing.marginal_input_usd_per_token
-        + billable_output_tokens * pricing.marginal_output_usd_per_token
-        + cache_cost_marg
-    )
+    # A valid JSON token integer has no size bound, and multiplying it by
+    # a float price raises OverflowError before the finite-result check
+    # below (Astra final re-review finding 2). Such tokens are truthful
+    # usage evidence, so the completed attempt is never lost: the
+    # unrepresentable cost fails closed as unavailable.
+    try:
+        cache_cost_list = cached_tokens * cache_repl if cache_tokens_known else 0.0
+        cache_cost_marg = cached_tokens * cache_marg if cache_tokens_known else 0.0
+        list_cost = (
+            uncached_input_tokens * pricing.replacement_input_usd_per_token
+            + billable_output_tokens * pricing.replacement_output_usd_per_token
+            + cache_cost_list
+        )
+        marginal_cost = (
+            uncached_input_tokens * pricing.marginal_input_usd_per_token
+            + billable_output_tokens * pricing.marginal_output_usd_per_token
+            + cache_cost_marg
+        )
+    except OverflowError:
+        return {"basis": ["unavailable"]}, (
+            "known token totals exceed the representable float cost range"
+        )
 
     if not math.isfinite(list_cost) or not math.isfinite(marginal_cost):
         return {"basis": ["unavailable"]}, "calculated cost is not finite"
@@ -1772,7 +1787,10 @@ def run_oracle(
     stdout and stderr are drained without waiting on either pipe, and the
     process is killed with exit code ``124`` at the injected wall-clock
     deadline. Launch failures are returned as failed oracle evidence instead
-    of being retried or promoted to a worker failure.
+    of being retried or promoted to a worker failure, and a post-kill
+    ``wait`` that still raises ``subprocess.TimeoutExpired`` is contained:
+    the timed-out oracle evidence is preserved and the exception never
+    escapes past a completed worker.
 
     Args:
         argv: Parsed oracle argv, or a command string parsed here for direct
@@ -1860,8 +1878,16 @@ def run_oracle(
                 process.kill()
             except Exception:
                 pass
+            # After the kill, ``wait(timeout)`` may still raise
+            # ``subprocess.TimeoutExpired`` when the dead worker's own
+            # cleanup outlives the oracle deadline (Astra final re-review
+            # finding 3). That must never escape past the completed
+            # worker: the timeout oracle evidence is preserved and the
+            # attempt still appends exactly one record.
             try:
                 process.wait(poll_delay)
+            except subprocess.TimeoutExpired:
+                pass
             except (TypeError, OSError):
                 try:
                     process.wait()

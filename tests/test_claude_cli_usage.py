@@ -1012,3 +1012,217 @@ def test_regression_usages_are_schema_valid():
     )
     for mapping in (repro1, repro2, normal_multi):
         validator.validate(mapping)
+
+
+# ---------------------------------------------------------------------------
+# Astra final re-review finding 1: totals below known cache components
+# ---------------------------------------------------------------------------
+
+
+def test_reproducer_cache_write_contradictory_total_without_cache_read_raises():
+    """Astra final re-review finding 1: the exact CLI reproducer receipt.
+
+    Top-level usage fallback with input=10, output=2,
+    cache_creation_input_tokens=100, absent cache-read, and reported
+    total_tokens=12 previously kept the reported total, silently
+    discarding the known cache-write evidence and letting ``run`` bill
+    input/output only. The total can never be below the components the
+    source does report, so it raises instead.
+    """
+    output = _result_event(
+        usage={
+            "input_tokens": 10,
+            "output_tokens": 2,
+            "cache_creation_input_tokens": 100,
+            "total_tokens": 12,
+        }
+    )
+
+    with pytest.raises(LLMRouterError) as exc_info:
+        capture_claude_usage(output)
+    assert exc_info.value.failure_type == FailureType.CONTRACT_VIOLATION
+    assert "is below its known components" in str(exc_info.value)
+    assert "112" in str(exc_info.value)
+
+
+def test_model_usage_row_cache_write_total_below_known_components_raises():
+    """The modelUsage path rejects the same contradictory row total."""
+    output = _result_event(
+        modelUsage={
+            "claude-opus-5": {
+                "inputTokens": 10,
+                "outputTokens": 2,
+                "cacheCreationInputTokens": 100,
+                "totalTokens": 12,
+            }
+        }
+    )
+
+    with pytest.raises(LLMRouterError) as exc_info:
+        capture_claude_usage(output)
+    assert exc_info.value.failure_type == FailureType.CONTRACT_VIOLATION
+    assert "is below its known components" in str(exc_info.value)
+    assert "112" in str(exc_info.value)
+
+
+def test_cache_write_total_equal_to_known_minimum_is_preserved():
+    """Valid neighbor: a total at the known-component minimum is kept.
+
+    With the cache-read component absent (unknown), a reported total of
+    exactly input + output + cache-write is consistent evidence: the
+    authoritative total is preserved, no cache-read count is invented,
+    and the cache-write evidence stays representable through the total.
+    """
+    output = _result_event(
+        usage={
+            "input_tokens": 10,
+            "output_tokens": 2,
+            "cache_creation_input_tokens": 100,
+            "total_tokens": 112,
+        }
+    )
+
+    result = capture_claude_usage(output)
+
+    assert result == {
+        "basis": "provider_reported",
+        "source": CLAUDE_USAGE_SOURCE,
+        "input_tokens": 10,
+        "output_tokens": 2,
+        "cached_input_tokens": None,
+        "reasoning_tokens": None,
+        "total_tokens": 112,
+    }
+    _usage_validator().validate(result)
+
+
+def test_model_usage_row_cache_write_total_equal_to_known_minimum_is_preserved():
+    """Valid neighbor on the modelUsage path: total 112 with unknown cache-read."""
+    output = _result_event(
+        modelUsage={
+            "claude-opus-5": {
+                "inputTokens": 10,
+                "outputTokens": 2,
+                "cacheCreationInputTokens": 100,
+                "totalTokens": 112,
+            }
+        }
+    )
+
+    result = capture_claude_usage(output)
+
+    assert result == {
+        "basis": "provider_reported",
+        "source": CLAUDE_USAGE_SOURCE,
+        "input_tokens": 10,
+        "output_tokens": 2,
+        "cached_input_tokens": None,
+        "reasoning_tokens": None,
+        "total_tokens": 112,
+    }
+    _usage_validator().validate(result)
+
+
+def test_event_total_below_known_cache_components_raises():
+    """A result-event total below known components is a contradiction too.
+
+    The rows report cache-creation evidence without row totals, so the
+    event's own ``totalTokens`` would previously become the aggregate
+    total unvalidated — silently dropping the cache-write evidence from
+    billing. It must be rejected.
+    """
+    output = _result_event(
+        totalTokens=12,
+        modelUsage={
+            "claude-opus-5": {
+                "inputTokens": 10,
+                "outputTokens": 2,
+                "cacheCreationInputTokens": 100,
+            }
+        },
+    )
+
+    with pytest.raises(LLMRouterError) as exc_info:
+        capture_claude_usage(output)
+    assert exc_info.value.failure_type == FailureType.CONTRACT_VIOLATION
+    assert "is below its known components" in str(exc_info.value)
+
+
+def test_event_total_equal_to_known_cache_components_is_preserved():
+    """Valid neighbor: event total 112 fills the unknown aggregate truthfully."""
+    output = _result_event(
+        totalTokens=112,
+        modelUsage={
+            "claude-opus-5": {
+                "inputTokens": 10,
+                "outputTokens": 2,
+                "cacheCreationInputTokens": 100,
+            }
+        },
+    )
+
+    result = capture_claude_usage(output)
+
+    assert result == {
+        "basis": "provider_reported",
+        "source": CLAUDE_USAGE_SOURCE,
+        "input_tokens": 10,
+        "output_tokens": 2,
+        "cached_input_tokens": None,
+        "reasoning_tokens": None,
+        "total_tokens": 112,
+    }
+    _usage_validator().validate(result)
+
+
+def test_partial_cache_rows_with_contradictory_event_total_raise():
+    """Partial cache evidence still bounds the event total from below.
+
+    Only the first row reports cache-read evidence; the summed known
+    components (150 + 30 + 5 = 185) are a lower bound for the event
+    total, so totalTokens=12 is contradictory and raises.
+    """
+    output = _result_event(
+        totalTokens=12,
+        modelUsage={
+            "claude-opus-5": {
+                "inputTokens": 100,
+                "outputTokens": 20,
+                "cacheReadInputTokens": 5,
+            },
+            "claude-haiku-4": {"inputTokens": 50, "outputTokens": 10},
+        },
+    )
+
+    with pytest.raises(LLMRouterError) as exc_info:
+        capture_claude_usage(output)
+    assert exc_info.value.failure_type == FailureType.CONTRACT_VIOLATION
+    assert "is below its known components" in str(exc_info.value)
+
+
+def test_partial_cache_rows_with_consistent_event_total_is_preserved():
+    """Valid neighbor: event total 185 with partial cache evidence succeeds."""
+    output = _result_event(
+        totalTokens=185,
+        modelUsage={
+            "claude-opus-5": {
+                "inputTokens": 100,
+                "outputTokens": 20,
+                "cacheReadInputTokens": 5,
+            },
+            "claude-haiku-4": {"inputTokens": 50, "outputTokens": 10},
+        },
+    )
+
+    result = capture_claude_usage(output)
+
+    assert result == {
+        "basis": "provider_reported",
+        "source": CLAUDE_USAGE_SOURCE,
+        "input_tokens": 150,
+        "output_tokens": 30,
+        "cached_input_tokens": None,
+        "reasoning_tokens": None,
+        "total_tokens": 185,
+    }
+    _usage_validator().validate(result)

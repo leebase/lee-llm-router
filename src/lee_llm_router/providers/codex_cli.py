@@ -998,7 +998,9 @@ def _claude_cache_counters(
     return cached_value, cache_write_value, total_value
 
 
-def _usage_from_claude_model_usage(model_usage: dict[str, Any]) -> dict[str, Any]:
+def _usage_from_claude_model_usage(
+    model_usage: dict[str, Any], event_total: int | None = None
+) -> dict[str, Any]:
     """Sum Claude ``modelUsage`` model rows once into aggregate counters.
 
     Each row must report valid nonnegative integer ``inputTokens`` and
@@ -1015,6 +1017,11 @@ def _usage_from_claude_model_usage(model_usage: dict[str, Any]) -> dict[str, Any
     Args:
         model_usage: The result event's ``modelUsage`` mapping.
 
+    Args:
+        model_usage: The result event's ``modelUsage`` mapping.
+        event_total: The result event's own total token figure when
+            authoritatively reported, validated by the caller.
+
     Returns:
         A schema-valid v2 usage mapping: ``provider_reported`` with the
         summed rows, or ``unavailable`` with a specific reason when a
@@ -1024,8 +1031,9 @@ def _usage_from_claude_model_usage(model_usage: dict[str, Any]) -> dict[str, Any
         LLMRouterError: With ``FailureType.CONTRACT_VIOLATION`` when a
             row is not an object, a required counter is present but
             invalid, an optional cache counter or total is present but
-            invalid, total contradicts components, or alias keys
-            conflict.
+            invalid, total contradicts components, a reported total is
+            below the components its rows do report, the event total
+            contradicts the aggregate, or alias keys conflict.
     """
     input_tokens = 0
     output_tokens = 0
@@ -1063,18 +1071,36 @@ def _usage_from_claude_model_usage(model_usage: dict[str, Any]) -> dict[str, Any
             row,
             subject=f"modelUsage row for model {model_id!r}",
         )
-        # A reported row total is validated only against complete row
-        # components: an absent cache component is unknown, never zero, so
-        # no contradiction can be derived across an unknown component.
-        row_cache_complete = cached_val is not None and cache_write_val is not None
-        if row_total_val is not None and row_cache_complete:
-            expected_row_total = (
-                input_value + output_value + cached_val + cache_write_val
-            )
-            if row_total_val != expected_row_total:
+        # A reported row total is validated against complete row
+        # components when every component is present, and against the
+        # known-component lower bound otherwise: an absent cache
+        # component is unknown, never zero, so it can only add tokens —
+        # a row total below the components the row does report is a
+        # contradiction that would silently discard known cache
+        # evidence (Astra final re-review finding 1).
+        row_known_components = input_value + output_value
+        if cached_val is not None:
+            row_known_components += cached_val
+        if cache_write_val is not None:
+            row_known_components += cache_write_val
+        if row_total_val is not None:
+            row_cache_complete = cached_val is not None and cache_write_val is not None
+            if row_cache_complete:
+                expected_row_total = (
+                    input_value + output_value + cached_val + cache_write_val
+                )
+                if row_total_val != expected_row_total:
+                    raise LLMRouterError(
+                        f"Claude result modelUsage row for model {model_id!r} "
+                        "total contradicts its components",
+                        failure_type=FailureType.CONTRACT_VIOLATION,
+                    )
+            elif row_total_val < row_known_components:
                 raise LLMRouterError(
                     f"Claude result modelUsage row for model {model_id!r} "
-                    "total contradicts its components",
+                    f"total {row_total_val} is below its known components "
+                    f"({row_known_components}); the absent cache component "
+                    "is unknown and cannot reduce the total",
                     failure_type=FailureType.CONTRACT_VIOLATION,
                 )
 
@@ -1122,6 +1148,34 @@ def _usage_from_claude_model_usage(model_usage: dict[str, Any]) -> dict[str, Any
     else:
         total_tokens = calculated_total
 
+    # D209 usage truth: the event total can never be below the components
+    # the rows do report — cache evidence reported by any contributing
+    # row is a lower bound for the aggregate, because an absent cache
+    # component is unknown and only ever adds tokens. A smaller event
+    # total silently discards known cache-write evidence, so it is
+    # rejected instead of being billed without its cache component.
+    known_aggregate_components = input_tokens + output_tokens
+    if cached_read_presence:
+        known_aggregate_components += cached_tokens_sum
+    if cache_write_presence:
+        known_aggregate_components += cache_write_tokens_sum
+    if event_total is not None:
+        if total_tokens is not None and event_total != total_tokens:
+            raise LLMRouterError(
+                "Claude result event total contradicts its components",
+                failure_type=FailureType.CONTRACT_VIOLATION,
+            )
+        if total_tokens is None:
+            if event_total < known_aggregate_components:
+                raise LLMRouterError(
+                    f"Claude result event total {event_total} is below its "
+                    f"known components ({known_aggregate_components}); the "
+                    "absent cache components are unknown and cannot reduce "
+                    "the total",
+                    failure_type=FailureType.CONTRACT_VIOLATION,
+                )
+            total_tokens = event_total
+
     return {
         "basis": "provider_reported",
         "source": CLAUDE_USAGE_SOURCE,
@@ -1133,7 +1187,9 @@ def _usage_from_claude_model_usage(model_usage: dict[str, Any]) -> dict[str, Any
     }
 
 
-def _usage_from_claude_result_usage(usage: dict[str, Any]) -> dict[str, Any]:
+def _usage_from_claude_result_usage(
+    usage: dict[str, Any], event_total: int | None = None
+) -> dict[str, Any]:
     """Read the top-level Claude result ``usage`` object as v2 usage.
 
     Fallback path used only when ``modelUsage`` is absent. Snake/camel
@@ -1147,6 +1203,8 @@ def _usage_from_claude_result_usage(usage: dict[str, Any]) -> dict[str, Any]:
 
     Args:
         usage: The result event's ``usage`` mapping.
+        event_total: The result event's own total token figure when
+            authoritatively reported, validated by the caller.
 
     Returns:
         A schema-valid v2 usage mapping.
@@ -1154,7 +1212,9 @@ def _usage_from_claude_result_usage(usage: dict[str, Any]) -> dict[str, Any]:
     Raises:
         LLMRouterError: With ``FailureType.CONTRACT_VIOLATION`` when a
             present counter is not a nonnegative integer, total
-            contradicts components, or alias keys conflict.
+            contradicts components, a reported total is below the
+            components the source does report, the event total
+            contradicts the usage evidence, or alias keys conflict.
     """
     input_value = _consistent_claude_usage_value((usage,), _CLAUDE_INPUT_KEYS)
     output_value = _consistent_claude_usage_value((usage,), _CLAUDE_OUTPUT_KEYS)
@@ -1181,15 +1241,50 @@ def _usage_from_claude_result_usage(usage: dict[str, Any]) -> dict[str, Any]:
         if cached_value is not None and cache_write_value is not None
         else None
     )
-    if (
-        total_value is not None
-        and calculated_total is not None
-        and total_value != calculated_total
-    ):
-        raise LLMRouterError(
-            "Claude result usage total contradicts its components",
-            failure_type=FailureType.CONTRACT_VIOLATION,
+    # D209 usage truth: a reported total can never be below the components
+    # the source does report — an absent cache component is unknown and
+    # only ever adds tokens. A smaller total silently discards known
+    # cache-write evidence (Astra final re-review finding 1), so it is
+    # rejected rather than kept and billed without its cache component.
+    known_components = input_value + output_value
+    if cached_value is not None:
+        known_components += cached_value
+    if cache_write_value is not None:
+        known_components += cache_write_value
+    if total_value is not None:
+        if calculated_total is not None and total_value != calculated_total:
+            raise LLMRouterError(
+                "Claude result usage total contradicts its components",
+                failure_type=FailureType.CONTRACT_VIOLATION,
+            )
+        if total_value < known_components:
+            raise LLMRouterError(
+                f"Claude result usage total {total_value} is below its known "
+                f"components ({known_components}); the absent cache component "
+                "is unknown and cannot reduce the total",
+                failure_type=FailureType.CONTRACT_VIOLATION,
+            )
+    if event_total is not None:
+        authoritative_total = (
+            total_value if total_value is not None else calculated_total
         )
+        if authoritative_total is not None and event_total != authoritative_total:
+            raise LLMRouterError(
+                "Claude result event total contradicts its components",
+                failure_type=FailureType.CONTRACT_VIOLATION,
+            )
+        if authoritative_total is None and event_total < known_components:
+            raise LLMRouterError(
+                f"Claude result event total {event_total} is below its known "
+                f"components ({known_components}); the absent cache component "
+                "is unknown and cannot reduce the total",
+                failure_type=FailureType.CONTRACT_VIOLATION,
+            )
+    total_tokens = (
+        total_value
+        if total_value is not None
+        else (calculated_total if calculated_total is not None else event_total)
+    )
     return {
         "basis": "provider_reported",
         "source": CLAUDE_USAGE_SOURCE,
@@ -1197,7 +1292,7 @@ def _usage_from_claude_result_usage(usage: dict[str, Any]) -> dict[str, Any]:
         "output_tokens": output_value,
         "cached_input_tokens": cached_value,
         "reasoning_tokens": None,
-        "total_tokens": (total_value if total_value is not None else calculated_total),
+        "total_tokens": total_tokens,
     }
 
 
@@ -1253,8 +1348,10 @@ def capture_claude_usage(output: str) -> dict[str, Any]:
             result event's ``modelUsage`` or ``usage`` field is not an
             object, a ``modelUsage`` row is not an object, a present
             token counter is not a nonnegative integer (bool, negative,
-            or fractional), total contradicts components, or alias
-            keys for one counter family conflict.
+            or fractional), total contradicts components, a reported
+            total is below the components the source does report, the
+            event total contradicts the aggregate, or alias keys for
+            one counter family conflict.
     """
     events, unusable_reason = _parse_claude_events(output)
     result_event = next(
@@ -1276,6 +1373,17 @@ def capture_claude_usage(output: str) -> dict[str, Any]:
             "Claude stream-json output contained no terminal result event"
         )
 
+    # The result event's own total is extracted and range-validated up
+    # front so each aggregate builder can reconcile it against the cache
+    # evidence its rows report; contradiction checks belong to the
+    # builders because only they know the summed cache components.
+    event_total = _consistent_claude_usage_value((result_event,), _CLAUDE_TOTAL_KEYS)
+    if event_total is not None and not _nonnegative_int(event_total):
+        raise LLMRouterError(
+            "Claude result event field 'totalTokens' must be a nonnegative integer",
+            failure_type=FailureType.CONTRACT_VIOLATION,
+        )
+
     model_usage = result_event.get("modelUsage")
     if model_usage is not None and not isinstance(model_usage, dict):
         raise LLMRouterError(
@@ -1291,7 +1399,9 @@ def capture_claude_usage(output: str) -> dict[str, Any]:
             return _claude_unavailable_usage(
                 "Claude result event modelUsage was present but empty"
             )
-        usage_result = _usage_from_claude_model_usage(model_usage)
+        usage_result = _usage_from_claude_model_usage(
+            model_usage, event_total=event_total
+        )
     else:
         raw_usage = result_event.get("usage")
         if raw_usage is not None and not isinstance(raw_usage, dict):
@@ -1300,33 +1410,13 @@ def capture_claude_usage(output: str) -> dict[str, Any]:
                 failure_type=FailureType.CONTRACT_VIOLATION,
             )
         if isinstance(raw_usage, dict):
-            usage_result = _usage_from_claude_result_usage(raw_usage)
+            usage_result = _usage_from_claude_result_usage(
+                raw_usage, event_total=event_total
+            )
         else:
             return _claude_unavailable_usage(
                 "Claude result event carried no modelUsage or usage token evidence"
             )
-
-    event_total = _consistent_claude_usage_value((result_event,), _CLAUDE_TOTAL_KEYS)
-    if event_total is not None:
-        if not _nonnegative_int(event_total):
-            raise LLMRouterError(
-                "Claude result event field 'totalTokens' must be a nonnegative integer",
-                failure_type=FailureType.CONTRACT_VIOLATION,
-            )
-        if (
-            usage_result.get("basis") == "provider_reported"
-            and usage_result.get("total_tokens") is not None
-            and event_total != usage_result["total_tokens"]
-        ):
-            raise LLMRouterError(
-                "Claude result event total contradicts its components",
-                failure_type=FailureType.CONTRACT_VIOLATION,
-            )
-        if (
-            usage_result.get("basis") == "provider_reported"
-            and usage_result.get("total_tokens") is None
-        ):
-            usage_result["total_tokens"] = event_total
 
     return usage_result
 
