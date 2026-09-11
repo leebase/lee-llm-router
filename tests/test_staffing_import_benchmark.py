@@ -18,6 +18,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,7 @@ from lee_llm_router.doctor import main
 from lee_llm_router.staffing.import_evidence import (
     BENCHMARK_SCHEMA_VERSION,
     BENCHMARK_USAGE_SOURCE,
+    ImportIssue,
     import_benchmark_evidence,
 )
 from lee_llm_router.staffing.ledger import (
@@ -34,9 +36,20 @@ from lee_llm_router.staffing.ledger import (
     append_attempt,
     read_attempts,
 )
+from lee_llm_router.staffing.rollup import build_rollup
 
 FIXTURES = Path(__file__).parent / "fixtures" / "staffing"
 SIDECAR = FIXTURES / "benchmark-v6-sidecar.fixture"
+REAL_V6_SIDECAR = Path(
+    "/home/lee/projects/ai-workforce-benchmark/exports/"
+    "staffing-evidence-v6-20260909.json"
+)
+EMPTY_EFFORT_RUN_IDS = (
+    "deepseek-flash-01",
+    "glm-flash-01",
+    "monthly-deepseek-flash-01",
+    "monthly-glm-flash-01",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -52,8 +65,8 @@ def _sidecar_sha256() -> str:
     return hashlib.sha256(SIDECAR.read_bytes()).hexdigest()
 
 
-def _legacy_record() -> dict:
-    """A pre-repair legacy crew-run-shaped record for the accepted fixture run.
+def _legacy_record(run_id: str = "fixture-run-accepted") -> dict:
+    """A pre-repair legacy crew-run-shaped record for one source run.
 
     Built from the schema's legacy benchmark example (scratch data only) with
     the deterministic import id; it validates under the retained legacy
@@ -70,11 +83,81 @@ def _legacy_record() -> dict:
         if ex["attempt_id"] == "bench-mixed-economy-0001"
     )
     record = copy.deepcopy(record)
-    record["attempt_id"] = "benchmark:fixture-run-accepted"
-    record["benchmark_run"]["attempt_id"] = "benchmark:fixture-run-accepted"
-    record["benchmark_run"]["stages"][0]["run_id"] = "fixture-run-accepted"
+    record["attempt_id"] = f"benchmark:{run_id}"
+    record["benchmark_run"]["attempt_id"] = f"benchmark:{run_id}"
+    record["benchmark_run"]["stages"][0]["run_id"] = run_id
     record["captured_at"] = "2026-09-09T12:05:00Z"
     return record
+
+
+def _empty_effort_sources(tmp_path: Path) -> Path:
+    """A v6 sidecar/CSV pair in the real shape with empty-string effort.
+
+    The authoritative export records some adapters' worker effort as the
+    empty string: one measured row and one unknown-usage row mirror that
+    exactly.
+    """
+    csv_path = tmp_path / "empty-effort-runs.csv"
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    csv_path.write_text(
+        "run_id,task_key,model,harness,effort,acceptance,captured_at,"
+        "usage_status,usage_input_tokens,usage_output_tokens,"
+        "usage_cached_input_tokens,usage_reasoning_tokens,usage_total_tokens\n"
+        "empty-effort-measured,router-change@v1,scratch-deepseek,opencode,,"
+        "accepted,2026-09-09T12:05:00Z,known,10,20,0,,30\n"
+        "empty-effort-unknown,router-change@v1,scratch-deepseek,opencode,,"
+        "accepted,2026-09-09T13:05:00Z,unknown,11,22,0,,33\n",
+        encoding="utf-8",
+    )
+    sidecar = {
+        "schema_version": BENCHMARK_SCHEMA_VERSION,
+        "generated_at": "2026-09-09T15:00:00Z",
+        "source_csv": {
+            "path": str(csv_path),
+            "sha256": hashlib.sha256(csv_path.read_bytes()).hexdigest(),
+        },
+        "rows": [
+            {
+                "task_key": "router-change@v1",
+                "class": {
+                    "class_key": "impl/deterministic/none/m/python",
+                    "role": "impl",
+                    "oracle_type": "deterministic",
+                    "domain_tags": [],
+                    "size_band": "m",
+                    "language": "python",
+                },
+                "worker": {
+                    "model": "scratch-deepseek",
+                    "model_family": "scratch-family",
+                    "harness": "opencode",
+                    "effort": "",
+                },
+                "run_ids": ["empty-effort-measured", "empty-effort-unknown"],
+                "run_usage": [
+                    {
+                        "run_id": "empty-effort-measured",
+                        "usage_input_tokens": 10,
+                        "usage_output_tokens": 20,
+                        "usage_cached_input_tokens": 0,
+                        "usage_reasoning_tokens": None,
+                        "usage_total_tokens": 30,
+                    },
+                    {
+                        "run_id": "empty-effort-unknown",
+                        "usage_input_tokens": 11,
+                        "usage_output_tokens": 22,
+                        "usage_cached_input_tokens": 0,
+                        "usage_reasoning_tokens": None,
+                        "usage_total_tokens": 33,
+                    },
+                ],
+            }
+        ],
+    }
+    sidecar_path = tmp_path / "empty-effort-sidecar.json"
+    sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
+    return sidecar_path
 
 
 def test_benchmark_rows_map_tokens_class_acceptance_and_provenance(
@@ -139,7 +222,9 @@ def test_benchmark_payload_records_only_verified_v6_source_facts(
         "sidecar_sha256": _sidecar_sha256(),
         "source_csv": {
             "path": "benchmark-v6-runs.csv",
-            "sha256": "7d8201137cfb98c02f8fa43151633376eede0044d589e5ed307ec4ca91a97227",
+            "sha256": (  # noqa: E501
+                "7d8201137cfb98c02f8fa43151633376eede0044d589e5ed307ec4ca91a97227"
+            ),
         },
         "generated_at": "2026-09-09T15:00:00Z",
         "run_id": "fixture-run-accepted",
@@ -331,3 +416,168 @@ def test_cli_prints_counts_and_explicit_malformed_row(
     assert "skipped row 4 run_id=fixture-run-malformed" in captured.err
     assert "usage_input_tokens is unavailable" in captured.err
     assert len(read_attempts(isolated_attempt_state)) == 2
+
+
+def test_sidecar_empty_effort_is_preserved_as_canonical_null(
+    isolated_attempt_state: Path,
+) -> None:
+    """Real-shape blocker: measured rows with source effort "" import truthfully.
+
+    The authoritative v6 sidecar and CSV record some adapters' worker effort
+    as the empty string. The canonical crewWorker schema admits only a
+    non-empty string or null, so the empty source effort is preserved as
+    null and the exact raw representation is disclosed in provenance — the
+    row is neither rejected nor given a substituted value.
+    """
+    sidecar = _empty_effort_sources(Path(isolated_attempt_state).parent)
+    summary = import_benchmark_evidence(sidecar)
+
+    assert summary.imported == 1
+    assert summary.issues == (
+        ImportIssue(
+            3,
+            "empty-effort-unknown",
+            "usage_status 'unknown' is not provider-reported usage",
+        ),
+    )
+    (record,) = read_attempts(isolated_attempt_state)
+    assert record["attempt_id"] == "benchmark:empty-effort-measured"
+    assert record["benchmark_run"]["worker"] == {
+        "model": "scratch-deepseek",
+        "harness": "opencode",
+        "effort": None,
+        "model_family": "scratch-family",
+    }
+    assert record["usage"]["input_tokens"] == 10
+    notes = record["provenance"]["notes"]
+    assert any(
+        "Source worker effort is the empty string in the v6 sidecar and " "CSV" in note
+        for note in notes
+    )
+
+
+def test_empty_effort_legacy_row_is_corrected_and_idempotent(
+    isolated_attempt_state: Path,
+) -> None:
+    """The empty-effort correction is deterministic and appended once."""
+    run_id = "empty-effort-measured"
+    append_attempt(_legacy_record(run_id), isolated_attempt_state)
+    before = isolated_attempt_state.read_bytes()
+
+    summary = import_benchmark_evidence(
+        _empty_effort_sources(Path(isolated_attempt_state).parent)
+    )
+
+    assert summary.imported == 1
+    lines = isolated_attempt_state.read_bytes().splitlines(keepends=True)
+    assert lines[0] == before  # legacy line retained byte for byte
+    assert len(lines) == 2
+    legacy, correction = read_attempts(isolated_attempt_state)
+    assert legacy["attempt_id"] == f"benchmark:{run_id}"
+    assert correction["attempt_id"] == f"benchmark:v6:{run_id}"
+    assert correction["benchmark_run"]["worker"]["effort"] is None
+
+    after_first = isolated_attempt_state.read_bytes()
+    second = import_benchmark_evidence(
+        _empty_effort_sources(Path(isolated_attempt_state).parent)
+    )
+    assert second.imported == 0
+    assert [issue.reason for issue in second.issues if issue.run_id == run_id] == [
+        "correction already present"
+    ]
+    assert isolated_attempt_state.read_bytes() == after_first
+
+
+def test_rollup_after_correction_counts_each_source_run_once(
+    isolated_attempt_state: Path,
+) -> None:
+    """Mixed ledger: the correction supersedes its legacy attempt in rollup."""
+    append_attempt(_legacy_record(), isolated_attempt_state)
+    import_benchmark_evidence(SIDECAR)
+
+    records = read_attempts(isolated_attempt_state)
+    assert [record["attempt_id"] for record in records] == [
+        "benchmark:fixture-run-accepted",
+        "benchmark:v6:fixture-run-accepted",
+        "benchmark:fixture-run-rejected",
+    ]
+    groups = {group["class_key"]: group for group in build_rollup(records)["groups"]}
+    accepted = groups["impl/deterministic/none/m/python"]
+    rejected = groups["review/judge/data-schema/m/python"]
+    # 182-style double counting would report attempts=2 for the accepted run.
+    assert accepted["attempts"] == 1
+    assert accepted["token_sums"]["input_tokens"] == 101
+    assert rejected["attempts"] == 1
+    assert rejected["token_sums"]["input_tokens"] == 44
+
+
+@pytest.mark.skipif(
+    not REAL_V6_SIDECAR.is_file(),
+    reason="authoritative v6 staffing-evidence export not present",
+)
+def test_real_v6_sidecar_imports_all_93_measured_rows_idempotently(
+    isolated_attempt_state: Path,
+) -> None:
+    """Real-shape closure: all 93 measured rows correct; 9 unknowns skip.
+
+    Four of the measured rows carry source effort "" and must receive
+    truthful corrections with canonical null effort, joining the other 89
+    corrections; the second import appends nothing.
+    """
+    first = import_benchmark_evidence(REAL_V6_SIDECAR)
+
+    assert first.imported == 93
+    assert Counter(issue.reason for issue in first.issues) == {
+        "usage_status 'unknown' is not provider-reported usage": 9
+    }
+    records = read_attempts(isolated_attempt_state)
+    assert len(records) == 93
+    by_id = {record["attempt_id"]: record for record in records}
+    for run_id in EMPTY_EFFORT_RUN_IDS:
+        record = by_id[f"benchmark:{run_id}"]
+        assert record["benchmark_run"]["worker"]["effort"] is None
+        assert any(
+            "Source worker effort is the empty string" in note
+            for note in record["provenance"]["notes"]
+        )
+    for record in records:
+        assert record["usage"]["basis"] == "provider_reported"
+        assert record["benchmark_run"]["schema_version"] == BENCHMARK_SCHEMA_VERSION
+
+    before = isolated_attempt_state.read_bytes()
+    second = import_benchmark_evidence(REAL_V6_SIDECAR)
+    assert second.imported == 0
+    assert Counter(issue.reason for issue in second.issues) == {
+        "attempt_id already present": 93,
+        "usage_status 'unknown' is not provider-reported usage": 9,
+    }
+    assert isolated_attempt_state.read_bytes() == before
+
+
+@pytest.mark.skipif(
+    not REAL_V6_SIDECAR.is_file(),
+    reason="authoritative v6 staffing-evidence export not present on this machine",
+)
+def test_real_mixed_ledger_rollup_reports_93_distinct_source_runs(
+    isolated_attempt_state: Path,
+) -> None:
+    """Legacy rows plus all 93 corrections roll up to 93 source runs once."""
+    for run_id in EMPTY_EFFORT_RUN_IDS:
+        append_attempt(_legacy_record(run_id), isolated_attempt_state)
+
+    summary = import_benchmark_evidence(REAL_V6_SIDECAR)
+
+    assert summary.imported == 93  # 89 fresh + 4 empty-effort corrections
+    records = read_attempts(isolated_attempt_state)
+    assert len(records) == 97  # 93 corrections + 4 retained legacy lines
+    groups = build_rollup(records)["groups"]
+    assert {group["class_key"]: group["attempts"] for group in groups} == {
+        "impl/deterministic/authority/m/python": 8,
+        "impl/deterministic/data-schema/m/python": 1,
+        "impl/deterministic/persistence/m/python": 28,
+        "plan/judge/authority/l/python": 11,
+        "plan/judge/persistence/m/python": 15,
+        "review/judge/data-schema/m/python": 13,
+        "review/judge/persistence/m/python": 17,
+    }
+    assert sum(group["attempts"] for group in groups) == 93

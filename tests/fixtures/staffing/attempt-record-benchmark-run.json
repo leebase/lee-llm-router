@@ -81,11 +81,12 @@
     "recorded_by": "phase1-staffing-p1-2",
     "source_refs": [
       "/home/lee/projects/ai-workforce-benchmark/config/crew-run.schema.json",
-      "docs/staffing/phase1-contracts.md §Attempt record v2 placement, §Ledger, rollup, and imports",
+      "docs/staffing/phase1-contracts.md \u00a7Attempt record v2 placement, \u00a7Ledger, rollup, and imports",
       "docs/staffing/phase0-contracts.md class-key grammar and D206"
     ],
     "notes": [
       "Scratch example for one benchmark run; the embedded benchmark_run payload keeps the crew-run record verbatim, including its own attempt_id.",
+      "Legacy pre-repair shape: this crew-run envelope (crew_name 'mixed-economy' and the crews_file_sha256 sidecar digest) is retained only so committed append-only ledger lines stay valid; the v6 sidecar provides neither a crew name nor a crews-file identity, so current imports write the raw benchmarkV6Run shape instead and never fabricate these fields.",
       "Imported benchmark row: provenance.source is 'benchmark' and source usage is preserved exactly (this crew-run v1 shape captures none).",
       "verdict 'pass' is the canonical v2 verdict mapped from final_acceptance 'accepted'; the benchmark acceptance vocabulary remains in the embedded payload.",
       "No route, provider, or supervisor_route is asserted: the crew-run worker records model/harness/effort/model_family only, with no channel and no supervisor route.",

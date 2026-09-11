@@ -8,13 +8,22 @@ from pathlib import Path
 
 import pytest
 
+from lee_llm_router.staffing.import_evidence import (
+    BENCHMARK_SCHEMA_VERSION,
+    benchmark_source_run_id,
+    is_benchmark_v6_record,
+)
 from lee_llm_router.staffing.ledger import (
     ATTEMPTS_FILE_ENV_VAR,
     ATTEMPTS_STATE_ROOT_ENV_VAR,
     AttemptLedgerError,
     append_attempt,
 )
-from lee_llm_router.staffing.rollup import build_rollup, rollup_ledger
+from lee_llm_router.staffing.rollup import (
+    build_rollup,
+    render_rollup,
+    rollup_ledger,
+)
 
 FIXTURE = (
     Path(__file__).parent
@@ -201,3 +210,152 @@ def test_cli_path_uses_state_root_override_and_committed_validation(
     monkeypatch.setenv(ATTEMPTS_FILE_ENV_VAR, str(ledger))
     with pytest.raises(AttemptLedgerError, match=r":2: line is not valid JSON"):
         rollup_ledger()
+
+
+# ---------------------------------------------------------------------------
+# Benchmark correction supersession (Astra re-review blocker 4)
+# ---------------------------------------------------------------------------
+
+BENCH_CLASS = {
+    "class_key": "impl/deterministic/none/m/python",
+    "role": "impl",
+    "oracle_type": "deterministic",
+    "domain_tags": [],
+    "size_band": "m",
+    "language": "python",
+}
+V6_FIXTURE = (
+    Path(__file__).parent
+    / "fixtures"
+    / "staffing"
+    / "attempt-record-benchmark-v6-run.json"
+)
+LEGACY_EXAMPLE_SCHEMA = (
+    Path(__file__).parent.parent
+    / "config"
+    / "staffing"
+    / "schema"
+    / "attempt-record.schema.json"
+)
+
+
+def _benchmark_v6_record(run_id: str) -> dict:
+    """A schema-valid raw benchmarkV6Run record for one source run."""
+    record = json.loads(V6_FIXTURE.read_text(encoding="utf-8"))
+    record["attempt_id"] = f"benchmark:v6:{run_id}"
+    payload = record["benchmark_run"]
+    payload["run_id"] = run_id
+    payload["task_key"] = f"task-{run_id}"
+    return record
+
+
+def _legacy_benchmark_record(run_id: str) -> dict:
+    """A schema-valid pre-repair legacy crew-run record for the same run.
+
+    Its token counters deliberately differ from the correction's so the
+    tests can prove the superseded line's numbers are excluded.
+    """
+    schema = json.loads(LEGACY_EXAMPLE_SCHEMA.read_text(encoding="utf-8"))
+    record = copy.deepcopy(
+        next(
+            example
+            for example in schema["examples"]
+            if example["attempt_id"] == "bench-mixed-economy-0001"
+        )
+    )
+    record["attempt_id"] = f"benchmark:{run_id}"
+    record["benchmark_run"]["attempt_id"] = record["attempt_id"]
+    record["benchmark_run"]["stages"][0]["run_id"] = run_id
+    record["class_record"] = dict(BENCH_CLASS)
+    record["usage"] = {
+        "basis": "provider_reported",
+        "source": "benchmark v6 CSV usage_*_tokens",
+        "input_tokens": 999,
+        "output_tokens": 888,
+        "cached_input_tokens": 77,
+        "reasoning_tokens": None,
+        "total_tokens": 1964,
+    }
+    return record
+
+
+def test_correction_supersedes_its_legacy_source_attempt_in_rollup() -> None:
+    """Legacy line + correction = one attempt with the correction's facts."""
+    legacy = _legacy_benchmark_record("run-1")
+    correction = _benchmark_v6_record("run-1")
+    unrelated = _record(attempt_id="router-1", route_id="route-a")
+
+    groups = {
+        group["class_key"]: group
+        for group in build_rollup([legacy, correction, unrelated])["groups"]
+    }
+
+    benchmark_group = groups["impl/deterministic/none/m/python"]
+    assert benchmark_group["attempts"] == 1
+    assert benchmark_group["token_sums"]["input_tokens"] == 101
+    assert benchmark_group["token_sums"]["output_tokens"] == 202
+    assert benchmark_group["pass_by_oracle_type"] == {"deterministic": 1}
+    # The generic unrelated attempt is untouched.
+    assert groups["impl/deterministic/none/s/python"]["attempts"] == 1
+    assert (
+        groups["impl/deterministic/none/s/python"]["token_sums"]["input_tokens"] == 10
+    )
+
+
+def test_legacy_benchmark_line_without_correction_still_counts() -> None:
+    """Supersession requires an actual raw v6 correction for the run."""
+    legacy = _legacy_benchmark_record("run-2")
+
+    group = build_rollup([legacy])["groups"][0]
+
+    assert group["attempts"] == 1
+    assert group["token_sums"]["input_tokens"] == 999
+    assert group["pass_by_oracle_type"] == {"deterministic": 1}
+
+
+def test_benchmark_supersession_is_order_independent() -> None:
+    """Ledger order must not change which record the rollup selects."""
+    legacy = _legacy_benchmark_record("run-3")
+    correction = _benchmark_v6_record("run-3")
+    unrelated = _record(attempt_id="router-2", route_id="route-b")
+
+    forward = build_rollup([legacy, correction, unrelated])
+    backward = build_rollup([correction, unrelated, legacy])
+
+    assert render_rollup(forward) == render_rollup(backward)
+    assert render_rollup(forward) == render_rollup(
+        build_rollup([correction, unrelated])
+    )
+
+
+def test_comparison_gate_counts_distinct_benchmark_source_runs() -> None:
+    """Legacy+correction pairs count once: eligibility needs 5 distinct runs."""
+    run_ids = [f"run-{index}" for index in range(1, 6)]
+    paired = [
+        record
+        for run_id in run_ids
+        for record in (_legacy_benchmark_record(run_id), _benchmark_v6_record(run_id))
+    ]
+
+    five_runs = build_rollup(paired)["groups"][0]
+    assert five_runs["attempts"] == 5
+    assert five_runs["comparison_eligible"] is True
+    assert five_runs["token_sums"]["input_tokens"] == 5 * 101
+
+    four_runs = build_rollup(paired[:-2])["groups"][0]
+    assert four_runs["attempts"] == 4
+    assert four_runs["comparison_eligible"] is False
+
+
+def test_benchmark_source_run_id_helpers_cover_both_payload_shapes() -> None:
+    """Run-id recovery works for raw v6 and legacy shapes; others are None."""
+    correction = _benchmark_v6_record("run-4")
+    legacy = _legacy_benchmark_record("run-4")
+    unrelated = _record(attempt_id="router-3", route_id="route-a")
+
+    assert benchmark_source_run_id(correction) == "run-4"
+    assert benchmark_source_run_id(legacy) == "run-4"
+    assert benchmark_source_run_id(unrelated) is None
+    assert is_benchmark_v6_record(correction) is True
+    assert is_benchmark_v6_record(legacy) is False
+    assert correction["benchmark_run"]["schema_version"] == BENCHMARK_SCHEMA_VERSION

@@ -10,6 +10,13 @@ to that component's sum and median; a component with no observed counters is
 rendered as ``null``, never as a fabricated zero.  Thus a nullable optional
 counter remains visibly unavailable, while a partially observed component is
 explicitly an aggregate of the observed values only.
+
+The append-only ledger can describe one benchmark source run twice: the
+pre-repair legacy crew-run line and the deterministic ``benchmark:v6:<run_id>``
+correction a governed re-import appends for it.  History is never rewritten,
+but the correction supersedes its legacy source attempt in the aggregation, so
+every distinct source run is counted exactly once.  Runs without a correction,
+and all non-benchmark records, pass through unchanged.
 """
 
 from __future__ import annotations
@@ -18,6 +25,11 @@ import json
 from statistics import median
 from typing import Any, Iterable, Mapping
 
+from lee_llm_router.staffing.import_evidence import (
+    BENCHMARK_CORRECTION_PREFIX,
+    benchmark_source_run_id,
+    is_benchmark_v6_record,
+)
 from lee_llm_router.staffing.ledger import read_attempts, resolve_attempts_path
 
 MINIMUM_SAMPLE_SIZE = 5
@@ -208,6 +220,47 @@ def _group_record(
     }
 
 
+def _without_superseded_benchmark_lines(
+    records: list[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    """Drop legacy benchmark lines superseded by their truthful correction.
+
+    A governed benchmark re-import appends one deterministic
+    ``benchmark:v6:<run_id>`` correction per pre-repair legacy crew-run line
+    and never rewrites the append-only ledger.  Aggregation must still count
+    each distinct source run exactly once, so when a raw v6 record describes
+    a run, every legacy-shaped line describing that same run is superseded
+    and excluded here.  Lines stay in the ledger; only this rollup view
+    changes.  Runs without a correction, records whose source run id cannot
+    be read, and all non-benchmark records pass through unchanged.  Should
+    multiple raw v6 records ever describe one run, the correction-prefixed
+    attempt id wins deterministically and otherwise the first committed
+    record.
+    """
+    raw_v6_by_run: dict[str, Mapping[str, Any]] = {}
+    for record in records:
+        run_id = benchmark_source_run_id(record)
+        if run_id is None or not is_benchmark_v6_record(record):
+            continue
+        current = raw_v6_by_run.get(run_id)
+        if current is None or (
+            not current["attempt_id"].startswith(BENCHMARK_CORRECTION_PREFIX)
+            and record["attempt_id"].startswith(BENCHMARK_CORRECTION_PREFIX)
+        ):
+            raw_v6_by_run[run_id] = record
+    kept: list[Mapping[str, Any]] = []
+    for record in records:
+        run_id = benchmark_source_run_id(record)
+        if (
+            run_id is not None
+            and not is_benchmark_v6_record(record)
+            and run_id in raw_v6_by_run
+        ):
+            continue
+        kept.append(record)
+    return kept
+
+
 def build_rollup(
     records: Iterable[Mapping[str, Any]],
 ) -> dict[str, list[dict[str, Any]]]:
@@ -221,9 +274,15 @@ def build_rollup(
         ``groups``.  Missing route or class metadata is retained as JSON
         ``null`` rather than silently dropped; such a group is visibly
         unkeyed and is never converted into a guessed identifier.
+
+        A benchmark source run described by both a pre-repair legacy crew-run
+        line and its raw v6 correction is aggregated once — the correction
+        supersedes the legacy line, which remains in the ledger but is
+        excluded from the counts, tokens, and pass statistics here.
     """
+    materialized = _without_superseded_benchmark_lines(list(records))
     grouped: dict[tuple[str | None, str | None], list[Mapping[str, Any]]] = {}
-    for record in records:
+    for record in materialized:
         key = (_route_id(record), _class_key(record))
         grouped.setdefault(key, []).append(record)
 

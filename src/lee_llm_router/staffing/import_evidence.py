@@ -11,6 +11,10 @@ carry: the sidecar's own schema version and digest, its verbatim
 ``source_csv`` block, the join-verified task key, class block, and four
 worker fields, the raw ``usage_*_tokens`` receipt columns, the row's
 acceptance and ``elapsed_ms``, and every timestamp column the row supplies.
+A worker effort the source records as the empty string is preserved
+canonically as null — the attempt-record schema's ``crewWorker.effort``
+admits only a non-empty string or null — and the exact raw source
+representation is disclosed verbatim in provenance; nothing is substituted.
 The v6 sidecar provides neither a crew name nor a crews-file identity, so no
 ``crew_name`` and no ``crews_file_sha256`` are ever written; the sidecar's
 own digest is carried as ``sidecar_sha256`` only.  Records committed before
@@ -260,6 +264,44 @@ def _legacy_crew_run_run_id(record: Mapping[str, Any]) -> str | None:
     return attempt_id[len(_ATTEMPT_ID_PREFIX) :]
 
 
+BENCHMARK_CORRECTION_PREFIX = _CORRECTION_PREFIX
+"""Attempt-id prefix of the deterministic correction of one legacy record."""
+
+
+def is_benchmark_v6_record(record: Mapping[str, Any]) -> bool:
+    """Whether a benchmark_run record embeds the raw benchmark v6 payload.
+
+    True only for ``record_kind='benchmark_run'`` records whose embedded
+    payload uses the current ``benchmark.staffing-evidence/2`` shape. Legacy
+    crew-run envelopes and every other record kind return ``False``.
+    """
+    payload = record.get("benchmark_run")
+    return (
+        record.get("record_kind") == "benchmark_run"
+        and isinstance(payload, Mapping)
+        and payload.get("schema_version") == BENCHMARK_SCHEMA_VERSION
+    )
+
+
+def benchmark_source_run_id(record: Mapping[str, Any]) -> str | None:
+    """Return the source run id a benchmark_run record describes, else None.
+
+    The raw v6 shape carries ``run_id`` in its payload; the pre-repair legacy
+    crew-run shape encoded it as the ``benchmark:<run_id>`` attempt id, so
+    :func:`_legacy_crew_run_run_id` recovers it. Every other record kind or
+    an unrecognized shape returns ``None`` — no id is ever inferred.
+    """
+    if record.get("record_kind") != "benchmark_run":
+        return None
+    payload = record.get("benchmark_run")
+    if not isinstance(payload, Mapping):
+        return None
+    if payload.get("schema_version") == BENCHMARK_SCHEMA_VERSION:
+        run_id = payload.get("run_id")
+        return run_id if isinstance(run_id, str) and run_id else None
+    return _legacy_crew_run_run_id(record)
+
+
 def _source_csv_path(
     sidecar_path: Path,
     source_ref: str,
@@ -450,9 +492,18 @@ def _benchmark_payload(
     elapsed_ms = _optional_elapsed(row.get("elapsed_ms"))
     worker = metadata.worker
     effort_value = worker.get("effort")
-    if effort_value is not None and (
-        not isinstance(effort_value, str) or not effort_value.strip()
-    ):
+    if effort_value is None:
+        effort: str | None = None
+    elif isinstance(effort_value, str) and effort_value.strip():
+        effort = effort_value
+    elif isinstance(effort_value, str):
+        # The authoritative v6 sidecar and its CSV record some adapters'
+        # worker effort as the empty string. The canonical crewWorker schema
+        # admits only a non-empty string or null, so the exact source value
+        # is preserved canonically as null and the raw empty string is
+        # disclosed verbatim in provenance. Nothing is substituted.
+        effort = None
+    else:
         raise _RowError("sidecar worker effort is invalid")
     raw_usage: dict[str, Any] = {
         "usage_status": _row_usage_status(row),
@@ -476,7 +527,7 @@ def _benchmark_payload(
         "worker": {
             "model": _required_text(worker.get("model"), "sidecar worker model"),
             "harness": _required_text(worker.get("harness"), "sidecar worker harness"),
-            "effort": effort_value if isinstance(effort_value, str) else None,
+            "effort": effort,
             "model_family": _required_text(
                 worker.get("model_family"), "sidecar worker model_family"
             ),
@@ -526,6 +577,13 @@ def _build_record(
             "committed line's crew_name and crews_file_sha256 were "
             "compatibility fabrications (the v6 sidecar provides neither); the "
             "append-only ledger keeps the legacy line unmodified.",
+        )
+    raw_effort = metadata.worker.get("effort")
+    if isinstance(raw_effort, str) and not raw_effort.strip():
+        notes.append(
+            "Source worker effort is the empty string in the v6 sidecar and "
+            "CSV; the canonical crewWorker schema admits only a non-empty "
+            "string or null, so it is preserved as null."
         )
     notes.append(_timestamp_note(row))
     record = {
@@ -1160,8 +1218,11 @@ def import_agent_orch_evidence(
 
 
 __all__ = [
+    "BENCHMARK_CORRECTION_PREFIX",
     "BENCHMARK_SCHEMA_VERSION",
     "BENCHMARK_USAGE_SOURCE",
+    "benchmark_source_run_id",
+    "is_benchmark_v6_record",
     "EvidenceImportError",
     "ImportIssue",
     "ImportSummary",
