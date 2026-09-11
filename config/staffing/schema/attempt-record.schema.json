@@ -1886,7 +1886,7 @@
     "classRecord": {
       "type": "object",
       "additionalProperties": false,
-      "description": "The strict classes.schema.json $defs/classBlock vocabulary, reproduced verbatim: same six required fields (class_key plus the five components), same closed value sets, same canonical class_key pattern. Per D206, quoted verbatim: 'Class metadata MUST NOT map directly to a preferred model or route. It may only: 1. join production attempts to comparable benchmark evidence; and 2. determine whether an unevidenced cheap trial is permitted.' No class-to-model or class-to-route property exists here and none may be added; the five components are authoritative for validation and class_key is the canonical string rendering (role/oracle_type/domain_tags/size_band/language with tags sorted ascending by codepoint, deduplicated, '+'-joined, and the empty set rendered as the literal 'none', never an empty segment). Cross-field equality between class_key and the components, plus sortedness/dedup of the key segment beyond what the pattern enforces, is loader work (catalog.validate_class_block).",
+      "description": "The strict classes.schema.json $defs/classBlock vocabulary, reproduced verbatim: same six required fields (class_key plus the five components), same closed value sets, same canonical class_key pattern. Per D206, quoted verbatim: 'Class metadata MUST NOT map directly to a preferred model or route. It may only: 1. join production attempts to comparable benchmark evidence; and 2. determine whether an unevidenced cheap trial is permitted.' No class-to-model or class-to-route property exists here and none may be added; the five components are authoritative for validation and class_key is the canonical string rendering (role/oracle_type/domain_tags/size_band/language with tags sorted ascending by codepoint, deduplicated, '+'-joined, and the empty set rendered as the literal 'none', never an empty segment). Cross-field equality between class_key and the components, plus sortedness/dedup of the key segment beyond what the pattern enforces, is loader work (catalog.validate_class_block); the attempt ledger additionally enforces that equality (canonical reconstruction of the five components) on every appended and read attempt record so evidence joins stay reliable — no class-to-model lookup.",
       "required": [
         "class_key",
         "role",
@@ -1963,7 +1963,7 @@
     "usage": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Token usage for the attempt (D209 v2 placement). 'basis' is the narrowest truthful basis: observed | provider_reported | calculated | unavailable. A non-unavailable basis requires 'source': for 'provider_reported' it is exactly one of the phase1-contracts §Usage evidence taxonomy harness strings, while 'observed' and 'calculated' use a nonempty authoritative source description (never one of those provider_reported strings); 'unavailable' requires 'unavailable_reason' and forbids 'source'. Token counters are nonnegative integers when reported and null or absent when unknown; total_tokens stays null/absent unless the source authoritatively reports it or it is calculated from authoritatively reported components. Zero is evidence only when the source actually reports zero; it is never an unknown sentinel, and no parser estimates tokens from text, context length, cost, or elapsed time.",
+      "description": "Token usage for the attempt (D209 v2 placement). 'basis' is the narrowest truthful basis: observed | provider_reported | calculated | unavailable. A non-unavailable basis requires 'source': for 'provider_reported' it is exactly one of the phase1-contracts §Usage evidence taxonomy harness strings, while 'observed' and 'calculated' use a nonempty authoritative source description (never one of those provider_reported strings); 'unavailable' requires 'unavailable_reason' and forbids 'source' and every token counter — unavailable means the tokens are unavailable, never hidden numeric evidence. Token counters are nonnegative integers when reported and null or absent when unknown; total_tokens stays null/absent unless the source authoritatively reports it or it is calculated from authoritatively reported components. Zero is evidence only when the source actually reports zero; it is never an unknown sentinel, and no parser estimates tokens from text, context length, cost, or elapsed time.",
       "required": [
         "basis"
       ],
@@ -2020,7 +2020,22 @@
               "unavailable_reason"
             ],
             "properties": {
-              "source": false
+              "source": false,
+              "input_tokens": {
+                "type": "null"
+              },
+              "output_tokens": {
+                "type": "null"
+              },
+              "cached_input_tokens": {
+                "type": "null"
+              },
+              "reasoning_tokens": {
+                "type": "null"
+              },
+              "total_tokens": {
+                "type": "null"
+              }
             }
           }
         },

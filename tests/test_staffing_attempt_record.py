@@ -372,6 +372,76 @@ def test_unavailable_basis_with_source_rejected(
     require_boolean_rejection(validator, record, "pi --mode json events")
 
 
+# ---------------------------------------------------------------------------
+# P1-9: unavailable usage never hides numeric token evidence
+# ---------------------------------------------------------------------------
+
+
+def unavailable_forbid_branch(schema: dict) -> dict:
+    """Return the $defs/usage allOf branch keyed on basis const unavailable."""
+    branches = schema["$defs"]["usage"]["allOf"]
+    branch = next(
+        b
+        for b in branches
+        if b.get("if", {}).get("properties", {}).get("basis", {}).get("const")
+        == "unavailable"
+    )
+    return branch
+
+
+def test_unavailable_branch_forces_every_counter_to_null_or_absent(
+    schema: dict,
+) -> None:
+    branch = unavailable_forbid_branch(schema)
+    then_props = branch["then"]["properties"]
+    assert then_props["source"] is False
+    for counter in (
+        "input_tokens",
+        "output_tokens",
+        "cached_input_tokens",
+        "reasoning_tokens",
+        "total_tokens",
+    ):
+        assert then_props[counter] == {"type": "null"}, counter
+    assert branch["then"]["required"] == ["unavailable_reason"]
+
+
+@pytest.mark.parametrize(
+    "counter",
+    [
+        "input_tokens",
+        "output_tokens",
+        "cached_input_tokens",
+        "reasoning_tokens",
+        "total_tokens",
+    ],
+)
+def test_unavailable_usage_never_hides_numeric_token_evidence(
+    validator: Draft202012Validator, examples: dict, counter: str
+) -> None:
+    """Astra repro 3 at the schema layer: a non-null counter under
+    basis 'unavailable' is rejected — unavailable means the tokens are
+    unavailable, never hidden numeric evidence."""
+    record = copy.deepcopy(examples["pi-run-0001"])  # usage basis unavailable
+    record["usage"][counter] = 1200
+    require_error(validator, record, f"$.usage.{counter}", "type")
+
+
+def test_unavailable_usage_allows_null_or_absent_counters(
+    validator: Draft202012Validator, examples: dict
+) -> None:
+    """Positive real-row shape: explicit null counters stay valid."""
+    record = copy.deepcopy(examples["pi-run-0001"])
+    record["usage"].update(
+        input_tokens=None,
+        output_tokens=None,
+        cached_input_tokens=None,
+        reasoning_tokens=None,
+        total_tokens=None,
+    )
+    assert not list(validator.iter_errors(record))
+
+
 def test_known_basis_with_unavailable_reason_rejected(
     validator: Draft202012Validator, examples: dict
 ) -> None:

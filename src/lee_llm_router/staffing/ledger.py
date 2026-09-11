@@ -13,6 +13,16 @@ directory is created or byte is written, and :func:`read_attempts` validates
 every line again on the way out: a malformed or schema-invalid line fails
 closed with the path and line number rather than surfacing a bad record.
 
+Beyond the schema, :func:`validate_attempt` enforces the two evidence-truth
+rules JSON Schema cannot express portably (P1-9 gate): every float in the
+record must be finite (``NaN``/``Infinity`` are not valid JSON, so the strict
+JSONL line can never contain them), and when ``class_record`` is present its
+``class_key`` must equal the canonical reconstruction of the five components
+(role/oracle_type/sorted domain_tags-or-``none``/size_band/language). The
+class check joins evidence reliably without any class-to-model or
+class-to-route lookup (D206); the canonical rendering mirrors
+``classes.schema.json`` $defs/classBlock.
+
 The line is written with one ``os.write`` on a descriptor opened
 ``O_WRONLY|O_CREAT|O_APPEND`` with mode ``0o600``. A short write raises
 :class:`ShortWriteError` rather than looping: a retry would append the
@@ -27,6 +37,7 @@ providers: it validates a mapping and appends bytes to a file.
 from __future__ import annotations
 
 import json
+import math
 import os
 import socket
 from pathlib import Path
@@ -107,17 +118,117 @@ def _schema_violations(record: Mapping[str, Any]) -> list[str]:
     return [f"{error.json_path}: {error.message}" for error in errors]
 
 
+def _nonfinite_float_paths(value: Any, path: str = "$") -> list[str]:
+    """Return ``$``-paths of every non-finite float inside ``value``.
+
+    ``NaN`` and the infinities are accepted by :func:`json.loads` (and by
+    Python's schema validation of Python floats) but are not JSON tokens, so
+    a strict-JSONL ledger must reject them wherever they appear.
+    """
+    if isinstance(value, float):
+        return [] if math.isfinite(value) else [path]
+    if isinstance(value, Mapping):
+        return [
+            nested
+            for key, item in value.items()
+            for nested in _nonfinite_float_paths(item, f"{path}.{key}")
+        ]
+    if isinstance(value, (list, tuple)):
+        return [
+            nested
+            for index, item in enumerate(value)
+            for nested in _nonfinite_float_paths(item, f"{path}[{index}]")
+        ]
+    return []
+
+
+def _canonical_class_key(
+    role: str,
+    oracle_type: str,
+    domain_tags: list[str] | tuple[str, ...],
+    size_band: str,
+    language: str,
+) -> str:
+    """Render the canonical five-segment class key from its components.
+
+    Mirrors ``classes.schema.json`` $defs/classBlock (and
+    ``catalog.canonical_class_key``): tags sorted ascending by codepoint,
+    deduplicated, ``+``-joined, empty set rendered as the literal ``none``.
+    This is evidence-join consistency only — no class-to-model or
+    class-to-route lookup exists here (D206).
+    """
+    tags = sorted(set(domain_tags))
+    segment = "+".join(tags) if tags else "none"
+    return f"{role}/{oracle_type}/{segment}/{size_band}/{language}"
+
+
+def _evidence_violations(record: Mapping[str, Any]) -> list[str]:
+    """Render ledger-only evidence-truth violations beyond the schema.
+
+    Two rules JSON Schema cannot express portably: floats must be finite
+    (non-finite floats cannot be encoded as strict JSON), and a present
+    ``class_record`` must be internally consistent — ``class_key`` equal to
+    the canonical rendering of its five components.
+    """
+    violations = [
+        f"{path}: non-finite float (NaN/Infinity) is not valid strict JSON"
+        for path in _nonfinite_float_paths(record)
+    ]
+    class_record = record.get("class_record")
+    if isinstance(class_record, Mapping):
+        role = class_record.get("role")
+        oracle_type = class_record.get("oracle_type")
+        domain_tags = class_record.get("domain_tags")
+        size_band = class_record.get("size_band")
+        language = class_record.get("language")
+        # The canonical join is only defined over well-typed components; a
+        # malformed class_record (non-string tags, missing/ill-typed fields)
+        # is rejected by _schema_violations, so it must never crash this
+        # evidence check before those schema errors can be returned.
+        well_typed = (
+            isinstance(role, str)
+            and isinstance(oracle_type, str)
+            and isinstance(size_band, str)
+            and isinstance(language, str)
+            and isinstance(domain_tags, (list, tuple))
+            and all(isinstance(tag, str) for tag in domain_tags)
+        )
+        if not well_typed:
+            return violations
+        expected = _canonical_class_key(
+            role,
+            oracle_type,
+            domain_tags,
+            size_band,
+            language,
+        )
+        actual = class_record.get("class_key")
+        if actual != expected:
+            violations.append(
+                f"$.class_record.class_key: {actual!r} does not equal the "
+                f"canonical reconstruction {expected!r} of role/oracle_type/"
+                "sorted domain_tags-or-none/size_band/language (components are "
+                "authoritative; evidence joins require consistency)"
+            )
+    return violations
+
+
 def validate_attempt(record: Mapping[str, Any]) -> None:
     """Validate one attempt record against the committed v2 schema.
+
+    Beyond schema membership this enforces the two evidence-truth rules the
+    schema cannot express portably: every float must be finite, and a present
+    ``class_record`` must carry a ``class_key`` equal to the canonical
+    reconstruction of its five components.
 
     Args:
         record: The candidate attempt record.
 
     Raises:
         AttemptLedgerError: With every violation rendered, if the record does
-            not satisfy the schema.
+            not satisfy the schema or the ledger evidence-truth rules.
     """
-    violations = _schema_violations(record)
+    violations = _schema_violations(record) + _evidence_violations(record)
     if violations:
         raise AttemptLedgerError(
             "attempt record failed attempt-record v2 schema validation:\n  "
@@ -159,7 +270,10 @@ def encode_attempt(record: Mapping[str, Any]) -> bytes:
     """Validate and encode one attempt record as a single UTF-8 line.
 
     ``json.dumps`` escapes control characters, so a value containing a literal
-    newline still encodes to one physical line.
+    newline still encodes to one physical line. ``allow_nan=False`` keeps the
+    encoding standards-compliant strict JSON: non-finite floats raise instead
+    of emitting the ``NaN``/``Infinity`` tokens Python's ``json`` would
+    otherwise write into the append-only JSONL.
 
     Args:
         record: The attempt record to encode.
@@ -168,12 +282,17 @@ def encode_attempt(record: Mapping[str, Any]) -> bytes:
         The encoded line, ending in ``b"\\n"``.
 
     Raises:
-        AttemptLedgerError: If the record is schema-invalid or not
-            JSON-serialisable.
+        AttemptLedgerError: If the record is schema-invalid or evidence-truth
+            invalid, or not JSON-serialisable.
     """
     validate_attempt(record)
     try:
-        text = json.dumps(dict(record), ensure_ascii=False, separators=(",", ":"))
+        text = json.dumps(
+            dict(record),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
     except (TypeError, ValueError) as exc:
         raise AttemptLedgerError(
             f"attempt record is not JSON-serialisable: {exc}"
@@ -199,8 +318,8 @@ def append_attempt(record: Mapping[str, Any], path: str | Path | None = None) ->
         The path written to.
 
     Raises:
-        AttemptLedgerError: If the record is schema-invalid or not
-            JSON-serialisable.
+        AttemptLedgerError: If the record is schema-invalid or
+            evidence-truth-invalid, or not JSON-serialisable.
         ShortWriteError: If the whole line was not written in one call.
     """
     line = encode_attempt(record)
@@ -258,7 +377,7 @@ def read_attempts(path: str | Path) -> list[dict[str, Any]]:
                 raise AttemptLedgerError(
                     f"{ledger_path}:{lineno}: line is not a JSON object"
                 )
-            violations = _schema_violations(parsed)
+            violations = _schema_violations(parsed) + _evidence_violations(parsed)
             if violations:
                 raise AttemptLedgerError(
                     f"{ledger_path}:{lineno}: attempt record failed "

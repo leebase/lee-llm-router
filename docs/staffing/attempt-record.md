@@ -219,21 +219,25 @@ required only under the conditional rules below.
 `usage` is a closed object with one required member, `basis`. Token counters
 are nonnegative integers when reported and null or absent when unknown; zero
 is evidence only when the source actually reports zero and is never an
-unknown sentinel. `total_tokens` stays truthful: optional/null unless the
-source authoritatively reports it or it is calculated from authoritatively
-reported components. No parser estimates tokens from text, context length,
-cost, or elapsed time.
+unknown sentinel. When `basis` is `unavailable` every token counter is forced
+to `null` or absent: unavailable means the tokens are unavailable, never
+hidden numeric evidence. `total_tokens` stays truthful: optional/null unless
+the source authoritatively reports it or it is calculated from
+authoritatively reported components. No parser estimates tokens from text,
+context length, cost, or elapsed time.
 
 | Field | Schema constraint | Notes |
 |---|---|---|
 | `basis` | enum `observed` \| `provider_reported` \| `calculated` \| `unavailable` | The narrowest truthful basis. |
 | `source` | `string`, minLength 1; **required iff `basis` is not `unavailable`**, **forbidden when `basis` is `unavailable`** (schema-enforced both ways) | Basis-dependent pairing: for `provider_reported`, exactly one of the ten exact usage-taxonomy strings: `pi --mode json events`, `codex exec --json usage`, `claude -p --output-format stream-json result event`, `agy -p usage line (agent-orch worker.py)`, `opencode run JSON usage event`, `opencode worker-written usage.json from provider output`, `omp -p --mode json events`, `benchmark v6 CSV usage_*_tokens`, `agent-orch usage.json/accounting_status`, `agent-orch usage.json`. The tenth is the P1-7b1 raw receipt source. For `observed`/`calculated`, a nonempty authoritative source description — never one of the ten provider-reported strings. |
 | `unavailable_reason` | `string`, minLength 1 | **Required iff `basis` is `unavailable`** and forbidden otherwise (e.g. `text mode` for supervisor Pi attempts until P1-4a). The specific missing-event/output reason. |
-| `input_tokens`, `output_tokens`, `cached_input_tokens`, `reasoning_tokens`, `total_tokens` | `$defs/tokenCounter`: `integer \| null`, minimum 0 | Nonnegative integers when reported; null or absent when unknown. Zero only when the source reports zero. |
+| `input_tokens`, `output_tokens`, `cached_input_tokens`, `reasoning_tokens`, `total_tokens` | `$defs/tokenCounter`: `integer \| null`, minimum 0 | Nonnegative integers when reported; null or absent when unknown. Zero only when the source reports zero. **When `basis` is `unavailable` each is forced to `null` or absent** — never hidden numeric evidence. |
 
 The schema enforces the basis↔source/reason pairing with four inner `allOf`
-branches: `basis: "unavailable"` → `unavailable_reason` required and `source`
-forbidden; a known basis (`observed`/`provider_reported`/`calculated`) →
+branches: `basis: "unavailable"` → `unavailable_reason` required, `source`
+forbidden, and every token counter forced to `null` or absent (unavailable
+means the tokens are unavailable, never hidden numeric evidence); a known
+basis (`observed`/`provider_reported`/`calculated`) →
 `source` required and `unavailable_reason` forbidden; `provider_reported` →
 `source` must be exactly one of the ten taxonomy strings; and
 `observed`/`calculated` → `source` must be a descriptive authoritative source
@@ -353,7 +357,14 @@ six required fields (`class_key`, `role`, `oracle_type`, `domain_tags`,
 `size_band`, `language`), same closed value sets, same canonical `class_key`
 pattern (`role/oracle_type/domain_tags/size_band/language`; tags sorted
 ascending by codepoint, deduplicated, `+`-joined, empty set = literal
-`none`). Per D206 no class→model or class→route property exists.
+`none`). Per D206 no class→model or class→route property exists. Cross-field
+equality between `class_key` and the five components is enforced twice: by
+`catalog.validate_class_block` at load time, and by the attempt ledger
+(`staffing.ledger.validate_attempt`, and again on every `read_attempts`
+line), which rejects any appended or read attempt whose `class_key` differs
+from the canonical reconstruction of role/oracle_type/sorted
+ domain_tags-or-`none`/size_band/language — so evidence joins stay reliable
+without any class-to-model or class-to-route lookup (D206).
 
 ## `$defs/provenance` (with the v2 `source` discriminant)
 
@@ -454,8 +465,10 @@ their prior semantics:
     cost without the required known tokens). The raw-attempt kind's narrower
     cost branch independently enforces its mapping.
 
-Inside `$defs/usage`: `basis: "unavailable"` → `unavailable_reason` required
-and `source` forbidden; a known basis → `source` required and
+Inside `$defs/usage`: `basis: "unavailable"` → `unavailable_reason` required,
+`source` forbidden, and every token counter forced to `null` or absent
+(unavailable means the tokens are unavailable, never hidden numeric
+evidence); a known basis → `source` required and
 `unavailable_reason` forbidden; `provider_reported` → `source` restricted to
 the exact ten taxonomy strings; `observed`/`calculated` → `source` a
 nonempty authoritative description that is never one of the ten taxonomy
@@ -594,6 +607,19 @@ deliberately not altered.
 - **No invention.** Every token count, price, fee, capacity, date, or
   multiplier needs a source; the schema invents none. Absent evidence is
   `null` or omitted. Zero is evidence only when a source reports zero.
+- **Finite strict-JSON numbers only.** Prices are finite sourced figures: the
+  ledger (`staffing.ledger.validate_attempt`, applied before any append and
+  again on every read line) rejects any non-finite float (`NaN`/`Infinity`)
+  anywhere in a record, and `encode_attempt` uses `allow_nan=False` so the
+  strict JSONL can never contain a non-JSON token. The shared usage-cost
+  conditional additionally leaves no cost figure without known tokens.
+- **Ledger-only evidence-truth rules (P1-9).** Two checks live in
+  `staffing.ledger.validate_attempt` because JSON Schema cannot express them
+  portably: (1) every float in a record is finite; and (2) a present
+  `class_record` carries a `class_key` equal to the canonical reconstruction
+  of its five components (sorted domain tags, empty set as `none`). Both fail
+  closed with `AttemptLedgerError` before any byte is written and again on
+  read; neither performs a class-to-model lookup (D206).
 - **No P1-7b1 writer change.** This repair changes only the contract, fixture,
   documentation, and focused tests; importer/CLI work remains outside its
   packet.

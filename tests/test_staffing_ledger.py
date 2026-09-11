@@ -57,6 +57,14 @@ ESCALATION_RECORD = (
     / "staffing"
     / "attempt-record-router-run-escalation.json"
 )
+ALL_FIXTURE_RECORDS = [
+    "attempt-record-agent-orch.json",
+    "attempt-record-benchmark-run.json",
+    "attempt-record-router-run-unavailable.json",
+    "attempt-record-router-run-escalation.json",
+    "attempt-record-import-agent-orch-unclassed.json",
+    "attempt-record-agent-orch-raw-attempt.json",
+]
 
 
 @pytest.fixture
@@ -354,6 +362,7 @@ def test_module_imports_no_network_subprocess_or_provider_logic() -> None:
     assert roots == {
         "__future__",
         "json",
+        "math",
         "os",
         "socket",
         "pathlib",
@@ -462,3 +471,223 @@ def test_read_attempts_returns_nothing_after_a_bad_line(tmp_path, valid_record) 
 def test_missing_ledger_file_raises_file_not_found(tmp_path) -> None:
     with pytest.raises(FileNotFoundError):
         read_attempts(tmp_path / "absent.jsonl")
+
+
+# ---------------------------------------------------------------------------
+# P1-9 gate: evidence-truth rules the schema cannot express portably
+# ---------------------------------------------------------------------------
+
+
+def test_reproducer_class_role_mutation_without_key_update_is_refused(
+    tmp_path, escalation_record
+) -> None:
+    """Astra repro 1: role mutated to 'review' while class_key stays impl/….
+
+    class_record fields and the canonical class_key must be mutually
+    consistent for reliable evidence joins; no class-to-model lookup exists.
+    """
+    bad = dict(escalation_record)
+    bad["class_record"] = dict(bad["class_record"], role="review")
+    assert bad["class_record"]["class_key"] == (
+        "impl/judge/authority+persistence/m/python"
+    )
+    for call in (validate_attempt, encode_attempt):
+        with pytest.raises(AttemptLedgerError, match="class_record.class_key"):
+            call(bad)
+        with pytest.raises(AttemptLedgerError, match="canonical reconstruction"):
+            call(bad)
+    ledger = tmp_path / "attempts.jsonl"
+    with pytest.raises(AttemptLedgerError, match="class_record.class_key"):
+        append_attempt(bad, ledger)
+    assert not ledger.exists(), "refused before any byte or directory exists"
+
+
+def test_consistent_class_record_mutation_still_validates(escalation_record) -> None:
+    """The check joins evidence; it never blocks a consistent class block."""
+    good = dict(escalation_record)
+    good["class_record"] = dict(
+        good["class_record"],
+        role="review",
+        class_key="review/judge/authority+persistence/m/python",
+    )
+    validate_attempt(good)  # must not raise
+
+
+def test_unsorted_or_unsorted_key_tags_never_break_the_join(
+    escalation_record,
+) -> None:
+    """The reconstruction sorts tags, so tag order in the list is free."""
+    good = dict(escalation_record)
+    good["class_record"] = dict(
+        good["class_record"], domain_tags=["persistence", "authority"]
+    )
+    validate_attempt(good)  # canonical key is unchanged: still 'authority+…'
+
+
+@pytest.mark.parametrize("figure", [float("nan"), float("inf"), float("-inf")])
+def test_reproducer_nonfinite_cost_figure_is_refused_everywhere(
+    tmp_path, escalation_record, figure
+) -> None:
+    """Astra repro 2: NaN prices must never reach the strict-JSONL ledger.
+
+    jsonschema cannot express finiteness portably, so validate_attempt rejects
+    non-finite floats, encode_attempt additionally encodes with
+    allow_nan=False, and read_attempts fails closed on lines json.loads would
+    otherwise parse back as NaN.
+    """
+    bad = dict(escalation_record)
+    bad["cost"] = {
+        "basis": ["list", "marginal"],
+        "usd_list": figure,
+        "usd_marginal": 0.008,
+    }
+    for call in (validate_attempt, encode_attempt):
+        with pytest.raises(AttemptLedgerError, match="non-finite float"):
+            call(bad)
+    ledger = tmp_path / "attempts.jsonl"
+    with pytest.raises(AttemptLedgerError, match="non-finite float"):
+        append_attempt(bad, ledger)
+    assert not ledger.exists()
+
+
+def test_nonfinite_float_deep_inside_a_payload_is_refused(escalation_record) -> None:
+    bad = dict(escalation_record)
+    bad["wall_clock_ms"] = float("inf")
+    with pytest.raises(AttemptLedgerError) as excinfo:
+        encode_attempt(bad)
+    assert "$.wall_clock_ms" in str(excinfo.value)
+
+
+def test_encode_never_emits_nonfinite_json_tokens(escalation_record) -> None:
+    """Even without validate_attempt, allow_nan=False keeps JSON strict."""
+    bad = dict(escalation_record)
+    bad["wall_clock_ms"] = float("nan")
+    with pytest.raises(ValueError):  # surfaced as AttemptLedgerError by encode
+        json.dumps(bad, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    with pytest.raises(AttemptLedgerError):
+        encode_attempt(bad)
+
+
+def test_read_attempts_fails_closed_on_a_nan_line(tmp_path, escalation_record) -> None:
+    """json.loads parses the NaN token; the read path must reject it."""
+    ledger = tmp_path / "attempts.jsonl"
+    line = json.dumps(escalation_record, separators=(",", ":")).replace(
+        '"wall_clock_ms":null', '"wall_clock_ms":NaN'
+    )
+    assert "NaN" in line
+    ledger.write_text(line + "\n", encoding="utf-8")
+
+    with pytest.raises(AttemptLedgerError) as excinfo:
+        read_attempts(ledger)
+    message = str(excinfo.value)
+    assert str(ledger) in message and ":1:" in message
+    assert "non-finite float" in message
+
+
+def test_nonstring_domain_tags_fail_closed_not_crash(
+    tmp_path, escalation_record
+) -> None:
+    """Malformed class_record tags raise AttemptLedgerError, never TypeError.
+
+    Review finding: _evidence_violations joined the tags before schema errors
+    were returned, so domain_tags=[1, 2] leaked 'TypeError: sequence item 0:
+    expected str instance, int found' on both the validate/write and read
+    paths. The gate must fail closed on external JSONL instead.
+    """
+    bad = dict(escalation_record)
+    bad["class_record"] = dict(bad["class_record"], domain_tags=[1, 2])
+    for call in (validate_attempt, encode_attempt):
+        with pytest.raises(AttemptLedgerError, match="class_record.domain_tags"):
+            call(bad)
+    append_ledger = tmp_path / "append.jsonl"
+    with pytest.raises(AttemptLedgerError, match="class_record.domain_tags"):
+        append_attempt(bad, append_ledger)
+    assert not append_ledger.exists(), "refused before any byte or directory exists"
+
+    ledger = tmp_path / "read.jsonl"
+    ledger.write_text(json.dumps(bad, separators=(",", ":")) + "\n", encoding="utf-8")
+    with pytest.raises(AttemptLedgerError) as excinfo:
+        read_attempts(ledger)
+    message = str(excinfo.value)
+    assert str(ledger) in message and ":1:" in message
+    assert "$.class_record.domain_tags" in message
+
+
+def test_missing_required_class_record_field_fails_closed_not_crash(
+    tmp_path, escalation_record
+) -> None:
+    """A class_record missing a required component must not KeyError.
+
+    Review finding: _evidence_violations indexed class_record fields directly,
+    so a missing domain_tags leaked 'KeyError: domain_tags' before the schema
+    'required' error could be returned. Both paths must fail closed.
+    """
+    bad = dict(escalation_record)
+    bad["class_record"] = {
+        key: value for key, value in bad["class_record"].items() if key != "domain_tags"
+    }
+    for call in (validate_attempt, encode_attempt):
+        with pytest.raises(AttemptLedgerError, match="domain_tags"):
+            call(bad)
+    append_ledger = tmp_path / "append.jsonl"
+    with pytest.raises(AttemptLedgerError, match="domain_tags"):
+        append_attempt(bad, append_ledger)
+    assert not append_ledger.exists(), "refused before any byte or directory exists"
+
+    ledger = tmp_path / "read.jsonl"
+    ledger.write_text(json.dumps(bad, separators=(",", ":")) + "\n", encoding="utf-8")
+    with pytest.raises(AttemptLedgerError) as excinfo:
+        read_attempts(ledger)
+    message = str(excinfo.value)
+    assert str(ledger) in message and ":1:" in message
+    assert "domain_tags" in message
+
+
+def test_reproducer_unavailable_usage_with_retained_counters_is_refused(
+    tmp_path, escalation_record
+) -> None:
+    """Astra repro 3: unavailable must never hide numeric token evidence."""
+    bad = dict(escalation_record)
+    bad["usage"] = {
+        "basis": "unavailable",
+        "unavailable_reason": "text mode",
+        "input_tokens": 1200,
+        "output_tokens": 340,
+    }
+    for call in (validate_attempt, encode_attempt):
+        with pytest.raises(AttemptLedgerError, match="not of type 'null'"):
+            call(bad)
+    ledger = tmp_path / "attempts.jsonl"
+    with pytest.raises(AttemptLedgerError, match="input_tokens"):
+        append_attempt(bad, ledger)
+    assert not ledger.exists()
+
+
+def test_unavailable_usage_with_null_or_absent_counters_still_validates(
+    escalation_record,
+) -> None:
+    """Positive real-row shape: unavailable carries null/absent counters."""
+    good = dict(escalation_record)
+    good["usage"] = {
+        "basis": "unavailable",
+        "unavailable_reason": "text mode",
+        "input_tokens": None,
+        "output_tokens": None,
+        "cached_input_tokens": None,
+        "reasoning_tokens": None,
+        "total_tokens": None,
+    }
+    validate_attempt(good)  # must not raise
+
+
+@pytest.mark.parametrize("fixture_name", ALL_FIXTURE_RECORDS)
+def test_p1_9_legacy_import_and_live_records_round_trip(tmp_path, fixture_name) -> None:
+    """Positive: the gate accepts every legacy, import, and live fixture."""
+    record = json.loads(
+        (REPO_ROOT / "tests" / "fixtures" / "staffing" / fixture_name).read_text(
+            encoding="utf-8"
+        )
+    )
+    ledger = tmp_path / "roundtrip.jsonl"
+    append_attempt(record, ledger)
+    assert read_attempts(ledger) == [record]
