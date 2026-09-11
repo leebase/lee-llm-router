@@ -45,18 +45,40 @@ committed ledger API, appends it once, and prints the same record compactly.
 ``run`` never escalates; parent and escalation-reason are only recorded as a
 paired link supplied by its supervisor.
 
-P1-4 ruling 3 (``docs/staffing/chief-answers-p1-4.md``) adds the optional
-caller attestation ``--supervisor-route <route id>``: the caller attests its
-own route. The id is resolved through the same committed catalog/eligibility
-path as explicit ``--route`` selection — an unknown, inactive, or currently
-ineligible id is a refusal (exit 3) before anything is launched — and the
-accepted supervisor-route object (identity tuple plus observed provider) is
-recorded only when the caller supplies the attestation. When the attested
-dispatch succeeds, the oracle passes, and every existing evidence gate holds,
+P1-4 ruling 3 (``docs/staffing/chief-answers-p1-4.md``, Astra final-review
+finding 5) adds the optional caller attestation ``--supervisor-route <route
+id>``: the caller attests its own route. The attested id is validated as a
+governed *identity* — it must name a known catalog route that is active and
+currently usable (every governed exclusion that is not role/class policy
+still refuses, exit 3, before anything is launched) — but the worker's
+role/class capability policy is never imposed on the supervisor: a
+role-scoped or otherwise class-ineligible model may still attest, because
+attesting one's identity is not performing the worker's task. The accepted
+supervisor-route object (identity tuple plus observed provider) is recorded
+only when the caller supplies the attestation. When the attested dispatch
+succeeds, the oracle passes, and every existing evidence gate holds,
 ``verified_success`` is true; otherwise the record carries exactly one
 ``verified_success_reason`` from the closed P1-4 vocabulary
 (:data:`VERIFIED_SUCCESS_REASON_UNATTESTED` when unattested, otherwise the
 first blocking gap in a fixed documented order) — never a claimed success.
+
+Chief round 15 packet D's ``--author-route`` (Astra final-review finding 4)
+is forwarded to the same ``catalog explain`` eligibility path so ``run``
+can enforce reviewer independence: for a review/judge class the author
+route and every same-family candidate are excluded with the reason
+``independence`` exactly as ``catalog explain --author-route`` reports, an
+unknown author route fails closed, and an excluded explicit route is a
+refusal carrying the exact explain reason. Without ``--author-route``
+independence is not evaluated, exactly as in explain.
+
+Astra final-review finding 6 also governs the failure boundary: all
+caller-controlled record metadata (``--parent``/``--escalation-reason``
+pair and pattern, ``attempt_id``) is validated before anything is launched
+(:func:`validate_attempt_metadata`), and when the optional oracle cannot be
+launched or set up *after* the worker completed, the completed worker is
+never dropped: exactly one schema-valid attempt is persisted preserving the
+worker evidence and the oracle failure (truthful verdict, failure class,
+and ``verified_success``), then the CLI returns its governed failure.
 """
 
 from __future__ import annotations
@@ -65,6 +87,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shlex
 import subprocess
 import time
@@ -164,6 +187,7 @@ __all__ = [
     "run_summary_lines",
     "select_route",
     "selection_record",
+    "validate_attempt_metadata",
 ]
 
 SELECTION_EXIT_CODE = 3
@@ -290,7 +314,7 @@ class RunSelectionError(Exception):
     Mirrors :class:`lee_llm_router.resolver.ResolutionError`: a plain
     refusal carrying the process exit code and a stable machine ``kind``
     (``excluded``, ``unknown_route``, ``no_eligible``, ``invalid_class``,
-    ``invalid_date``), not a provider failure.
+    ``invalid_date``, ``invalid_metadata``), not a provider failure.
     """
 
     def __init__(
@@ -488,14 +512,17 @@ def select_route(
             with exit code 3 and the exact explain reason.
         supervisor_route_id: Optional ``--supervisor-route`` attestation
             (P1-4 ruling 3): the caller attests its own route. The id must
-            name a known, active, currently eligible catalog route under
-            the same role/class path; otherwise
-            :class:`RunSelectionError` with exit code 3 and nothing is
-            launched. When resolved, the accepted supervisor-route object
-            is carried on the outcome.
+            name a known, active, currently usable catalog route — every
+            governed exclusion that is not role/class policy still refuses
+            (exit 3, nothing launched) — but the worker's role/class
+            capability policy is never imposed on the supervisor identity
+            (Astra final-review finding 5). When resolved, the accepted
+            supervisor-route object is carried on the outcome.
         author_route_id: Optional author route id, forwarded to the
-            eligibility evaluation (review/judge independence). ``run``
-            itself never supplies one.
+            eligibility evaluation (review/judge independence). The CLI
+            forwards ``--author-route``; without it independence is not
+            evaluated, exactly as in ``catalog explain``, and an unknown
+            author id fails closed.
         openrouter_snapshot_path: Injectable pinned OpenRouter snapshot
             path (defaults to the committed pinned file).
         rate_table_path: Injectable agent-orch rate-table path.
@@ -544,7 +571,6 @@ def select_route(
             catalog,
             rows,
             supervisor_route_id=supervisor_route_id,
-            class_key=class_key,
             when=when,
         )
         if supervisor_route_id is not None
@@ -638,20 +664,46 @@ def selection_record(outcome: SelectionOutcome) -> dict[str, Any]:
     }
 
 
+def _is_role_class_capability_reason(reason: str) -> bool:
+    """Whether one explain reason is worker role/class capability policy.
+
+    Exactly the two checks that must never be imposed on an attested
+    supervisor identity (Astra final-review finding 5): the D188
+    ``role_scoped`` denial (reason ``role_scoped: <class> denied for
+    <model>``) and the review/judge author-family ``independence``
+    exclusion. Every other governed reason — status, channel membership,
+    harness lock, ``never_automatic``, availability veto, terms/pricing
+    availability — still refuses an attestation.
+    """
+    return reason == "independence" or reason.startswith("role_scoped:")
+
+
 def _resolve_supervisor_route(
     catalog: StaffingCatalog,
     rows: tuple[EligibilityRow, ...],
     *,
     supervisor_route_id: str,
-    class_key: str,
     when: date,
 ) -> dict[str, Any]:
     """Resolve an attested supervisor route id, failing closed (P1-4 r3).
 
-    The attested id must name a known catalog route, be ``active``, and be
-    currently eligible under exactly the same role/class explain path the
-    run itself uses — the same gate explicit ``--route`` selection applies.
-    Any failure raises :class:`RunSelectionError` (exit 3) before anything
+    The attestation validates the caller's *identity*, governed over the
+    same committed catalog and evaluation path — never the worker's
+    capability (Astra final-review finding 5: Chief answer 4 authorizes
+    identity attestation, not selection of another worker). The id must:
+
+    * name a known catalog route (else ``unknown_route`` refusal);
+    * be ``active`` (else refusal);
+    * be currently usable as a governed route: every remaining exclusion
+      reason from the same explain evaluation still refuses — route status,
+      channel membership, harness lock, ``never_automatic``, availability
+      headroom veto, unavailable dated terms or pricing. The only reasons
+      *not* imposed on the supervisor are the role/class capability checks
+      (``role_scoped`` and the review/judge ``independence`` author-family
+      exclusion): attesting one's identity is not performing the worker's
+      task, and the supervisor is never a review candidate.
+
+    Any refusal raises :class:`RunSelectionError` (exit 3) before anything
     is launched.
 
     Returns:
@@ -678,11 +730,14 @@ def _resolve_supervisor_route(
             kind="excluded",
         )
     row = next(r for r in rows if r.route_id == supervisor_route_id)
-    if not row.eligible:
+    identity_reasons = tuple(
+        reason for reason in row.reasons if not _is_role_class_capability_reason(reason)
+    )
+    if identity_reasons:
         raise RunSelectionError(
-            f"--supervisor-route {supervisor_route_id!r} is not eligible for "
-            f"class {class_key!r} at {when.isoformat()}: "
-            f"{'; '.join(row.reasons)}",
+            f"--supervisor-route {supervisor_route_id!r} is not a currently "
+            f"usable route identity at {when.isoformat()}: "
+            f"{'; '.join(identity_reasons)}",
             kind="excluded",
         )
     return {
@@ -692,6 +747,68 @@ def _resolve_supervisor_route(
         "channel": route.channel,
         "provider": _HARNESS_PROVIDER_NAMES.get(route.harness, route.harness),
     }
+
+
+_ATTEMPT_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]+$")
+"""Schema value rule for caller-supplied attempt/parent identifiers
+(``attempt-record.schema.json`` ``attempt_id``/``parent_attempt_id``
+``pattern``, taken verbatim — no invented rule)."""
+
+
+def validate_attempt_metadata(
+    *,
+    parent_attempt_id: str | None = None,
+    escalation_reason: str | None = None,
+    attempt_id: str | None = None,
+) -> None:
+    """Validate caller-controlled attempt-record metadata before launch.
+
+    Astra final-review finding 6: the fields the caller controls end up in
+    the one attempt record, so a violation must refuse (exit 3) *before*
+    anything is launched — never surface as a schema rejection after the
+    worker has completed and evidence already exists. The rules are exactly
+    the committed attempt-record v2 value constraints, nothing stricter:
+
+    * the ``--parent``/``--escalation-reason`` pair is all-or-nothing (an
+      escalation requires both, D209 ruling 2);
+    * ``parent_attempt_id`` and ``attempt_id`` are nonempty strings
+      matching :data:`_ATTEMPT_ID_PATTERN` (the schema ``pattern``);
+    * ``escalation_reason`` is a nonempty string (schema ``minLength 1``).
+
+    Raises:
+        RunSelectionError: With ``kind="invalid_metadata"`` and exit code 3
+            naming the offending field. Nothing is launched when raised.
+    """
+    if (parent_attempt_id is None) != (escalation_reason is None):
+        raise RunSelectionError(
+            "--parent and --escalation-reason must be supplied together",
+            kind="invalid_metadata",
+        )
+    if parent_attempt_id is not None:
+        if not isinstance(parent_attempt_id, str) or not _ATTEMPT_ID_PATTERN.fullmatch(
+            parent_attempt_id
+        ):
+            raise RunSelectionError(
+                "--parent: parent_attempt_id "
+                f"{parent_attempt_id!r} is not a valid attempt id "
+                "(nonempty, characters A-Z a-z 0-9 . _ : - only)",
+                kind="invalid_metadata",
+            )
+    if escalation_reason is not None and (
+        not isinstance(escalation_reason, str) or not escalation_reason
+    ):
+        raise RunSelectionError(
+            "--escalation-reason: escalation_reason must be a nonempty string",
+            kind="invalid_metadata",
+        )
+    if attempt_id is not None and (
+        not isinstance(attempt_id, str) or not _ATTEMPT_ID_PATTERN.fullmatch(attempt_id)
+    ):
+        raise RunSelectionError(
+            f"attempt_id {attempt_id!r} is not a valid attempt id "
+            "(nonempty, characters A-Za-z0-9._:- only)",
+            kind="invalid_metadata",
+        )
 
 
 def _utc_timestamp() -> str:

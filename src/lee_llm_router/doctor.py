@@ -28,6 +28,7 @@ Commands:
                                   [--author-route ROUTE_ID] [--json]
     lee-llm-router run --role ROLE --class CLASS --packet FILE
                        [--route ROUTE_ID] [--supervisor-route ROUTE_ID]
+                       [--author-route ROUTE_ID]
                        [--oracle CMD] [--workdir DIR]
                        [--parent ATTEMPT_ID --escalation-reason R]
                        [--timeout S] [--at DATE] [--availability-file PATH]
@@ -1714,7 +1715,7 @@ def _run_run(args: argparse.Namespace) -> int:
     Corrected D209 contract (Chief ruling,
     ``docs/staffing/chief-answers-p1-1.md``, quoted):
     ``lee-llm-router run --role R --class C --packet FILE [--route ID]
-    [--supervisor-route ROUTE_ID] [--workdir DIR]
+    [--supervisor-route ROUTE_ID] [--author-route ROUTE_ID] [--workdir DIR]
     [--parent ATTEMPT_ID --escalation-reason R] [--timeout S] [--json]``.
     ``--role`` and ``--class`` are always
     required: they describe the work and drive eligibility (role scoping,
@@ -1723,20 +1724,37 @@ def _run_run(args: argparse.Namespace) -> int:
     class; with ``--route ID`` the basis is ``explicit`` and the route must
     be eligible under the same role/class eligibility path as ``catalog
     explain`` — an ineligible explicit route exits 3 with the explain
-    reason. With ``--supervisor-route ROUTE_ID`` the caller attests its own
-    route (P1-4 ruling 3); the id must resolve through the same
-    catalog/eligibility path (unknown/inactive/ineligible ids exit 3 and
-    launch nothing), and the attested run can reach ``verified_success:
-    true`` only when dispatch, oracle, and every evidence gate hold.
+    reason. ``--author-route ROUTE_ID`` (Astra final-review finding 4) is
+    forwarded to the same path: for a review/judge class the author route
+    and every same-family candidate are excluded with the reason
+    ``independence`` exactly as ``catalog explain --author-route`` reports,
+    and an unknown author id fails closed. With ``--supervisor-route
+    ROUTE_ID`` the caller attests its own route (P1-4 ruling 3); the id is
+    validated as a governed identity (known, active, currently usable —
+    unknown/inactive/exhausted ids exit 3 and launch nothing) without
+    imposing the worker's role/class capability policy on the attested
+    supervisor, and the attested run can reach ``verified_success: true``
+    only when dispatch, oracle, and every evidence gate hold.
 
-    P1-5a dispatches exactly one provider ``build_command`` argv through
+    All caller-controlled record metadata (the ``--parent``/
+    ``--escalation-reason`` pair and ``attempt_id``) is validated against
+    the committed attempt-record v2 value rules before anything is launched
+    (Astra final-review finding 6): an invalid value is an exit-3 refusal
+    that launches nothing and appends nothing. P1-5a dispatches exactly one
+    provider ``build_command`` argv through
     the watchdog subprocess boundary, with the packet text as the prompt,
     ``cwd`` set to the workdir, and no shell anywhere. Pi runs its JSON event
     mode, Codex is forced to ``json_flag: --json``, and Claude reuses the
     committed governed stream-json capture. P1-5b1 adds one optional,
     parsed-with-shlex oracle after the worker. The oracle is argv-only, uses
     the workdir, and receives only the remaining timeout budget. Its result
-    is verification evidence; it never retries or escalates. P1-5b2 now
+    is verification evidence; it never retries or escalates. When the oracle
+    cannot be launched or set up *after* the worker completed (for example a
+    workdir deleted between the two boundaries), the completed worker is
+    never dropped: exactly one schema-valid attempt is persisted preserving
+    the worker evidence and the oracle failure with a truthful verdict,
+    failure class, and ``verified_success``, then the governed failure is
+    returned (exit 3). P1-5b2 now
     calculates cost, builds one v2 record, validates it, appends it once,
     and prints that record (or a compact equivalent). ``run`` never
     escalates: a supplied parent/reason pair is recorded as a link.
@@ -1758,6 +1776,7 @@ def _run_run(args: argparse.Namespace) -> int:
     )
     from lee_llm_router.staffing.ledger import append_attempt
     from lee_llm_router.staffing.run import (
+        OracleOutcome,
         RunDispatchError,
         RunSelectionError,
         build_attempt_record,
@@ -1768,6 +1787,7 @@ def _run_run(args: argparse.Namespace) -> int:
         run_oracle,
         run_summary_lines,
         select_route,
+        validate_attempt_metadata,
     )
 
     def fail(message: str, *, as_json: bool = False, exit_code: int = 3) -> int:
@@ -1787,8 +1807,10 @@ def _run_run(args: argparse.Namespace) -> int:
     role = args.role
     class_string = args.class_string
 
-    # Optional parent/escalation pair: parsed and pairing-checked.  ``run``
-    # never escalates; a supervisor supplies the link when it launches one.
+    # Optional parent/escalation pair: parsed, pairing-checked, and
+    # value-validated against the committed attempt-record v2 rules before
+    # anything is launched (Astra final-review finding 6).  ``run`` never
+    # escalates; a supervisor supplies the link when it launches one.
     parent = getattr(args, "parent", None)
     escalation_reason = getattr(args, "escalation_reason", None)
     if (parent is None) != (escalation_reason is None):
@@ -1796,6 +1818,14 @@ def _run_run(args: argparse.Namespace) -> int:
             "--parent and --escalation-reason must be supplied together",
             as_json=as_json,
         )
+    try:
+        validate_attempt_metadata(
+            parent_attempt_id=parent,
+            escalation_reason=escalation_reason,
+            attempt_id=getattr(args, "attempt_id", None),
+        )
+    except RunSelectionError as exc:
+        return fail(str(exc), as_json=as_json, exit_code=exc.exit_code)
 
     packet_path = Path(args.packet).expanduser()
     try:
@@ -1859,6 +1889,7 @@ def _run_run(args: argparse.Namespace) -> int:
             domain_tags=domain_tags,
             class_key=class_string,
             at_date=at_date,
+            author_route_id=getattr(args, "author_route", None),
             route_id=route_id,
             supervisor_route_id=getattr(args, "supervisor_route", None),
             openrouter_snapshot_path=args.openrouter_snapshot,
@@ -1887,6 +1918,7 @@ def _run_run(args: argparse.Namespace) -> int:
         return fail(f"dispatch failed: {exc}", as_json=as_json)
 
     oracle = None
+    oracle_setup_error: str | None = None
     if oracle_argv is not None:
         try:
             oracle = run_oracle(
@@ -1897,9 +1929,22 @@ def _run_run(args: argparse.Namespace) -> int:
                 ),
             )
         except RunDispatchError as exc:
-            # The worker has completed, so a governed oracle setup failure is
-            # a deterministic run refusal rather than an unhandled traceback.
-            return fail(f"oracle failed: {exc}", as_json=as_json)
+            # Astra final-review finding 6: the worker has completed, so a
+            # governed oracle setup failure must never drop it. The failure
+            # is recorded as failed oracle evidence (launch/setup error,
+            # no exit code) and exactly one schema-valid attempt preserving
+            # both the worker evidence and the oracle failure is appended
+            # below; the governed failure is then returned (exit 3).
+            oracle_setup_error = str(exc)
+            oracle = OracleOutcome(
+                argv=tuple(oracle_argv),
+                exit_code=None,
+                stdout="",
+                stderr="",
+                duration_seconds=0.0,
+                timed_out=False,
+                error=str(exc),
+            )
 
     class_record = {
         "class_key": class_string,
@@ -1937,11 +1982,18 @@ def _run_run(args: argparse.Namespace) -> int:
     if as_json:
         # One compact JSON object is both the command result and the exact
         # object encoded by append_attempt (the ledger adds only its newline).
+        # This holds on the governed oracle-setup-failure path too: the result
+        # is the persisted record; the failure is reported on stderr.
         print(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
     else:
         for line in run_summary_lines(outcome, dispatch, oracle, record=record):
             print(line)
-    return dispatch.exit_code
+    if oracle_setup_error is None:
+        return dispatch.exit_code
+    # The one attempt record is already persisted; return the governed
+    # failure for the oracle that could not run (never a fake success).
+    print(f"run: oracle failed: {oracle_setup_error}", file=sys.stderr)
+    return 3
 
 
 class _FastResolveArgs:
@@ -2615,11 +2667,25 @@ def main(argv: list[str] | None = None) -> None:
         help=(
             "Optional caller attestation of its own supervisor route "
             "(P1-4 ruling 3): the id must name a known, active, currently "
-            "eligible catalog route under the same role/class path as "
-            "catalog explain (unknown/inactive/ineligible ids exit 3 and "
-            "launch nothing). When the attested run dispatches, the oracle "
-            "passes, and every evidence gate holds, verified_success is "
-            "true; otherwise verified_success_reason names the exact gap"
+            "usable catalog route identity (unknown/inactive/exhausted ids "
+            "exit 3 and launch nothing), but the worker's role/class "
+            "capability policy is never imposed on the attested supervisor "
+            "identity. When the attested run dispatches, the oracle passes, "
+            "and every evidence gate holds, verified_success is true; "
+            "otherwise verified_success_reason names the exact gap"
+        ),
+    )
+    run_parser.add_argument(
+        "--author-route",
+        default=None,
+        dest="author_route",
+        metavar="ROUTE_ID",
+        help=(
+            "Author route id forwarded to the same catalog explain "
+            "eligibility path: for a review/judge class the author route "
+            "and every candidate whose model family equals the author's are "
+            "excluded (reason 'independence'); an unknown id fails closed "
+            "(exit 3). Without it, independence is not evaluated"
         ),
     )
     run_parser.add_argument(

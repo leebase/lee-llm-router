@@ -27,12 +27,18 @@ import pytest
 import yaml
 
 from lee_llm_router.doctor import main as cli_main
+from lee_llm_router.availability import load_availability
 from lee_llm_router.providers.antigravity_cli import AGY_USAGE_SOURCE
 from lee_llm_router.providers.omp_cli import OMP_USAGE_SOURCE
 from lee_llm_router.providers.opencode_cli import OPENCODE_USAGE_SOURCE
 from lee_llm_router.staffing import load_staffing_catalog
 from lee_llm_router.staffing.catalog import Route as StaffingRoute
-from lee_llm_router.staffing.run import _usage_for_harness, build_dispatch_command
+from lee_llm_router.staffing.run import (
+    _usage_for_harness,
+    build_dispatch_command,
+    select_route,
+    validate_attempt_metadata,
+)
 
 REPO_CONFIG_DIR = Path(__file__).resolve().parents[1] / "config" / "staffing"
 
@@ -476,26 +482,31 @@ def _explain_first_eligible(
     capsys: pytest.CaptureFixture[str],
     catalog_dir: Path,
     snapshot_path: Path,
+    *,
+    role: str = IMPL_ROLE,
+    class_string: str = IMPL_CLASS,
+    author_route: str | None = None,
 ) -> tuple[str, list[tuple[str, str]]]:
     """First eligible route id and excluded summaries from ``catalog explain``."""
+    argv = [
+        "catalog",
+        "explain",
+        "--role",
+        role,
+        "--class",
+        class_string,
+        "--at",
+        "2026-09-15",
+        "--catalog-dir",
+        str(catalog_dir),
+        "--availability-file",
+        str(snapshot_path),
+        "--json",
+    ]
+    if author_route is not None:
+        argv += ["--author-route", author_route]
     with pytest.raises(SystemExit) as exc_info:
-        cli_main(
-            [
-                "catalog",
-                "explain",
-                "--role",
-                IMPL_ROLE,
-                "--class",
-                IMPL_CLASS,
-                "--at",
-                "2026-09-15",
-                "--catalog-dir",
-                str(catalog_dir),
-                "--availability-file",
-                str(snapshot_path),
-                "--json",
-            ]
-        )
+        cli_main(argv)
     assert exc_info.value.code == 0
     payload = json.loads(capsys.readouterr().out)
     eligible = [r["route_id"] for r in payload["routes"] if r["eligible"]]
@@ -723,8 +734,262 @@ def test_run_invalid_supervisor_route_exits_3_before_worker(
     elif retire_catalog:
         assert "is not active" in captured.err
     else:
-        assert "not eligible" in captured.err
+        # Astra final-review finding 5: the attestation validates the
+        # identity, so role/class capability policy never applies — but
+        # every other governed reason (never_automatic here) still refuses.
+        assert "currently usable route identity" in captured.err
         assert "never_automatic" in captured.err
+        assert "role_scoped" not in captured.err
+
+
+def test_run_supervisor_attestation_is_identity_not_capability(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """Astra final-review finding 5 reproducer: role/class policy never applies.
+
+    Chief answer 4 authorizes identity attestation. An eligible GLM
+    implementation selection must not become a refusal when its caller
+    attests ``agy-gemini-3-1-pro-gemini-sub``, even though Gemini Pro is
+    role-scoped (coding denied) for the worker class: attesting one's own
+    route is not performing the worker's task. The attested identity is
+    recorded verbatim and the run dispatches exactly once.
+    """
+    launcher = LaunchRecorder(exit_code=0)
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=PI_ROUTE,
+        supervisor_route="agy-gemini-3-1-pro-gemini-sub",
+        launcher=launcher,
+    )
+
+    assert code == 0
+    payload = _assert_output_matches_single_append(captured, scratch_state)
+    assert len(launcher.processes) == 1
+    catalog = load_staffing_catalog(catalog_dir)
+    attested = next(
+        r
+        for r in catalog.routes.routes
+        if r.route_id == "agy-gemini-3-1-pro-gemini-sub"
+    )
+    assert payload["supervisor_route"] == {
+        "model": attested.model,
+        "effort": attested.effort,
+        "harness": attested.harness,
+        "channel": attested.channel,
+        "provider": "antigravity_cli",
+    }
+    # Truthful verification: attested, dispatched, but no oracle ran.
+    assert payload["verified_success"] is False
+    assert payload["verified_success_reason"] == "oracle_not_passed"
+
+
+def test_select_route_supervisor_attestation_is_identity_not_capability(
+    catalog_dir, snapshot
+):
+    """Direct selection: role_scoped exclusion is not imposed on the identity."""
+    catalog = load_staffing_catalog(catalog_dir)
+    availability = load_availability(snapshot)
+    outcome = select_route(
+        catalog,
+        availability,
+        role="impl",
+        oracle_type="deterministic",
+        size_band="s",
+        language="python",
+        class_key=IMPL_CLASS,
+        at_date="2026-09-15",
+        route_id=PI_ROUTE,
+        supervisor_route_id="agy-gemini-3-1-pro-gemini-sub",
+    )
+    assert outcome.route.route_id == PI_ROUTE
+    assert outcome.supervisor_route == {
+        "model": "gemini-3.1-pro",
+        "effort": None,
+        "harness": "agy",
+        "channel": "gemini-sub",
+        "provider": "antigravity_cli",
+    }
+
+
+def test_run_supervisor_attestation_still_refuses_nonclass_governed_reasons(
+    monkeypatch, capsys, catalog_dir, tmp_path, packet, scratch_state
+):
+    """Non-role/class governed exclusions still refuse an attestation.
+
+    Unknown and inactive identities refuse (existing parametrized test);
+    this adds the availability branch: a route whose channel headroom is
+    unknown is not currently usable, and that refusal is governed identity
+    validation, never worker capability policy.
+    """
+    snapshot = _write_snapshot(tmp_path / "nodata.json", codex=("NO DATA", 0))
+    launcher = LaunchRecorder()
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        supervisor_route=CODEX_ROUTE,
+        launcher=launcher,
+    )
+
+    assert code == 3
+    assert launcher.processes == []
+    assert not scratch_state["attempts"].exists()
+    assert "currently usable route identity" in captured.err
+    assert "channel unknown" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# 2b. Author route (review/judge independence, Astra finding 4)
+# ---------------------------------------------------------------------------
+
+
+REVIEW_CLASS = "review/judge/none/s/python"
+REVIEW_ROLE = "review"
+
+
+def test_run_author_route_excludes_author_and_same_family(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """Astra final-review finding 4 reproducer: run enforces independence.
+
+    The explicit GLM selection succeeds without author context, and with
+    that same route as ``--author-route`` the run refuses (exit 3) with the
+    exact ``independence`` explain reason — the same fail-closed evaluation
+    ``catalog explain`` performs.
+    """
+    # Without the author route the explicit GLM review route is eligible.
+    launcher = LaunchRecorder(exit_code=0)
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        role=REVIEW_ROLE,
+        class_string=REVIEW_CLASS,
+        route=PI_ROUTE,
+        launcher=launcher,
+    )
+    assert code == 0
+    payload = json.loads(captured.out)
+    assert payload["selection"]["basis"] == "explicit"
+    assert not any(
+        entry["reason"] == "independence" for entry in payload["selection"]["excluded"]
+    )
+    assert len(launcher.processes) == 1
+    ledger_lines_before = len(
+        scratch_state["attempts"].read_text(encoding="utf-8").splitlines()
+    )
+
+    # Supplying that same route as the author context fails closed exactly
+    # as ``catalog explain --author-route`` does: nothing launches, nothing
+    # appends.
+    launcher = LaunchRecorder()
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        role=REVIEW_ROLE,
+        class_string=REVIEW_CLASS,
+        route=PI_ROUTE,
+        launcher=launcher,
+        extra=("--author-route", PI_ROUTE),
+    )
+    assert code == 3
+    assert launcher.processes == []
+    ledger_lines_after = len(
+        scratch_state["attempts"].read_text(encoding="utf-8").splitlines()
+    )
+    assert ledger_lines_after == ledger_lines_before
+    assert "not eligible" in captured.err
+    assert "independence" in captured.err
+
+
+def test_run_author_route_selection_excludes_author_and_preserves_explain(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """Role/class review selection with an author keeps the explain evidence."""
+    expected_id, expected_excluded = _explain_first_eligible(
+        capsys,
+        catalog_dir,
+        snapshot,
+        role=REVIEW_ROLE,
+        class_string=REVIEW_CLASS,
+        author_route=PI_ROUTE,
+    )
+    assert expected_id != PI_ROUTE
+    assert (PI_ROUTE, "independence") in expected_excluded
+
+    launcher = LaunchRecorder(exit_code=0)
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        role=REVIEW_ROLE,
+        class_string=REVIEW_CLASS,
+        launcher=launcher,
+        extra=("--author-route", PI_ROUTE),
+    )
+    assert code == 0
+    payload = json.loads(captured.out)
+    selection = payload["selection"]
+    assert selection["basis"] == "explain_cheapest_eligible"
+    assert sorted(
+        (entry["route_id"], entry["reason"]) for entry in selection["excluded"]
+    ) == sorted(expected_excluded)
+    assert payload["route"]["model"] == _route_record(catalog_dir, expected_id).model
+    assert len(launcher.processes) == 1
+
+
+def test_run_unknown_author_route_fails_closed_before_worker(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """An unknown ``--author-route`` fails closed like ``catalog explain``."""
+    launcher = LaunchRecorder()
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        launcher=launcher,
+        extra=("--author-route", "no-such-author-route"),
+    )
+    assert code == 3
+    assert launcher.processes == []
+    assert not scratch_state["attempts"].exists()
+    assert "does not match any route_id" in captured.err
+
+
+def test_run_author_route_not_applicable_outside_review_judge(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """For non-review/judge roles the author route adds no exclusion."""
+    launcher = LaunchRecorder(exit_code=0)
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        launcher=launcher,
+        extra=("--author-route", PI_ROUTE),
+    )
+    assert code == 0
+    payload = json.loads(captured.out)
+    assert all(
+        entry["reason"] != "independence" for entry in payload["selection"]["excluded"]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -875,6 +1140,83 @@ def test_run_complete_parent_pair_launches_once_and_does_not_escalate(
     assert payload["parent_attempt_id"] == "attempt-123"
     assert payload["escalation_reason"] == "review rejected the attempt"
     assert not scratch_state["events"].exists()
+
+
+@pytest.mark.parametrize(
+    ("parent", "escalation_reason"),
+    [
+        ("bad parent", "non_convergence"),
+        ("attempt-123", ""),
+        ("", "non_convergence"),
+    ],
+    ids=["parent_pattern", "empty_reason", "empty_parent"],
+)
+def test_run_invalid_parent_metadata_refuses_before_worker(
+    monkeypatch,
+    capsys,
+    catalog_dir,
+    snapshot,
+    packet,
+    scratch_state,
+    parent,
+    escalation_reason,
+):
+    """Astra final-review finding 6: metadata validates before any launch.
+
+    The committed reproducer (``--parent 'bad parent'
+    --escalation-reason non_convergence``) previously dispatched the worker
+    and only then failed schema validation, dropping the completed worker.
+    Now the caller-controlled record metadata is validated before dispatch:
+    exit-3 refusal, nothing launched, nothing appended.
+    """
+    launcher = LaunchRecorder(exit_code=0)
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        parent=parent,
+        escalation_reason=escalation_reason,
+        launcher=launcher,
+    )
+
+    assert code == 3
+    assert launcher.processes == []
+    assert not scratch_state["attempts"].exists()
+    if parent == "bad parent":
+        assert "parent_attempt_id" in captured.err
+        assert "bad parent" in captured.err
+    elif parent == "":
+        assert "parent_attempt_id" in captured.err
+    else:
+        assert "escalation_reason" in captured.err
+
+
+def test_validate_attempt_metadata_rules() -> None:
+    """The pre-launch validator enforces exactly the committed v2 rules."""
+    from lee_llm_router.staffing.run import RunSelectionError
+
+    # A valid escalation link and a generated-style attempt id both pass.
+    validate_attempt_metadata(
+        parent_attempt_id="p1-5b-attempt-2-20260910",
+        escalation_reason="non_convergence",
+        attempt_id="router-run-abc123",
+    )
+    # No metadata at all passes.
+    validate_attempt_metadata()
+    for kwargs in (
+        {"parent_attempt_id": "p1-x"},  # unpaired parent
+        {"escalation_reason": "non_convergence"},  # unpaired reason
+        {"parent_attempt_id": "bad parent", "escalation_reason": "r"},
+        {"parent_attempt_id": "p1-x", "escalation_reason": ""},
+        {"attempt_id": "bad id"},
+        {"attempt_id": ""},
+    ):
+        with pytest.raises(RunSelectionError) as exc_info:
+            validate_attempt_metadata(**kwargs)
+        assert exc_info.value.kind == "invalid_metadata"
+        assert exc_info.value.exit_code == 3
 
 
 # ---------------------------------------------------------------------------
@@ -1726,10 +2068,18 @@ def test_run_oracle_timeout_is_fail_and_not_retried(
     assert launcher.processes[1].killed is True
 
 
-def test_run_deleted_workdir_after_worker_is_exit_3_without_oracle_launch(
+def test_run_deleted_workdir_after_worker_persists_one_attempt(
     monkeypatch, capsys, catalog_dir, snapshot, packet, tmp_path, scratch_state
 ):
-    """A workdir race after the worker is governed as a clear exit-3 failure."""
+    """A workdir race after the worker never drops the completed worker.
+
+    Astra final-review finding 6 reproducer: the oracle cannot be set up
+    after the worker completed (workdir deleted between the two
+    boundaries). Exactly one schema-valid attempt is persisted preserving
+    the worker evidence and the oracle failure, with a truthful verdict,
+    failure class, and verified_success, and the governed failure is
+    returned (exit 3). The oracle never launches.
+    """
     workdir = tmp_path / "deleted-after-worker"
     workdir.mkdir()
     launcher = WorkdirDeletingLaunchRecorder(workdir)
@@ -1749,10 +2099,54 @@ def test_run_deleted_workdir_after_worker_is_exit_3_without_oracle_launch(
     assert "run: oracle failed: workdir is not a directory" in captured.err
     assert str(workdir) in captured.err
     assert len(launcher.calls) == 1
-    assert json.loads(captured.out) == {
-        "error": f"oracle failed: workdir is not a directory: {workdir}",
-        "exit_code": 3,
-    }
+    # Exactly one ledger record and it is the only stdout object.
+    payload = _assert_output_matches_single_append(captured, scratch_state)
+    assert payload["record_kind"] == "router_run"
+    # Worker evidence preserved verbatim.
+    assert payload["usage"]["basis"] == "provider_reported"
+    assert payload["usage"]["input_tokens"] == 10
+    assert payload["usage"]["output_tokens"] == 20
+    assert payload["usage"]["total_tokens"] == 30
+    # Oracle failure preserved as failed evidence with its error.
+    assert payload["verdict"] == "fail"
+    assert payload["failure_class"] == "platform_env"
+    assert payload["oracle_cmd"] == "oracle --check"
+    assert "workdir is not a directory" in payload["provenance"]["notes"][-1]
+    assert payload["verified_success"] is False
+    assert payload["verified_success_reason"] == "supervisor_route_unattested"
+    assert payload["selection"]["basis"] == "explicit"
+
+
+def test_run_attested_oracle_setup_failure_reason_is_oracle_not_passed(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, tmp_path, scratch_state
+):
+    """Attested run with an oracle setup failure names the oracle gap.
+
+    The truthful verified_success precedence holds on the governed failure
+    path too: attested, dispatched, but the oracle verdict is not pass.
+    """
+    workdir = tmp_path / "attested-deleted-after-worker"
+    workdir.mkdir()
+    launcher = WorkdirDeletingLaunchRecorder(workdir)
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=LUNA_ROUTE,
+        supervisor_route=CODEX_ROUTE,
+        workdir=workdir,
+        launcher=launcher,
+        extra=("--oracle", "oracle --check"),
+    )
+
+    assert code == 3
+    payload = _assert_output_matches_single_append(captured, scratch_state)
+    assert payload["supervisor_route"]["model"] == "gpt-5.6-sol"
+    assert payload["verdict"] == "fail"
+    assert payload["verified_success"] is False
+    assert payload["verified_success_reason"] == "oracle_not_passed"
 
 
 def test_run_oracle_launch_failure_is_fail_with_stable_error(
