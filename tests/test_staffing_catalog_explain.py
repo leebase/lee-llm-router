@@ -621,8 +621,14 @@ def test_explain_text_terms_before_retier_date(tmp_path, catalog_dir, capsys):
 
     lines = captured.out.splitlines()
     assert "selected terms at 2026-09-15" in lines
-    assert "  anthropic-sub: effective_from 2026-09-09, fee_usd_month 100" in lines
-    assert "  gemini-sub: effective_from 2026-09-09, fee_usd_month 100" in lines
+    assert (
+        "  anthropic-sub: effective_from 2026-09-09, fee_usd_month 100, kind"
+        " subscription" in lines
+    )
+    assert (
+        "  gemini-sub: effective_from 2026-09-09, fee_usd_month 100, kind"
+        " subscription" in lines
+    )
 
 
 def test_explain_text_terms_after_retier_date(tmp_path, catalog_dir, capsys):
@@ -645,8 +651,14 @@ def test_explain_text_terms_after_retier_date(tmp_path, catalog_dir, capsys):
 
     lines = captured.out.splitlines()
     assert "selected terms at 2026-10-01" in lines
-    assert "  anthropic-sub: effective_from 2026-09-30, fee_usd_month 20" in lines
-    assert "  gemini-sub: effective_from 2026-09-30, fee_usd_month 20" in lines
+    assert (
+        "  anthropic-sub: effective_from 2026-09-30, fee_usd_month 20, kind"
+        " subscription" in lines
+    )
+    assert (
+        "  gemini-sub: effective_from 2026-09-30, fee_usd_month 20, kind"
+        " subscription" in lines
+    )
 
 
 def test_explain_json_terms_deterministic_numerics_and_routes_fields(
@@ -769,8 +781,10 @@ def test_explain_json_tier_label_present_for_every_channel(
     assert terms["local"]["fee_usd_month"] == "unknown"
 
 
-def test_explain_text_output_unchanged_by_tier_label(tmp_path, catalog_dir, capsys):
-    """Text output compatibility: the tier label is JSON-only disclosure."""
+def test_explain_text_tier_label_present_for_every_channel(
+    tmp_path, catalog_dir, capsys
+):
+    """Text output parity: each channel discloses kind matching JSON terms."""
     snapshot = _write_snapshot(tmp_path / "availability.json")
     code, captured = _run_explain(
         capsys,
@@ -789,10 +803,29 @@ def test_explain_text_output_unchanged_by_tier_label(tmp_path, catalog_dir, caps
 
     lines = captured.out.splitlines()
     assert "selected terms at 2026-09-15" in lines
-    assert "  anthropic-sub: effective_from 2026-09-09, fee_usd_month 100" in lines
-    assert "  gemini-sub: effective_from 2026-09-09, fee_usd_month 100" in lines
-    # No kind/tier text leaked into the per-channel lines or elsewhere.
-    assert not any("kind" in line or "tier" in line.lower() for line in lines)
+    expected_lines = [
+        (
+            "  openai-sub: effective_from 2026-09-09, fee_usd_month 200, kind"
+            " subscription"
+        ),
+        (
+            "  anthropic-sub: effective_from 2026-09-09, fee_usd_month 100,"
+            " kind subscription"
+        ),
+        (
+            "  gemini-sub: effective_from 2026-09-09, fee_usd_month 100, kind"
+            " subscription"
+        ),
+        (
+            "  opencode-go: effective_from 2026-09-09, fee_usd_month unknown,"
+            " kind subscription"
+        ),
+        "  openrouter: effective_from 2026-09-09, fee_usd_month 0, kind metered",
+        "  opencode-zen: effective_from 2026-09-09, fee_usd_month 0, kind metered",
+        "  local: effective_from 2026-09-01, fee_usd_month unknown, kind local",
+    ]
+    for expected_line in expected_lines:
+        assert expected_line in lines
 
 
 # ---------------------------------------------------------------------------

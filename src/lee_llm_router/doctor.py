@@ -1257,7 +1257,8 @@ def _terms_lines(
     for channel, entry in terms_view.items():
         lines.append(
             f"  {channel}: effective_from {entry['effective_from']}, "
-            f"fee_usd_month {entry['fee_usd_month']}"
+            f"fee_usd_month {entry['fee_usd_month']}, "
+            f"kind {entry['kind']}"
         )
     return lines
 
@@ -1268,9 +1269,8 @@ def _run_catalog_explain(args: argparse.Namespace) -> int:
     The report also projects the dated terms the committed ``terms_at``
     lookup selects for the requested date (display only, in both text and
     ``--json`` output) so the selected ``effective_from``/``fee_usd_month``
-    terms and the per-channel term-kind tier label (``kind``, JSON terms
-    view only) are observable; it performs no choice, probability, or
-    ladder.
+    terms and the per-channel term-kind tier label (``kind``) are observable;
+    it performs no choice, probability, or ladder.
     Per Chief round 15 (D86/D87) it discloses exactly once per run — as the
     ``floors recorded, not enforced`` text line and as the top-level
     ``floors_disclosure`` JSON value — that the catalog's ``role_floors``
