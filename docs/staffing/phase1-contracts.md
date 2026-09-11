@@ -75,7 +75,7 @@ cost substitutes. D207 remains the source rule where OpenRouter has no row.
 
 ## `run` command
 
-`lee-llm-router run (--route ID | --role R --class C) --packet FILE
+`lee-llm-router run --role R --class C --packet FILE [--route ID]
 [--oracle CMD] [--workdir DIR] [--parent ATTEMPT_ID --escalation-reason R]
 [--timeout S] [--json]` selects exactly one eligible route, dispatches its
 provider `build_command` under the watchdog, captures authoritative harness
@@ -104,8 +104,10 @@ pass counts by oracle type, token sums and medians, median wall clock,
 `performance.py` semantics. It creates no probabilities or ladders.
 
 Imports are idempotent by deterministic attempt id. Benchmark rows carry
-`provenance.source: benchmark`; agent-orch rows carry
-`provenance.source: agent-orch`. Source usage is preserved exactly. An
+`provenance.source: benchmark`; raw per-attempt agent-orch rows carry
+`record_kind: agent_orch_attempt` and `provenance.source: agent-orch-runs` per
+Chief answer 3. The existing full-observation `agent_orch` kind remains reserved
+for Phase 4. Source usage is preserved exactly. An
 `accounting_status: unaccounted` row is unavailable, never zero. Historical
 agent-orch rows without class metadata use `class_source: none`.
 

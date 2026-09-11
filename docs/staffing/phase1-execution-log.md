@@ -301,3 +301,67 @@ remains a seam to verify before the optional Gemini live proof. Phase 1
 OpenRouter metered total is $0.368178621 plus unknown pre-P1-4a text-mode
 attempts; Luna subscription execution totals a separate $0.274974450
 list/marginal estimate.
+
+## P1-7b resumed — raw Agent-Orch attempt schema and importer
+
+- Chief answer 3 resolved the schema boundary with `record_kind:
+  agent_orch_attempt`, `verdict.tier: engine_validation`, absent class, raw
+  provenance, and the fixed accounting mapping.
+- Schema subpacket: two GLM non-convergent attempts; Luna XHigh exceeded its
+  watchdog with a partial; Sol High reached its ceiling after implementing the
+  schema but missed the fixture/doc. DeepSeek review found those two blockers;
+  the one Sol repair fixed them. Re-review PASS, 95 focused passed/1 skip;
+  supervisor full gate 1195 passed/1 skip. Commit `97f0dc0`.
+- Importer subpacket: GLM timed out before a source edit; Luna timed out with a
+  tested partial; Sol High completed the artifact before timing out in its full
+  suite. DeepSeek review PASS. Supervisor: 11 focused and 1203 full passed/1
+  skip. Commit `fee53fd`.
+- Usage truth: GLM schema attempts were provider-reported (11001/768 and
+  4156/227 input/output; $0.001017075 and $0.000368450 non-cached list terms).
+  The independent schema reviews were provider-reported, including final
+  DeepSeek 4548/2356 input/output ($0.002095269 provider event total). Sol
+  repair reported 1576653 input, 1482112 cached, 13577 output, 4126 reasoning.
+  Importer GLM/Luna/Sol timeouts preserve only emitted terminal receipts where
+  present; missing terminal events remain unavailable, never estimated.
+- Real gate import: benchmark `imported=93 skipped=9`; Agent-Orch
+  `imported=436 skipped=69`. Immediate re-import: `imported=0` for both.
+
+## P1-8 — live proofs and real-dispatch remediation
+
+- Initial GLM proof and its one same-route repair both recorded complete Pi
+  usage/cost but failed the docstring oracle because governed Pi had read-only
+  tools. A Luna escalation and the initial Sol Low proof exited before work
+  with empty Codex JSON because governed Codex lacked workspace/non-git flags.
+- Remediation `da56ebf` added bounded Pi edit tools and Codex
+  `workspace-write --skip-git-repo-check`; DeepSeek review PASS with zero
+  blockers. Post-fix GLM proof `router-run-2960af1d463e4e08bc7f2b7ea0a427ad`
+  passed: provider-reported 4501 input, 457 output, 5440 cached, 193 reasoning,
+  10398 total; list=marginal $0.000451825; 9006 ms.
+- Post-fix Sol Low proof `router-run-7f7fc7c0ee974f3492c6935bb4abc299`
+  passed: provider-reported 59282 input, 360 output, 51584 cached, 18 reasoning,
+  59642 total; list=marginal $0.244328; 15010 ms.
+- Anthropic was eligible at 0.88 headroom. The sole authorized Claude Sonnet
+  proof exited 1 with empty stream JSON and failed its oracle. Credentials were
+  present. Remediation `335ef28` added documented safe `acceptEdits` / no-host
+  permission flags; DeepSeek review PASS. No second Claude call was made
+  because D209 authorizes at most one Claude live proof.
+- Rollup observed all seven live records and the two passing oracle verdicts.
+  `verified_success` remains false by design because `run` cannot attest the
+  calling supervisor route; gate item 2 asks for the recorded usage/cost/
+  selection/duration/oracle evidence, not that conservative flag.
+
+## P1-9 — gate and Astra remediation
+
+- Gate 1: dated explains at 2026-09-15 and 2026-10-01 include every channel's
+  fee, kind/tier, and effective_from; Anthropic/Gemini differ at the boundary.
+- Gate 3: imports and idempotent re-import counts are recorded above.
+- Gate 4 before Astra: 536 ledger lines validated; 436 agent_orch_attempt, 93
+  benchmark_run, 7 router_run; usage bases 524 provider_reported and 12
+  unavailable; zero missing source/reason and zero tokenless cost figures.
+- Astra Low final review attempt timed out at 590 seconds, but its probes found
+  three blocking truth gaps: contradictory class fields, non-finite JSON cost,
+  and unavailable usage retaining numeric tokens. GLM remediation plus one
+  repair also closed a DeepSeek-discovered malformed-class TypeError/KeyError
+  leak on validate/read paths. DeepSeek re-review PASS with zero blockers;
+  commit `b0cc89c`. Supervisor reproduced all failures closed, 536 real rows
+  valid, 1236 passed/1 skip, Black/Ruff clean before commit.

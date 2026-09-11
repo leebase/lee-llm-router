@@ -399,3 +399,22 @@ not_applicable, 11 unaccounted, 13 missing receipts. Please choose one:
 
 No production/test partial remains. P1-8/P1-9 are held because the plan makes
 P1-7 a dependency of the live-proof/final-gate chain.
+
+## Resolved by Chief, Phase 1 round 3 (2026-09-10)
+
+See `docs/staffing/chief-answers-p1-3.md`: new `record_kind: agent_orch_attempt` built only from
+raw attempt artifacts with a fixed truth mapping from `accounting_status`; `verdict.tier:
+engine_validation`; class absent; the full-observation kind stays for Phase 4.
+
+## Phase 1 close authority boundary — Claude proof consumed (2026-09-10)
+
+Gate item 2 is not sealable under the current consumption ledger. Anthropic was
+eligible (0.88 headroom), so the authorized Claude Sonnet branch was used once.
+That attempt exposed missing safe noninteractive permission flags and failed
+with empty stream JSON. The defect is now fixed in reviewed commit `335ef28`,
+but D209 permits **at most one Claude Code live proof**, already consumed, and
+the Gemini alternative applies only when Anthropic is `likely_exhausted` at
+dispatch. Two choices require Lee/Chief authority: authorize one post-fix
+Claude Sonnet reproof, or explicitly accept the failed pre-fix record plus the
+reviewed fake-boundary remediation as gate evidence. No Gemini substitution or
+second Claude call was invented.
