@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://lee-llm-router.local/config/staffing/schema/attempt-record.schema.json",
   "title": "Unified attempt record (Phase 1 P1-2, v2)",
-  "description": "One strict Draft 2020-12 record: the canonical v2 attempt envelope per D209 as mapped by docs/staffing/phase1-contracts.md, unifying the lee-llm-router run-command attempt, the Agent-Orch model/effort observation (/home/lee/projects/auto-orch/src/auto_orch/performance.py OBSERVATION_SCHEMA), and the AI Workforce Benchmark crew-run record (/home/lee/projects/ai-workforce-benchmark/config/crew-run.schema.json). The v1 source-specific payloads remain embedded verbatim as provenance evidence; they are not competing locations for v2 usage, cost, selection, or verdict. Route identity is exactly the tuple (model, effort, harness, channel) per the accepted P0-1 route contract (phase0-contracts §Route); provider is separate optional observed metadata, never part of the identity tuple, never a replacement for channel, and never invented for a source that lacks one. class_record reproduces the strict classes.schema.json $defs/classBlock vocabulary verbatim (same six required fields, same closed value sets, same canonical class_key pattern); imported historical attempts without class metadata omit it and carry class_source: 'none' — the only condition under which class_key is optional. Per D206, quoted verbatim: 'Class metadata MUST NOT map directly to a preferred model or route. It may only: 1. join production attempts to comparable benchmark evidence; and 2. determine whether an unevidenced cheap trial is permitted.' No class-to-model or class-to-route mapping exists in this schema. verified_success is true only for verdict 'pass' with the required route, usage, cost (when usage permits it), oracle, duration, and provenance evidence; where a source lacks a channel, provider, supervisor route, usage, cost, or duration, the field is null or absent — never invented. Every price, fee, capacity, date, or multiplier needs a source; this schema invents none.",
+  "description": "One strict Draft 2020-12 record: the canonical v2 attempt envelope per D209 as mapped by docs/staffing/phase1-contracts.md, unifying the lee-llm-router run-command attempt, the Agent-Orch model/effort observation (/home/lee/projects/auto-orch/src/auto_orch/performance.py OBSERVATION_SCHEMA), and the AI Workforce Benchmark crew-run record (/home/lee/projects/ai-workforce-benchmark/config/crew-run.schema.json). The v1 source-specific payloads remain embedded verbatim as provenance evidence; they are not competing locations for v2 usage, cost, selection, or verdict. Route identity is exactly the tuple (model, effort, harness, channel) per the accepted P0-1 route contract (phase0-contracts §Route); provider is separate optional observed metadata, never part of the identity tuple, never a replacement for channel, and never invented for a source that lacks one. class_record reproduces the strict classes.schema.json $defs/classBlock vocabulary verbatim (same six required fields, same closed value sets, same canonical class_key pattern); imported historical attempts without class metadata omit it and carry class_source: 'none' — the only condition under which class_key is optional. Per D206, quoted verbatim: 'Class metadata MUST NOT map directly to a preferred model or route. It may only: 1. join production attempts to comparable benchmark evidence; and 2. determine whether an unevidenced cheap trial is permitted.' No class-to-model or class-to-route mapping exists in this schema. verified_success is true only for verdict 'pass' with the required route, usage, cost (when usage permits it), oracle, duration, and provenance evidence; where a source lacks a channel, provider, supervisor route, usage, cost, or duration, the field is null or absent — never invented. Every price, fee, capacity, date, or multiplier needs a source; this schema invents none. Phase 1 P1-7b1 (Chief of Staff answer 3, docs/staffing/chief-answers-p1-3.md) adds record_kind 'agent_orch_attempt': the agent-orch runs per-attempt import built only from the authorized raw per-attempt artifacts ($defs/agentOrchAttempt), with class_source 'none' and never class_record, provenance.source 'agent-orch-runs', the verdict tier 'engine_validation', and verified_success exactly the agent-orch validation gate (worker_exit_code == 0 and validation_passed == true). The existing 'agent_orch' full-observation kind is unchanged and reserved for the Phase 4 import.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -26,9 +26,10 @@
     },
     "record_kind": {
       "type": "string",
-      "description": "Which source produced the attempt; the matching source payload is required (see allOf). 'agent_orch' and 'benchmark_run' are imports embedding their v1 payloads verbatim; 'router_run' is a live run-command attempt whose provenance payload is the router ledger dispatch event. v2 drops the v1 'interactive' kind: a bare dispatch event records no outcome and is not an attempt; dispatch events remain in the events ledger under events.py's own shape, and the router_event payload survives as provenance evidence on router_run records.",
+      "description": "Which source produced the attempt; the matching source payload is required (see allOf). 'agent_orch' and 'benchmark_run' are imports embedding their v1 payloads verbatim; 'router_run' is a live run-command attempt whose provenance payload is the router ledger dispatch event. 'agent_orch_attempt' (P1-7b1, Chief answer 3) is the agent-orch runs per-attempt import built only from the authorized raw per-attempt artifacts; it never carries the full observation payload, which remains the Phase 4 'agent_orch' shape. v2 drops the v1 'interactive' kind: a bare dispatch event records no outcome and is not an attempt; dispatch events remain in the events ledger under events.py's own shape, and the router_event payload survives as provenance evidence on router_run records.",
       "enum": [
         "agent_orch",
+        "agent_orch_attempt",
         "benchmark_run",
         "router_run"
       ]
@@ -40,7 +41,7 @@
     },
     "verified_success": {
       "type": "boolean",
-      "description": "True only for verdict 'pass' with the required route, usage, cost (when usage permits it), oracle, duration, and provenance evidence genuinely present (enforced by the allOf gate below): usage must be authoritative and non-unavailable with a source and the input/output token fields the current P0-4 pricing needs, while genuinely unknown optional cached_input_tokens/reasoning_tokens stay null (authoritative harness output may omit those optional components). total_tokens stays truthful: optional/null unless authoritatively reported or calculated. A source that reports success without complete evidence yields false — missing evidence is never invented to reach true."
+      "description": "True only for verdict 'pass' with the required route, usage, cost (when usage permits it), oracle, duration, and provenance evidence genuinely present (enforced by the allOf gate below): usage must be authoritative and non-unavailable with a source and the input/output token fields the current P0-4 pricing needs, while genuinely unknown optional cached_input_tokens/reasoning_tokens stay null (authoritative harness output may omit those optional components). total_tokens stays truthful: optional/null unless authoritatively reported or calculated. A source that reports success without complete evidence yields false — missing evidence is never invented to reach true. For record_kind 'agent_orch_attempt' (P1-7b1) verified_success instead means exactly the agent-orch validation gate — worker_exit_code == 0 and validation_passed == true, enforced as a schema equivalence — and the full oracle-evidence gate above is bypassed for that kind only; all other kinds keep the gate unchanged."
     },
     "packet_id": {
       "type": "string",
@@ -85,12 +86,14 @@
       ]
     },
     "verdict": {
-      "type": "string",
-      "description": "Canonical v2 oracle verdict: pass | fail | unverified. The v1 source-specific outcome vocabularies (Agent-Orch review.final_verdict, benchmark final_acceptance) remain inside their embedded payloads as provenance evidence; consumers needing source-specific semantics must read those payloads, not this field.",
-      "enum": [
-        "pass",
-        "fail",
-        "unverified"
+      "description": "Legacy record kinds use the canonical v2 oracle verdict string pass | fail | unverified. An agent_orch_attempt instead carries the closed object {tier: engine_validation}: that tier means agent-orch's own exit-code plus validation gate, never a deterministic/judge/human oracle chosen by this repository. The record-kind conditionals keep the two shapes disjoint; engine_validation is deliberately not a member of the canonical verdict string enum.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/canonicalVerdict"
+        },
+        {
+          "$ref": "#/$defs/agentOrchAttemptVerdict"
+        }
       ]
     },
     "failure_class": {
@@ -138,7 +141,15 @@
       "$ref": "#/$defs/usage"
     },
     "cost": {
-      "$ref": "#/$defs/cost"
+      "description": "Legacy record kinds use $defs/cost. agent_orch_attempt uses the narrower $defs/agentOrchAttemptCost so a measured raw usage.json cost can be identified as list basis without inventing a marginal figure.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/cost"
+        },
+        {
+          "$ref": "#/$defs/agentOrchAttemptCost"
+        }
+      ]
     },
     "wall_clock_ms": {
       "type": [
@@ -157,6 +168,9 @@
     "agent_orch_observation": {
       "$ref": "#/$defs/agentOrchObservation"
     },
+    "agent_orch_attempt": {
+      "$ref": "#/$defs/agentOrchAttempt"
+    },
     "benchmark_run": {
       "$ref": "#/$defs/crewRunRecord"
     },
@@ -167,14 +181,30 @@
   "allOf": [
     {
       "if": {
-        "required": [
-          "verified_success"
-        ],
-        "properties": {
-          "verified_success": {
-            "const": true
+        "allOf": [
+          {
+            "required": [
+              "verified_success"
+            ],
+            "properties": {
+              "verified_success": {
+                "const": true
+              }
+            }
+          },
+          {
+            "not": {
+              "required": [
+                "record_kind"
+              ],
+              "properties": {
+                "record_kind": {
+                  "const": "agent_orch_attempt"
+                }
+              }
+            }
           }
-        }
+        ]
       },
       "then": {
         "required": [
@@ -302,7 +332,73 @@
               }
             ]
           },
+          "verdict": {
+            "$ref": "#/$defs/canonicalVerdict"
+          },
+          "cost": {
+            "$ref": "#/$defs/cost"
+          },
           "selection": false
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "record_kind"
+        ],
+        "properties": {
+          "record_kind": {
+            "const": "agent_orch_attempt"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "agent_orch_attempt",
+          "class_source",
+          "verdict",
+          "usage",
+          "cost"
+        ],
+        "properties": {
+          "agent_orch_attempt": {
+            "$ref": "#/$defs/agentOrchAttempt"
+          },
+          "class_source": {
+            "const": "none"
+          },
+          "class_record": false,
+          "verdict": {
+            "$ref": "#/$defs/agentOrchAttemptVerdict"
+          },
+          "usage": {
+            "$ref": "#/$defs/usage"
+          },
+          "cost": {
+            "$ref": "#/$defs/agentOrchAttemptCost"
+          },
+          "provenance": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/provenance"
+              },
+              {
+                "properties": {
+                  "source": {
+                    "const": "agent-orch-runs"
+                  }
+                }
+              }
+            ]
+          },
+          "route": false,
+          "supervisor_route": false,
+          "oracle_cmd": false,
+          "selection": false,
+          "router_event": false,
+          "agent_orch_observation": false,
+          "benchmark_run": false
         }
       }
     },
@@ -339,6 +435,12 @@
               }
             ]
           },
+          "verdict": {
+            "$ref": "#/$defs/canonicalVerdict"
+          },
+          "cost": {
+            "$ref": "#/$defs/cost"
+          },
           "selection": false
         }
       }
@@ -367,6 +469,12 @@
         "properties": {
           "router_event": {
             "$ref": "#/$defs/eventRecord"
+          },
+          "verdict": {
+            "$ref": "#/$defs/canonicalVerdict"
+          },
+          "cost": {
+            "$ref": "#/$defs/cost"
           },
           "provenance": {
             "allOf": [
@@ -434,6 +542,231 @@
         "properties": {
           "oracle_cmd": {
             "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "record_kind",
+          "agent_orch_attempt"
+        ],
+        "properties": {
+          "record_kind": {
+            "const": "agent_orch_attempt"
+          },
+          "agent_orch_attempt": {
+            "required": [
+              "worker_exit_code",
+              "validation_passed"
+            ],
+            "properties": {
+              "worker_exit_code": {
+                "const": 0
+              },
+              "validation_passed": {
+                "const": true
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "verified_success": {
+            "const": true
+          }
+        }
+      },
+      "else": {
+        "if": {
+          "required": [
+            "record_kind"
+          ],
+          "properties": {
+            "record_kind": {
+              "const": "agent_orch_attempt"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "verified_success": {
+              "const": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "record_kind",
+          "agent_orch_attempt"
+        ],
+        "properties": {
+          "record_kind": {
+            "const": "agent_orch_attempt"
+          },
+          "agent_orch_attempt": {
+            "required": [
+              "accounting_status"
+            ],
+            "properties": {
+              "accounting_status": {
+                "const": "measured"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "usage": {
+            "required": [
+              "basis",
+              "source",
+              "input_tokens",
+              "output_tokens"
+            ],
+            "properties": {
+              "basis": {
+                "const": "provider_reported"
+              },
+              "source": {
+                "const": "agent-orch usage.json"
+              },
+              "input_tokens": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "output_tokens": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "cost": {
+            "required": [
+              "basis",
+              "usd_list"
+            ],
+            "properties": {
+              "basis": {
+                "const": "list"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "record_kind",
+          "agent_orch_attempt"
+        ],
+        "properties": {
+          "record_kind": {
+            "const": "agent_orch_attempt"
+          },
+          "agent_orch_attempt": {
+            "required": [
+              "accounting_status"
+            ],
+            "properties": {
+              "accounting_status": {
+                "enum": [
+                  "unaccounted",
+                  null
+                ]
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "usage": {
+            "required": [
+              "basis",
+              "unavailable_reason"
+            ],
+            "properties": {
+              "basis": {
+                "const": "unavailable"
+              },
+              "unavailable_reason": {
+                "type": "string",
+                "minLength": 1
+              },
+              "input_tokens": false,
+              "output_tokens": false,
+              "cached_input_tokens": false,
+              "reasoning_tokens": false,
+              "total_tokens": false
+            }
+          },
+          "cost": {
+            "properties": {
+              "basis": {
+                "const": "unavailable"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "record_kind",
+          "agent_orch_attempt"
+        ],
+        "properties": {
+          "record_kind": {
+            "const": "agent_orch_attempt"
+          },
+          "agent_orch_attempt": {
+            "required": [
+              "accounting_status"
+            ],
+            "properties": {
+              "accounting_status": {
+                "const": "not_applicable"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "usage": {
+            "required": [
+              "basis",
+              "unavailable_reason"
+            ],
+            "properties": {
+              "basis": {
+                "const": "unavailable"
+              },
+              "unavailable_reason": {
+                "const": "non-metered adapter"
+              },
+              "input_tokens": false,
+              "output_tokens": false,
+              "cached_input_tokens": false,
+              "reasoning_tokens": false,
+              "total_tokens": false
+            }
+          },
+          "cost": {
+            "properties": {
+              "basis": {
+                "const": "unavailable"
+              }
+            }
           }
         }
       }
@@ -1148,9 +1481,319 @@
           "verified_success is false: no route, supervisor route, class record, or duration evidence is present, and none is invented."
         ]
       }
+    },
+    {
+      "schema_version": 2,
+      "attempt_id": "b0ccf22e228b8dbc599747372cbf018150ff39eeedd3437de8d4f70e2ec00daa",
+      "record_kind": "agent_orch_attempt",
+      "captured_at": "2026-09-09T09:13:48.542239Z",
+      "verified_success": true,
+      "class_source": "none",
+      "verdict": {
+        "tier": "engine_validation"
+      },
+      "usage": {
+        "basis": "provider_reported",
+        "source": "agent-orch usage.json",
+        "input_tokens": 56817,
+        "output_tokens": 474,
+        "cached_input_tokens": 46848,
+        "reasoning_tokens": 82,
+        "total_tokens": 57291
+      },
+      "cost": {
+        "basis": "list",
+        "usd_list": 0.2554872
+      },
+      "agent_orch_attempt": {
+        "run_id": "a6a85c6b02c6",
+        "step_id": "step_01_seal_authority_and_anchor_repairs",
+        "attempt_number": 1,
+        "route": {
+          "harness": "codex_cli",
+          "model": "gpt-5.6-sol",
+          "effort": "low"
+        },
+        "worker_exit_code": 0,
+        "validation_passed": true,
+        "policy_decision": "PASS",
+        "failure_classification": null,
+        "accounting_status": "measured",
+        "usage": {
+          "input_tokens": 56817,
+          "output_tokens": 474,
+          "cached_read_tokens": 46848,
+          "reasoning_output_tokens": 82,
+          "total_tokens": 57291
+        },
+        "cost_usd": 0.2554872,
+        "source_paths": [
+          "/home/lee/projects/linux-utilities-agent-orch-runs/a6a85c6b02c6/run.json",
+          "/home/lee/projects/linux-utilities-agent-orch-runs/a6a85c6b02c6/steps/step_01_seal_authority_and_anchor_repairs/attempt-1/route-selection.json",
+          "/home/lee/projects/linux-utilities-agent-orch-runs/a6a85c6b02c6/steps/step_01_seal_authority_and_anchor_repairs/attempt-1/usage.json"
+        ]
+      },
+      "provenance": {
+        "source": "agent-orch-runs",
+        "recorded_by": "phase1-staffing-p1-7b1",
+        "source_refs": [
+          "docs/staffing/chief-answers-p1-3.md",
+          "/home/lee/projects/linux-utilities-agent-orch-runs/a6a85c6b02c6/run.json",
+          "/home/lee/projects/linux-utilities-agent-orch-runs/a6a85c6b02c6/steps/step_01_seal_authority_and_anchor_repairs/attempt-1/route-selection.json",
+          "/home/lee/projects/linux-utilities-agent-orch-runs/a6a85c6b02c6/steps/step_01_seal_authority_and_anchor_repairs/attempt-1/usage.json"
+        ],
+        "notes": [
+          "Real raw attempt fixture: only the three named source files were read; no provider was invoked.",
+          "attempt_id is sha256 of a6a85c6b02c6/step_01_seal_authority_and_anchor_repairs/1.",
+          "captured_at preserves run.json last_updated_at; per-attempt started_at and ended_at are absent because the authorized raw attempt does not record them.",
+          "Top-level cached_input_tokens maps usage.json cached_read_tokens, and reasoning_tokens maps raw_usage.reasoning_output_tokens; all copied numeric values are unchanged.",
+          "cost is list basis only and preserves usage.json cost_usd; no marginal cost, class, channel, provider, supervisor route, oracle, or wall-clock duration is inferred."
+        ]
+      }
     }
   ],
   "$defs": {
+    "canonicalVerdict": {
+      "type": "string",
+      "description": "Canonical v2 oracle verdict for the three pre-existing record kinds. This enum is unchanged by P1-7b1; engine_validation is a tier in agentOrchAttemptVerdict, not a verdict string.",
+      "enum": [
+        "pass",
+        "fail",
+        "unverified"
+      ]
+    },
+    "agentOrchAttemptVerdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Verdict provenance for a raw agent-orch attempt. engine_validation means the result is exactly agent-orch's own worker-exit and validation gate; it is not an oracle selected by lee-llm-router.",
+      "required": [
+        "tier"
+      ],
+      "properties": {
+        "tier": {
+          "enum": [
+            "engine_validation"
+          ]
+        }
+      }
+    },
+    "agentOrchAttemptCost": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Cost mapping for agent_orch_attempt only. A measured usage.json supplies one verbatim list-basis figure; unavailable accounting supplies no figure. No marginal cost is inferred.",
+      "required": [
+        "basis"
+      ],
+      "properties": {
+        "basis": {
+          "enum": [
+            "list",
+            "unavailable"
+          ]
+        },
+        "usd_list": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "basis"
+            ],
+            "properties": {
+              "basis": {
+                "const": "list"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "usd_list"
+            ]
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "basis"
+            ],
+            "properties": {
+              "basis": {
+                "const": "unavailable"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "usd_list": false
+            }
+          }
+        }
+      ]
+    },
+    "agentOrchAttempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Authorized raw per-attempt facts only, copied from run.json plus the attempt's route-selection.json and usage.json when present. It deliberately excludes the synthesized Phase 4 agentOrchObservation fields and all class metadata.",
+      "required": [
+        "run_id",
+        "step_id",
+        "attempt_number",
+        "route",
+        "worker_exit_code",
+        "validation_passed",
+        "policy_decision",
+        "failure_classification",
+        "accounting_status",
+        "source_paths"
+      ],
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "step_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attempt_number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "route": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "harness",
+            "model",
+            "effort"
+          ],
+          "properties": {
+            "harness": {
+              "type": "string",
+              "minLength": 1
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1
+            },
+            "effort": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 1
+            }
+          }
+        },
+        "worker_exit_code": {
+          "type": "integer"
+        },
+        "validation_passed": {
+          "type": "boolean"
+        },
+        "policy_decision": {
+          "type": "string",
+          "minLength": 1
+        },
+        "failure_classification": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "accounting_status": {
+          "description": "Verbatim usage.json accounting_status, or null when the attempt has no usage.json receipt.",
+          "enum": [
+            "measured",
+            "unaccounted",
+            "not_applicable",
+            null
+          ]
+        },
+        "usage": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Token fields copied from usage.json when present. Names retain the raw agent-orch receipt vocabulary.",
+          "properties": {
+            "input_tokens": {
+              "$ref": "#/$defs/tokenCounter"
+            },
+            "output_tokens": {
+              "$ref": "#/$defs/tokenCounter"
+            },
+            "cached_read_tokens": {
+              "$ref": "#/$defs/tokenCounter"
+            },
+            "reasoning_output_tokens": {
+              "$ref": "#/$defs/tokenCounter"
+            },
+            "total_tokens": {
+              "$ref": "#/$defs/tokenCounter"
+            }
+          },
+          "minProperties": 1
+        },
+        "cost_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "ended_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "source_paths": {
+          "type": "array",
+          "description": "Exact paths of the raw files read for this attempt; a missing usage.json is omitted rather than invented.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 2,
+          "uniqueItems": true
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "accounting_status"
+            ],
+            "properties": {
+              "accounting_status": {
+                "const": "measured"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "usage",
+              "cost_usd"
+            ],
+            "properties": {
+              "usage": {
+                "required": [
+                  "input_tokens",
+                  "output_tokens"
+                ]
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "cost_usd": false
+            }
+          }
+        }
+      ]
+    },
     "provenance": {
       "type": "object",
       "additionalProperties": false,
@@ -1166,6 +1809,7 @@
           "enum": [
             "benchmark",
             "agent-orch",
+            "agent-orch-runs",
             "router-run"
           ]
         },
@@ -1334,7 +1978,7 @@
           ]
         },
         "source": {
-          "description": "Required iff basis is not 'unavailable'. For 'provider_reported': exactly one of the nine phase1-contracts §Usage evidence taxonomy harness strings (closed enum, enforced below). For 'observed' or 'calculated': a nonempty authoritative description of the observing or calculating source — never one of the provider_reported harness strings (enforced below). Forbidden when basis is 'unavailable'.",
+          "description": "Required iff basis is not 'unavailable'. For 'provider_reported': exactly one of the authoritative phase1-contracts §Usage evidence taxonomy strings (closed enum, enforced below), including the P1-7b1 raw-attempt source agent-orch usage.json. For 'observed' or 'calculated': a nonempty authoritative description of the observing or calculating source — never one of the provider_reported harness strings (enforced below). Forbidden when basis is 'unavailable'.",
           "type": "string",
           "minLength": 1
         },
@@ -1428,7 +2072,8 @@
                   "opencode worker-written usage.json from provider output",
                   "omp -p --mode json events",
                   "benchmark v6 CSV usage_*_tokens",
-                  "agent-orch usage.json/accounting_status"
+                  "agent-orch usage.json/accounting_status",
+                  "agent-orch usage.json"
                 ]
               }
             }
@@ -1462,7 +2107,8 @@
                     "opencode worker-written usage.json from provider output",
                     "omp -p --mode json events",
                     "benchmark v6 CSV usage_*_tokens",
-                    "agent-orch usage.json/accounting_status"
+                    "agent-orch usage.json/accounting_status",
+                    "agent-orch usage.json"
                   ]
                 }
               }

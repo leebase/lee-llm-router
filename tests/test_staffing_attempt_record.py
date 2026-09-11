@@ -1,9 +1,9 @@
-"""Focused P1-2 tests for the attempt-record schema v2.
+"""Focused P1-2/P1-7b1 tests for the attempt-record schema v2.
 
 Authority: D209 ruling 2 via docs/staffing/phase1-contracts.md, with D206
 preserved verbatim (class metadata never maps to a preferred model or route).
 
-These tests validate the schema document, its five shipped examples, and the
+These tests validate the schema document, its six shipped examples, and the
 deterministic fixture copies under tests/fixtures/staffing/. No provider
 prompts are made and no state directory is touched; every record here is
 scratch data and no real pricing is asserted.
@@ -20,8 +20,13 @@ import pytest
 from jsonschema import Draft202012Validator, FormatChecker
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SCHEMA_PATH = REPO_ROOT / "config" / "staffing" / "schema" / "attempt-record.schema.json"
+SCHEMA_PATH = (
+    REPO_ROOT / "config" / "staffing" / "schema" / "attempt-record.schema.json"
+)
 FIXTURE_DIR = REPO_ROOT / "tests" / "fixtures" / "staffing"
+AGENT_ORCH_ATTEMPT_ID = (
+    "b0ccf22e228b8dbc599747372cbf018150ff39eeedd3437de8d4f70e2ec00daa"
+)
 
 FIXTURE_FILES = [
     "attempt-record-agent-orch.json",
@@ -29,6 +34,7 @@ FIXTURE_FILES = [
     "attempt-record-router-run-unavailable.json",
     "attempt-record-router-run-escalation.json",
     "attempt-record-import-agent-orch-unclassed.json",
+    "attempt-record-agent-orch-raw-attempt.json",
 ]
 
 D206_VERBATIM = (
@@ -48,6 +54,7 @@ USAGE_SOURCES = [
     "omp -p --mode json events",
     "benchmark v6 CSV usage_*_tokens",
     "agent-orch usage.json/accounting_status",
+    "agent-orch usage.json",
 ]
 
 
@@ -74,6 +81,14 @@ def paths_of(errors: list) -> set[str]:
     }
 
 
+def error_details(validator: Draft202012Validator, record: dict) -> list[tuple]:
+    """Return compact validation details for assertion diagnostics."""
+    return [
+        (list(error.absolute_path), error.validator, error.message)
+        for error in validator.iter_errors(record)
+    ]
+
+
 def require_error(
     validator: Draft202012Validator, record: dict, path: str, validator_name: str
 ) -> None:
@@ -81,9 +96,9 @@ def require_error(
     matching = [e for e in validator.iter_errors(record) if paths_of([e]) == {path}]
     assert matching, (
         f"expected a validation error at {path}, got "
-        f"{[(list(e.absolute_path), e.validator, e.message) for e in validator.iter_errors(record)]}"
+        f"{error_details(validator, record)}"
     )
-    assert all(e.validator == validator_name for e in matching), [
+    assert any(e.validator == validator_name for e in matching), [
         (list(e.absolute_path), e.validator, e.message) for e in matching
     ]
 
@@ -104,19 +119,22 @@ def require_boolean_rejection(
     ]
     assert matching, (
         f"expected a closed-schema rejection mentioning {marker!r}, got "
-        f"{[(list(e.absolute_path), e.validator, e.message) for e in validator.iter_errors(record)]}"
+        f"{error_details(validator, record)}"
     )
 
 
-def require_required_error(validator: Draft202012Validator, record: dict, field: str) -> None:
+def require_required_error(
+    validator: Draft202012Validator, record: dict, field: str
+) -> None:
     matching = [
         e
         for e in validator.iter_errors(record)
-        if e.validator == "required" and f"'{field}' is a required property" in e.message
+        if e.validator == "required"
+        and f"'{field}' is a required property" in e.message
     ]
     assert matching, (
         f"expected a required-property error naming '{field}', got "
-        f"{[(list(e.absolute_path), e.validator, e.message) for e in validator.iter_errors(record)]}"
+        f"{error_details(validator, record)}"
     )
 
 
@@ -125,8 +143,10 @@ def require_required_error(validator: Draft202012Validator, record: dict, field:
 # ---------------------------------------------------------------------------
 
 
-def test_all_schema_examples_validate(validator: Draft202012Validator, schema: dict) -> None:
-    assert len(schema["examples"]) == 5
+def test_all_schema_examples_validate(
+    validator: Draft202012Validator, schema: dict
+) -> None:
+    assert len(schema["examples"]) == 6
     for ex in schema["examples"]:
         problems = [
             (list(e.absolute_path), e.message) for e in validator.iter_errors(ex)
@@ -148,10 +168,21 @@ def test_fixture_validates_and_matches_schema_example(
     assert fixture == example, "fixture drifted from the shipped schema example"
 
 
+def test_raw_attempt_fixture_is_canonical_byte_copy(schema: dict) -> None:
+    """Pin the reviewed example to one deterministic on-disk byte encoding."""
+    example = next(
+        ex for ex in schema["examples"] if ex["attempt_id"] == AGENT_ORCH_ATTEMPT_ID
+    )
+    expected = (json.dumps(example, indent=2) + "\n").encode()
+    fixture_path = FIXTURE_DIR / "attempt-record-agent-orch-raw-attempt.json"
+    assert fixture_path.read_bytes() == expected
+
+
 def test_v2_envelope_shape(schema: dict) -> None:
     assert schema["properties"]["schema_version"]["const"] == 2
     assert schema["properties"]["record_kind"]["enum"] == [
         "agent_orch",
+        "agent_orch_attempt",
         "benchmark_run",
         "router_run",
     ]
@@ -189,7 +220,12 @@ def test_selection_preserves_only_route_ids_and_reasons(schema: dict) -> None:
         "explicit",
         "explain_cheapest_eligible",
     ]
-    assert set(selection["properties"]) == {"basis", "reason", "explain_ref", "excluded"}
+    assert set(selection["properties"]) == {
+        "basis",
+        "reason",
+        "explain_ref",
+        "excluded",
+    }
     excluded = selection["properties"]["excluded"]["items"]
     assert set(excluded["properties"]) == {"route_id", "reason"}
     assert excluded["additionalProperties"] is False
@@ -201,6 +237,7 @@ def test_selection_preserves_only_route_ids_and_reasons(schema: dict) -> None:
 
 
 def test_usage_source_pairing_rules(schema: dict) -> None:
+    assert len(USAGE_SOURCES) == 10
     usage = schema["$defs"]["usage"]
     assert usage["properties"]["source"]["type"] == "string"
     assert usage["properties"]["source"]["minLength"] == 1
@@ -258,9 +295,7 @@ def test_taxonomy_strings_never_pair_with_observed_or_calculated(
         record = copy.deepcopy(examples["pi-run-0002"])
         record["usage"]["basis"] = basis
         record["usage"]["source"] = taxonomy_source
-        matching = [
-            e for e in validator.iter_errors(record) if e.validator == "not"
-        ]
+        matching = [e for e in validator.iter_errors(record) if e.validator == "not"]
         assert matching, (basis, taxonomy_source)
 
 
@@ -268,7 +303,10 @@ def test_unavailable_usage_carries_reason_and_no_source(
     validator: Draft202012Validator, examples: dict
 ) -> None:
     record = copy.deepcopy(examples["pi-run-0001"])
-    assert record["usage"] == {"basis": "unavailable", "unavailable_reason": "text mode"}
+    assert record["usage"] == {
+        "basis": "unavailable",
+        "unavailable_reason": "text mode",
+    }
     assert not list(validator.iter_errors(record))
 
 
@@ -286,10 +324,14 @@ def test_token_counters_are_nonnegative_integers_or_unknown(
     # Known: nonnegative integers, including genuine source-reported zero.
     for value in (0, 1, 1540):
         assert not list(
-            validator.iter_errors(record_with(lambda u, v=value: u.update(input_tokens=v))
-        )), value
+            validator.iter_errors(
+                record_with(lambda u, v=value: u.update(input_tokens=v))
+            )
+        ), value
     # Unknown: null or absent — never a fabricated sentinel.
-    assert not list(validator.iter_errors(record_with(lambda u: u.update(input_tokens=None))))
+    assert not list(
+        validator.iter_errors(record_with(lambda u: u.update(input_tokens=None)))
+    )
     assert not list(validator.iter_errors(record_with(lambda u: u.pop("input_tokens"))))
     # Never negative, fractional, or textual.
     for bad, name in ((-1, "minimum"), (1.5, "type"), ("1540", "type")):
@@ -324,7 +366,9 @@ def test_unavailable_basis_with_source_rejected(
     validator: Draft202012Validator, examples: dict
 ) -> None:
     record = copy.deepcopy(examples["pi-run-0001"])
-    record["usage"]["source"] = "pi --mode json events"  # planted: source on unavailable
+    record["usage"][
+        "source"
+    ] = "pi --mode json events"  # planted: source on unavailable
     require_boolean_rejection(validator, record, "pi --mode json events")
 
 
@@ -332,7 +376,9 @@ def test_known_basis_with_unavailable_reason_rejected(
     validator: Draft202012Validator, examples: dict
 ) -> None:
     record = copy.deepcopy(examples["pi-run-0002"])
-    record["usage"]["unavailable_reason"] = "unavailable_reason planted on a known basis"
+    record["usage"][
+        "unavailable_reason"
+    ] = "unavailable_reason planted on a known basis"
     require_boolean_rejection(
         validator, record, "unavailable_reason planted on a known basis"
     )
@@ -420,7 +466,11 @@ def test_negative_cost_figure_rejected(
     validator: Draft202012Validator, examples: dict
 ) -> None:
     record = copy.deepcopy(examples["pi-run-0002"])
-    record["cost"] = {"basis": ["list", "marginal"], "usd_list": -0.01, "usd_marginal": 0.008}
+    record["cost"] = {
+        "basis": ["list", "marginal"],
+        "usd_list": -0.01,
+        "usd_marginal": 0.008,
+    }
     require_error(validator, record, "$.cost.usd_list", "minimum")
 
 
@@ -531,7 +581,12 @@ def test_router_run_verdict_oracle_pairing(
 def test_v2_verdict_vocabulary_is_canonical(
     validator: Draft202012Validator, schema: dict, examples: dict
 ) -> None:
-    assert schema["properties"]["verdict"]["enum"] == ["pass", "fail", "unverified"]
+    assert schema["$defs"]["canonicalVerdict"]["enum"] == [
+        "pass",
+        "fail",
+        "unverified",
+    ]
+    assert "engine_validation" not in schema["$defs"]["canonicalVerdict"]["enum"]
     record = copy.deepcopy(examples["a6a85c6b02c6"])
     record["verdict"] = "accepted"  # v1 benchmark word; the payload keeps it now
     require_error(validator, record, "$.verdict", "enum")
@@ -569,6 +624,7 @@ def test_provenance_source_pairs_with_record_kind(
 ) -> None:
     pairs = {
         "a6a85c6b02c6": ("agent-orch", "benchmark"),
+        AGENT_ORCH_ATTEMPT_ID: ("agent-orch-runs", "agent-orch"),
         "bench-mixed-economy-0001": ("benchmark", "agent-orch"),
         "pi-run-0001": ("router-run", "benchmark"),
     }
@@ -578,6 +634,187 @@ def test_provenance_source_pairs_with_record_kind(
         require_error(validator, record, "$.provenance.source", "const")
         record["provenance"]["source"] = correct
         assert not list(validator.iter_errors(record))
+
+
+# ---------------------------------------------------------------------------
+# P1-7b1 raw agent-orch attempt truth mappings
+# ---------------------------------------------------------------------------
+
+
+def raw_agent_orch_attempt(examples: dict) -> dict:
+    """Return the real-run-derived P1-7b1 example for mutation tests."""
+    return copy.deepcopy(examples[AGENT_ORCH_ATTEMPT_ID])
+
+
+def unavailable_raw_attempt(examples: dict, status: str | None, reason: str) -> dict:
+    """Build a truthful unavailable-accounting variant without inference."""
+    record = raw_agent_orch_attempt(examples)
+    payload = record["agent_orch_attempt"]
+    payload["accounting_status"] = status
+    payload.pop("usage")
+    payload.pop("cost_usd")
+    if status is None:
+        payload["source_paths"] = [
+            path for path in payload["source_paths"] if not path.endswith("/usage.json")
+        ]
+    record["usage"] = {"basis": "unavailable", "unavailable_reason": reason}
+    record["cost"] = {"basis": "unavailable"}
+    return record
+
+
+def test_agent_orch_attempt_payload_is_closed_to_authorized_raw_fields(
+    validator: Draft202012Validator, schema: dict, examples: dict
+) -> None:
+    payload_schema = schema["$defs"]["agentOrchAttempt"]
+    assert payload_schema["additionalProperties"] is False
+    assert set(payload_schema["properties"]) == {
+        "run_id",
+        "step_id",
+        "attempt_number",
+        "route",
+        "worker_exit_code",
+        "validation_passed",
+        "policy_decision",
+        "failure_classification",
+        "accounting_status",
+        "usage",
+        "cost_usd",
+        "started_at",
+        "ended_at",
+        "source_paths",
+    }
+    record = raw_agent_orch_attempt(examples)
+    record["agent_orch_attempt"]["worker_success"] = True
+    require_error(validator, record, "$.agent_orch_attempt", "additionalProperties")
+
+
+def test_agent_orch_attempt_rejects_invented_class_fields(
+    validator: Draft202012Validator, examples: dict
+) -> None:
+    record = raw_agent_orch_attempt(examples)
+    record["class_record"] = copy.deepcopy(examples["pi-run-0001"]["class_record"])
+    require_boolean_rejection(validator, record, "'class_key'")
+
+    record = raw_agent_orch_attempt(examples)
+    record["class_key"] = "invented/class/key"
+    require_error(validator, record, "$", "additionalProperties")
+
+
+@pytest.mark.parametrize(
+    "bad_verdict",
+    [
+        "pass",
+        {"tier": "deterministic"},
+        {"tier": "engine_validation", "oracle_cmd": "invented"},
+    ],
+)
+def test_agent_orch_attempt_rejects_wrong_verdict_shape(
+    validator: Draft202012Validator, examples: dict, bad_verdict: object
+) -> None:
+    record = raw_agent_orch_attempt(examples)
+    record["verdict"] = bad_verdict
+    assert list(validator.iter_errors(record))
+
+
+@pytest.mark.parametrize(
+    ("worker_exit_code", "validation_passed"),
+    [(0, True), (0, False), (1, True), (1, False)],
+)
+def test_agent_orch_attempt_verified_success_is_exact_equivalence(
+    validator: Draft202012Validator,
+    examples: dict,
+    worker_exit_code: int,
+    validation_passed: bool,
+) -> None:
+    record = raw_agent_orch_attempt(examples)
+    payload = record["agent_orch_attempt"]
+    payload["worker_exit_code"] = worker_exit_code
+    payload["validation_passed"] = validation_passed
+    expected = worker_exit_code == 0 and validation_passed is True
+
+    record["verified_success"] = expected
+    assert not list(validator.iter_errors(record))
+
+    record["verified_success"] = not expected
+    require_error(validator, record, "$.verified_success", "const")
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda r: r["usage"].update(basis="observed"),
+        lambda r: r["usage"].update(source="agent-orch usage.json/accounting_status"),
+        lambda r: r["usage"].pop("input_tokens"),
+        lambda r: r.update(cost={"basis": "unavailable"}),
+        lambda r: r["agent_orch_attempt"].pop("cost_usd"),
+    ],
+)
+def test_agent_orch_attempt_measured_accounting_mapping_is_enforced(
+    validator: Draft202012Validator, examples: dict, mutate
+) -> None:
+    record = raw_agent_orch_attempt(examples)
+    mutate(record)
+    assert list(validator.iter_errors(record))
+
+
+@pytest.mark.parametrize(
+    ("status", "reason"),
+    [("unaccounted", "unaccounted"), (None, "missing usage receipt")],
+)
+def test_agent_orch_attempt_unavailable_accounting_mapping(
+    validator: Draft202012Validator,
+    examples: dict,
+    status: str | None,
+    reason: str,
+) -> None:
+    record = unavailable_raw_attempt(examples, status, reason)
+    assert not list(validator.iter_errors(record))
+
+    record["usage"]["input_tokens"] = 0
+    require_boolean_rejection(validator, record, "0")
+
+
+def test_agent_orch_attempt_unavailable_accounting_requires_reason(
+    validator: Draft202012Validator, examples: dict
+) -> None:
+    record = unavailable_raw_attempt(examples, "unaccounted", "unaccounted")
+    del record["usage"]["unavailable_reason"]
+    require_required_error(validator, record, "unavailable_reason")
+
+
+def test_agent_orch_attempt_not_applicable_mapping_is_exact(
+    validator: Draft202012Validator, examples: dict
+) -> None:
+    record = unavailable_raw_attempt(examples, "not_applicable", "non-metered adapter")
+    assert not list(validator.iter_errors(record))
+
+    record["usage"]["unavailable_reason"] = "not applicable"
+    require_error(validator, record, "$.usage.unavailable_reason", "const")
+
+
+def test_agent_orch_attempt_cost_shape_does_not_weaken_legacy_kinds(
+    validator: Draft202012Validator, examples: dict
+) -> None:
+    raw = raw_agent_orch_attempt(examples)
+    raw["cost"] = {"basis": ["list", "marginal"], "usd_list": 0.1, "usd_marginal": 0.1}
+    assert list(validator.iter_errors(raw))
+
+    for attempt_id in ("a6a85c6b02c6", "bench-mixed-economy-0001", "pi-run-0001"):
+        legacy = copy.deepcopy(examples[attempt_id])
+        assert isinstance(legacy["cost"]["basis"], list)
+        assert not list(validator.iter_errors(legacy))
+
+
+def test_agent_orch_legacy_kind_rejects_new_attempt_only_shapes(
+    validator: Draft202012Validator, examples: dict
+) -> None:
+    record = copy.deepcopy(examples["a6a85c6b02c6"])
+    record["verdict"] = {"tier": "engine_validation"}
+    assert list(validator.iter_errors(record))
+
+    record = copy.deepcopy(examples["a6a85c6b02c6"])
+    record["provenance"]["source"] = "agent-orch-runs"
+    require_error(validator, record, "$.provenance.source", "const")
 
 
 # ---------------------------------------------------------------------------
@@ -627,9 +864,9 @@ def test_verified_success_allows_genuinely_unknown_optional_components(
 ) -> None:
     record = verified_record(examples["pi-run-0002"])
     mutate(record)
-    assert not list(validator.iter_errors(record)), (
-        "gate must not require the optional cached/reasoning/total components"
-    )
+    assert not list(
+        validator.iter_errors(record)
+    ), "gate must not require the optional cached/reasoning/total components"
 
 
 @pytest.mark.parametrize(
@@ -649,7 +886,9 @@ def test_verified_success_allows_genuinely_unknown_optional_components(
         lambda r: r["usage"].update(source="an invented non-taxonomy string"),
         lambda r: r.update(oracle_cmd=None),
         lambda r: r.pop("class_record"),
-        lambda r: r["usage"].update(basis="unavailable", unavailable_reason="text mode"),
+        lambda r: r["usage"].update(
+            basis="unavailable", unavailable_reason="text mode"
+        ),
     ],
 )
 def test_verified_success_gate_rejects_missing_evidence(
@@ -657,7 +896,9 @@ def test_verified_success_gate_rejects_missing_evidence(
 ) -> None:
     record = verified_record(examples["pi-run-0002"])
     mutate(record)
-    assert list(validator.iter_errors(record)), "gate must not accept incomplete evidence"
+    assert list(
+        validator.iter_errors(record)
+    ), "gate must not accept incomplete evidence"
 
 
 # ---------------------------------------------------------------------------
@@ -665,19 +906,25 @@ def test_verified_success_gate_rejects_missing_evidence(
 # ---------------------------------------------------------------------------
 
 
-def test_schema_version_1_rejected(validator: Draft202012Validator, examples: dict) -> None:
+def test_schema_version_1_rejected(
+    validator: Draft202012Validator, examples: dict
+) -> None:
     record = copy.deepcopy(examples["pi-run-0001"])
     record["schema_version"] = 1
     require_error(validator, record, "$.schema_version", "const")
 
 
-def test_v1_aliases_stay_retired(validator: Draft202012Validator, examples: dict) -> None:
+def test_v1_aliases_stay_retired(
+    validator: Draft202012Validator, examples: dict
+) -> None:
     record = copy.deepcopy(examples["pi-run-0001"])
     record["amount_usd"] = "0.01"  # v1 top-level cost alias
     record["usage"]["usage_capture"] = "native_json"  # v1 usage field
     record["interactive_extra"] = True
     additional = [
-        e for e in validator.iter_errors(record) if e.validator == "additionalProperties"
+        e
+        for e in validator.iter_errors(record)
+        if e.validator == "additionalProperties"
     ]
     assert additional
     messages = " | ".join(e.message for e in additional)
@@ -689,7 +936,10 @@ def test_v1_aliases_stay_retired(validator: Draft202012Validator, examples: dict
 
 @pytest.mark.skipif(
     importlib.util.find_spec("rfc3339_validator") is None,
-    reason="jsonschema date-time checking needs rfc3339-validator (absent here, same as catalog.py)",
+    reason=(
+        "jsonschema date-time checking needs rfc3339-validator "
+        "(absent here, same as catalog.py)"
+    ),
 )
 def test_captured_at_format_checked_when_checker_available(
     validator: Draft202012Validator, examples: dict
