@@ -198,6 +198,7 @@ def test_v2_envelope_shape(schema: dict) -> None:
         "cost",
         "route",
         "supervisor_route",
+        "verified_success_reason",
         "class_record",
         "failure_class",
         "wall_clock_ms",
@@ -913,6 +914,36 @@ def test_verified_success_gate_accepts_complete_evidence(
     validator: Draft202012Validator, examples: dict
 ) -> None:
     assert not list(validator.iter_errors(verified_record(examples["pi-run-0002"])))
+
+
+def test_verified_success_reason_is_conditional_and_truthful(
+    validator: Draft202012Validator, examples: dict
+) -> None:
+    """Reasons are optional for legacy records but constrained on router runs."""
+    unattested = copy.deepcopy(examples["pi-run-0001"])
+    assert not list(validator.iter_errors(unattested))
+    unattested["verified_success_reason"] = "supervisor_route_unattested"
+    assert not list(validator.iter_errors(unattested))
+
+    attested = copy.deepcopy(examples["pi-run-0001"])
+    attested["supervisor_route"] = {
+        "model": "scratch-supervisor-model",
+        "effort": "low",
+        "harness": "cli",
+        "channel": "openrouter",
+    }
+    attested["verified_success_reason"] = "oracle_not_passed"
+    assert not list(validator.iter_errors(attested))
+
+    del attested["verified_success_reason"]
+    require_required_error(validator, attested, "verified_success_reason")
+
+    attested["verified_success_reason"] = "supervisor_route_unattested"
+    require_error(validator, attested, "$.verified_success_reason", "enum")
+
+    successful = verified_record(examples["pi-run-0002"])
+    successful["verified_success_reason"] = "evidence_incomplete"
+    require_boolean_rejection(validator, successful, "evidence_incomplete")
 
 
 @pytest.mark.parametrize(

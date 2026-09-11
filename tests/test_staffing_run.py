@@ -355,6 +355,7 @@ def _run_cli(
     role: str = IMPL_ROLE,
     class_string: str = IMPL_CLASS,
     route: str | None = None,
+    supervisor_route: str | None = None,
     workdir: Path | None = None,
     parent: str | None = None,
     escalation_reason: str | None = None,
@@ -367,8 +368,9 @@ def _run_cli(
     """Invoke ``doctor.main(["run", ...])`` with fakes and capture output.
 
     ``--role`` and ``--class`` are always supplied (the corrected contract
-    makes them mandatory); ``route`` selects the optional explicit route.
-    The fake subprocess boundary is always patched, so no invocation can
+    makes them mandatory); ``route`` selects the optional explicit route and
+    ``supervisor_route`` supplies the optional caller attestation. The fake
+    subprocess boundary is always patched, so no invocation can
     ever reach a real harness binary. Returns ``(exit_code, captured)``;
     the recorder carries every launched fake process.
     """
@@ -398,6 +400,8 @@ def _run_cli(
     ]
     if route is not None:
         argv += ["--route", route]
+    if supervisor_route is not None:
+        argv += ["--supervisor-route", supervisor_route]
     if workdir is not None:
         argv += ["--workdir", str(workdir)]
     if parent is not None:
@@ -620,6 +624,57 @@ def test_run_unknown_explicit_route_exits_3_and_never_launches(
     assert launcher.processes == []
     assert "does not match any route_id" in captured.err
     assert not scratch_state["attempts"].exists()
+
+
+@pytest.mark.parametrize(
+    ("supervisor_route", "retire_catalog"),
+    [
+        ("no-such-supervisor-route", False),
+        (FABLE_ROUTE, False),
+        (CODEX_ROUTE, True),
+    ],
+    ids=["unknown", "ineligible", "inactive"],
+)
+def test_run_invalid_supervisor_route_exits_3_before_worker(
+    monkeypatch,
+    capsys,
+    catalog_dir,
+    snapshot,
+    packet,
+    scratch_state,
+    supervisor_route,
+    retire_catalog,
+):
+    """Unknown, inactive, and ineligible attestations fail before launch."""
+    if retire_catalog:
+        routes_path = catalog_dir / "routes.yaml"
+        data = yaml.safe_load(routes_path.read_text(encoding="utf-8"))
+        for route in data["routes"]:
+            if route["route_id"] == supervisor_route:
+                route["status"] = "retired"
+        routes_path.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    launcher = LaunchRecorder()
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        supervisor_route=supervisor_route,
+        launcher=launcher,
+    )
+
+    assert code == 3
+    assert launcher.processes == []
+    assert not scratch_state["attempts"].exists()
+    if supervisor_route == "no-such-supervisor-route":
+        assert "does not match any route_id" in captured.err
+    elif retire_catalog:
+        assert "is not active" in captured.err
+    else:
+        assert "not eligible" in captured.err
+        assert "never_automatic" in captured.err
 
 
 # ---------------------------------------------------------------------------
@@ -1301,7 +1356,9 @@ def test_run_oracle_pass_uses_shlex_argv_workdir_and_no_shell(
     assert payload["verdict"] == "pass"
     assert payload["oracle_cmd"] == "oracle --label 'hello world'"
     assert payload["failure_class"] is None
-    assert payload["verified_success"] is False  # no supervisor route was sourced
+    assert payload["verified_success"] is False
+    assert payload["verified_success_reason"] == "supervisor_route_unattested"
+    assert "supervisor_route" not in payload
     assert (
         "exit_code=0, timed_out=False, error=none" in payload["provenance"]["notes"][-1]
     )
@@ -1311,6 +1368,40 @@ def test_run_oracle_pass_uses_shlex_argv_workdir_and_no_shell(
     assert launcher.calls[0][1]["shell"] is False
     assert launcher.calls[1][1]["shell"] is False
     assert launcher.calls[1][0] == ["oracle", "--label", "hello world"]
+
+
+def test_run_attested_pass_sets_verified_success_and_records_supervisor_route(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """A complete attested pass is verified and records catalog route evidence."""
+    launcher = SequencedLaunchRecorder(
+        [_worker_spec(), {"chunks": [b"oracle passed\n"], "exit_code": 0}]
+    )
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=PI_ROUTE,
+        supervisor_route=CODEX_ROUTE,
+        launcher=launcher,
+        extra=("--oracle", "oracle --check"),
+    )
+
+    assert code == 0
+    payload = _assert_output_matches_single_append(captured, scratch_state)
+    supervisor = _route_record(catalog_dir, CODEX_ROUTE)
+    assert payload["supervisor_route"] == {
+        "model": supervisor.model,
+        "effort": supervisor.effort,
+        "harness": supervisor.harness,
+        "channel": supervisor.channel,
+        "provider": "codex_cli",
+    }
+    assert payload["verified_success"] is True
+    assert "verified_success_reason" not in payload
+    assert len(launcher.calls) == 2
 
 
 def test_run_nonzero_oracle_is_fail_with_captured_evidence(
@@ -1334,6 +1425,7 @@ def test_run_nonzero_oracle_is_fail_with_captured_evidence(
         snapshot_path=snapshot,
         packet_path=packet,
         route=LUNA_ROUTE,
+        supervisor_route=CODEX_ROUTE,
         launcher=launcher,
         extra=("--oracle", "oracle --check"),
     )
@@ -1341,6 +1433,8 @@ def test_run_nonzero_oracle_is_fail_with_captured_evidence(
     assert code == 0
     payload = json.loads(captured.out)
     assert payload["verdict"] == "fail"
+    assert payload["verified_success"] is False
+    assert payload["verified_success_reason"] == "oracle_not_passed"
     assert payload["oracle_cmd"] == "oracle --check"
     assert payload["failure_class"] == "spec_rejected"
     assert (
@@ -1361,6 +1455,7 @@ def test_run_worker_failure_still_runs_oracle_once(
         snapshot_path=snapshot,
         packet_path=packet,
         route=LUNA_ROUTE,
+        supervisor_route=CODEX_ROUTE,
         launcher=launcher,
         extra=("--oracle", "oracle"),
     )
@@ -1369,6 +1464,7 @@ def test_run_worker_failure_still_runs_oracle_once(
     payload = json.loads(captured.out)
     assert payload["verdict"] == "pass"
     assert payload["verified_success"] is False
+    assert payload["verified_success_reason"] == "worker_dispatch_failed"
     assert "exit_code=7, timed_out=False" in payload["provenance"]["notes"][0]
     assert len(launcher.calls) == 2
 

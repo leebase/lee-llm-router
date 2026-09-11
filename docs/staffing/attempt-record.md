@@ -138,6 +138,32 @@ record still gets `verified_success: false`. Missing evidence is never
 invented, estimated, or backfilled to reach `true`; absence is recorded as
 `null` or by field omission — never fabricated.
 
+### `verified_success_reason` (exact field, P1-4 ruling 3)
+
+The run command records exactly one machine reason on every false
+`router_run` record it builds (Chief answer 4,
+`docs/staffing/chief-answers-p1-4.md`, ruling 3). A `verified_success: true`
+record never carries the field — the schema forbids it. The vocabulary is
+closed, and the run command evaluates the gates in this fixed order, naming
+the first blocking gap:
+
+- `supervisor_route_unattested` — no `--supervisor-route` attestation was
+  supplied, so the caller's supervisor identity is not observed evidence.
+- `worker_dispatch_failed` — the worker dispatch did not succeed (nonzero
+  exit or ceiling timeout).
+- `oracle_not_passed` — the oracle verdict is not `pass` (no oracle /
+  `unverified`, nonzero exit, launch failure, or ceiling timeout).
+- `evidence_incomplete` — a remaining route/usage/cost/duration evidence
+  gate does not hold.
+
+The field is conditionally present so the schema never weakens existing
+kinds: imports and legacy records without it stay valid, and no import
+branch requires or forbids it. One narrow strengthening applies only to
+`router_run` records: when `verified_success` is false and
+`supervisor_route` is non-null (attested), the reason is required and must
+be one of the three non-unattested values — an attested failed run records
+its truthful gap rather than claiming success.
+
 ## Failure classes (exact list)
 
 `failure_class` admits exactly five string values, proven by the P0-9a task
@@ -192,6 +218,7 @@ required only under the conditional rules below.
 | `record_kind` | enum `agent_orch` \| `agent_orch_attempt` \| `benchmark_run` \| `router_run` | Discriminant selecting the required source payload and `provenance.source` pairing. The new raw-attempt kind is distinct from the unchanged full-observation `agent_orch` kind. v2 drops `interactive`. |
 | `captured_at` | `string`, `format: date-time` | Aware UTC capture timestamp (analogous to `events.py` `ts` and crew-run `provenance.assembled_at`). |
 | `verified_success` | `boolean` | Legacy evidence gate, or the exact Agent-Orch exit/validation equivalence for `agent_orch_attempt`; see above. |
+| `verified_success_reason` | enum `supervisor_route_unattested` \| `worker_dispatch_failed` \| `oracle_not_passed` \| `evidence_incomplete` | Exact machine reason `verified_success` is false (P1-4 ruling 3); the run command records it on every false `router_run` record. Forbidden when `verified_success: true`; required and never `supervisor_route_unattested` on a false `router_run` record with a non-null `supervisor_route`. See above. |
 | `packet_id` | `string`, minLength 1 | Top-level packet fact (D209): the packet driving this attempt. Required for `router_run` records; imports predate packets and omit it. |
 | `parent_attempt_id` | `string` (same pattern) \| `null` | Link fact: parent attempt of an escalation. Nullable/optional for an initial attempt; an escalation requires both this and `escalation_reason`. |
 | `escalation_reason` | `string` minLength 1 \| `null` | Link fact: why this attempt escalates from `parent_attempt_id`. Nullable/optional for an initial attempt; an escalation requires both. |

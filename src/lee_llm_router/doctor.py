@@ -27,7 +27,8 @@ Commands:
                                   [--catalog-dir PATH]
                                   [--author-route ROUTE_ID] [--json]
     lee-llm-router run --role ROLE --class CLASS --packet FILE
-                       [--route ROUTE_ID] [--oracle CMD] [--workdir DIR]
+                       [--route ROUTE_ID] [--supervisor-route ROUTE_ID]
+                       [--oracle CMD] [--workdir DIR]
                        [--parent ATTEMPT_ID --escalation-reason R]
                        [--timeout S] [--at DATE] [--availability-file PATH]
                        [--catalog-dir PATH] [--json]
@@ -1713,15 +1714,20 @@ def _run_run(args: argparse.Namespace) -> int:
     Corrected D209 contract (Chief ruling,
     ``docs/staffing/chief-answers-p1-1.md``, quoted):
     ``lee-llm-router run --role R --class C --packet FILE [--route ID]
-    [--workdir DIR] [--parent ATTEMPT_ID --escalation-reason R]
-    [--timeout S] [--json]``. ``--role`` and ``--class`` are always
+    [--supervisor-route ROUTE_ID] [--workdir DIR]
+    [--parent ATTEMPT_ID --escalation-reason R] [--timeout S] [--json]``.
+    ``--role`` and ``--class`` are always
     required: they describe the work and drive eligibility (role scoping,
     never-automatic, headroom, don't-cheap-trial flag). Without ``--route``
     the selection basis is ``explain_cheapest_eligible`` for that role and
     class; with ``--route ID`` the basis is ``explicit`` and the route must
     be eligible under the same role/class eligibility path as ``catalog
     explain`` — an ineligible explicit route exits 3 with the explain
-    reason.
+    reason. With ``--supervisor-route ROUTE_ID`` the caller attests its own
+    route (P1-4 ruling 3); the id must resolve through the same
+    catalog/eligibility path (unknown/inactive/ineligible ids exit 3 and
+    launch nothing), and the attested run can reach ``verified_success:
+    true`` only when dispatch, oracle, and every evidence gate hold.
 
     P1-5a dispatches exactly one provider ``build_command`` argv through
     the watchdog subprocess boundary, with the packet text as the prompt,
@@ -1854,6 +1860,7 @@ def _run_run(args: argparse.Namespace) -> int:
             class_key=class_string,
             at_date=at_date,
             route_id=route_id,
+            supervisor_route_id=getattr(args, "supervisor_route", None),
             openrouter_snapshot_path=args.openrouter_snapshot,
             rate_table_path=args.rate_table,
         )
@@ -1914,6 +1921,7 @@ def _run_run(args: argparse.Namespace) -> int:
             oracle_cmd=getattr(args, "oracle", None),
             parent_attempt_id=parent,
             escalation_reason=escalation_reason,
+            supervisor_route=outcome.supervisor_route,
             attempt_id=getattr(args, "attempt_id", None),
         )
     except (LLMRouterError, OSError, TypeError, ValueError) as exc:
@@ -2597,6 +2605,21 @@ def main(argv: list[str] | None = None) -> None:
             "(an excluded route exits 3 and launches nothing). Without it, "
             "the first eligible route in catalog explain marginal-price "
             "order is selected (basis 'explain_cheapest_eligible')"
+        ),
+    )
+    run_parser.add_argument(
+        "--supervisor-route",
+        default=None,
+        dest="supervisor_route",
+        metavar="ROUTE_ID",
+        help=(
+            "Optional caller attestation of its own supervisor route "
+            "(P1-4 ruling 3): the id must name a known, active, currently "
+            "eligible catalog route under the same role/class path as "
+            "catalog explain (unknown/inactive/ineligible ids exit 3 and "
+            "launch nothing). When the attested run dispatches, the oracle "
+            "passes, and every evidence gate holds, verified_success is "
+            "true; otherwise verified_success_reason names the exact gap"
         ),
     )
     run_parser.add_argument(

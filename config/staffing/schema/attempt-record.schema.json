@@ -43,6 +43,15 @@
       "type": "boolean",
       "description": "True only for verdict 'pass' with the required route, usage, cost (when usage permits it), oracle, duration, and provenance evidence genuinely present (enforced by the allOf gate below): usage must be authoritative and non-unavailable with a source and the input/output token fields the current P0-4 pricing needs, while genuinely unknown optional cached_input_tokens/reasoning_tokens stay null (authoritative harness output may omit those optional components). total_tokens stays truthful: optional/null unless authoritatively reported or calculated. A source that reports success without complete evidence yields false — missing evidence is never invented to reach true. For record_kind 'agent_orch_attempt' (P1-7b1) verified_success instead means exactly the agent-orch validation gate — worker_exit_code == 0 and validation_passed == true, enforced as a schema equivalence — and the full oracle-evidence gate above is bypassed for that kind only; all other kinds keep the gate unchanged."
     },
+    "verified_success_reason": {
+      "description": "Exact machine reason verified_success is false (P1-4 ruling 3, docs/staffing/chief-answers-p1-4.md). The run command records it on every false router_run record it builds; a verified_success true record never carries one (forbidden by the first allOf gate below). Conditional presence keeps the committed ledger lines and every shipped import example valid: imports without the field stay valid. The vocabulary is closed, and a false router_run record with a non-null supervisor_route (attested) is required to carry a truthful non-unattested reason (last allOf gate below): supervisor_route_unattested (no attested supervisor route was supplied), worker_dispatch_failed (worker exit nonzero or ceiling timeout), oracle_not_passed (oracle verdict not pass: unverified, nonzero exit, launch failure, or ceiling timeout), evidence_incomplete (a remaining route/usage/cost/duration evidence gate does not hold).",
+      "enum": [
+        "supervisor_route_unattested",
+        "worker_dispatch_failed",
+        "oracle_not_passed",
+        "evidence_incomplete"
+      ]
+    },
     "packet_id": {
       "type": "string",
       "minLength": 1,
@@ -971,6 +980,63 @@
                 "type": "null"
               }
             }
+          }
+        }
+      }
+    },
+    {
+      "description": "P1-4 ruling 3: a verified_success true record never carries a verified_success_reason — a success has no reason field.",
+      "if": {
+        "required": [
+          "verified_success"
+        ],
+        "properties": {
+          "verified_success": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "verified_success_reason": false
+        }
+      }
+    },
+    {
+      "description": "P1-4 ruling 3: an attested (non-null supervisor_route) false router_run record must carry a truthful non-success reason, and that reason is never supervisor_route_unattested — the route was attested. Legacy and import kinds are untouched: records without the field (including every committed ledger line and shipped example) remain valid.",
+      "if": {
+        "allOf": [
+          {
+            "required": [
+              "record_kind",
+              "verified_success",
+              "supervisor_route"
+            ],
+            "properties": {
+              "record_kind": {
+                "const": "router_run"
+              },
+              "verified_success": {
+                "const": false
+              },
+              "supervisor_route": {
+                "$ref": "#/$defs/route"
+              }
+            }
+          }
+        ]
+      },
+      "then": {
+        "required": [
+          "verified_success_reason"
+        ],
+        "properties": {
+          "verified_success_reason": {
+            "enum": [
+              "worker_dispatch_failed",
+              "oracle_not_passed",
+              "evidence_incomplete"
+            ]
           }
         }
       }

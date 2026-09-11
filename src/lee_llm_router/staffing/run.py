@@ -44,6 +44,19 @@ from known counters and the selected dated price, validates it through the
 committed ledger API, appends it once, and prints the same record compactly.
 ``run`` never escalates; parent and escalation-reason are only recorded as a
 paired link supplied by its supervisor.
+
+P1-4 ruling 3 (``docs/staffing/chief-answers-p1-4.md``) adds the optional
+caller attestation ``--supervisor-route <route id>``: the caller attests its
+own route. The id is resolved through the same committed catalog/eligibility
+path as explicit ``--route`` selection — an unknown, inactive, or currently
+ineligible id is a refusal (exit 3) before anything is launched — and the
+accepted supervisor-route object (identity tuple plus observed provider) is
+recorded only when the caller supplies the attestation. When the attested
+dispatch succeeds, the oracle passes, and every existing evidence gate holds,
+``verified_success`` is true; otherwise the record carries exactly one
+``verified_success_reason`` from the closed P1-4 vocabulary
+(:data:`VERIFIED_SUCCESS_REASON_UNATTESTED` when unattested, otherwise the
+first blocking gap in a fixed documented order) — never a claimed success.
 """
 
 from __future__ import annotations
@@ -92,6 +105,10 @@ from lee_llm_router.watchdog import DEFAULT_MAX_MINUTES, DEFAULT_STALL_MINUTES
 __all__ = [
     "DEFAULT_POLL_SECONDS",
     "DEFAULT_RUN_TIMEOUT_SECONDS",
+    "VERIFIED_SUCCESS_REASON_EVIDENCE",
+    "VERIFIED_SUCCESS_REASON_ORACLE",
+    "VERIFIED_SUCCESS_REASON_UNATTESTED",
+    "VERIFIED_SUCCESS_REASON_WORKER_DISPATCH",
     "DispatchOutcome",
     "OracleOutcome",
     "RunDispatchError",
@@ -122,6 +139,21 @@ SELECTION_BASIS_EXPLICIT = "explicit"
 SELECTION_BASIS_EXPLAIN_CHEAPEST_ELIGIBLE = "explain_cheapest_eligible"
 """Selection basis for role/class selection: first eligible route in the
 ``catalog explain --json`` marginal-price order."""
+
+VERIFIED_SUCCESS_REASON_UNATTESTED = "supervisor_route_unattested"
+"""P1-4 ruling 3: exact ``verified_success_reason`` recorded on every false
+``router_run`` record built without a ``--supervisor-route`` attestation."""
+
+VERIFIED_SUCCESS_REASON_WORKER_DISPATCH = "worker_dispatch_failed"
+"""Attested but the worker dispatch failed: nonzero exit or ceiling timeout."""
+
+VERIFIED_SUCCESS_REASON_ORACLE = "oracle_not_passed"
+"""Attested with a successful dispatch but the oracle verdict is not ``pass``
+(no oracle / unverified, nonzero exit, launch failure, or ceiling timeout)."""
+
+VERIFIED_SUCCESS_REASON_EVIDENCE = "evidence_incomplete"
+"""Attested with a successful dispatch and a passing oracle, but a remaining
+route/usage/cost/duration evidence gate does not hold."""
 
 DEFAULT_RUN_TIMEOUT_SECONDS: float | None = None
 """Default wall-clock ceiling: none, so the dispatch boundary default applies
@@ -242,6 +274,12 @@ class SelectionOutcome:
     :data:`SELECTION_BASIS_EXPLAIN_CHEAPEST_ELIGIBLE`; ``excluded`` carries
     every excluded route's id and its exact explain reasons joined with
     ``"; "`` — explain evidence preserved verbatim, never re-judged.
+
+    ``supervisor_route`` is the accepted supervisor-route object
+    (``model``/``effort``/``harness``/``channel``/``provider``) built from the
+    catalog when the caller attests one via ``--supervisor-route`` (P1-4
+    ruling 3); ``None`` means the caller made no attestation and no
+    supervisor identity is invented.
     """
 
     route: StaffingRoute
@@ -250,6 +288,7 @@ class SelectionOutcome:
     explain_ref: str
     excluded: tuple[tuple[str, str], ...]
     pricing: EligibilityPrice | None = None
+    supervisor_route: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -356,6 +395,7 @@ def select_route(
     at_date: date | str,
     route_id: str | None = None,
     author_route_id: str | None = None,
+    supervisor_route_id: str | None = None,
     openrouter_snapshot_path: str | Path | None = None,
     rate_table_path: str | Path | None = None,
 ) -> SelectionOutcome:
@@ -382,6 +422,13 @@ def select_route(
         route_id: Explicit ``--route`` selection. The route must exist and
             be currently eligible; otherwise :class:`RunSelectionError`
             with exit code 3 and the exact explain reason.
+        supervisor_route_id: Optional ``--supervisor-route`` attestation
+            (P1-4 ruling 3): the caller attests its own route. The id must
+            name a known, active, currently eligible catalog route under
+            the same role/class path; otherwise
+            :class:`RunSelectionError` with exit code 3 and nothing is
+            launched. When resolved, the accepted supervisor-route object
+            is carried on the outcome.
         author_route_id: Optional author route id, forwarded to the
             eligibility evaluation (review/judge independence). ``run``
             itself never supplies one.
@@ -425,6 +472,21 @@ def select_route(
         f"--at {when.isoformat()} --json"
     )
 
+    # Optional caller attestation (P1-4 ruling 3): resolved through the same
+    # committed catalog/eligibility path, failing closed before any branch
+    # selects a worker route. ``None`` when the caller makes no attestation.
+    attested_supervisor = (
+        _resolve_supervisor_route(
+            catalog,
+            rows,
+            supervisor_route_id=supervisor_route_id,
+            class_key=class_key,
+            when=when,
+        )
+        if supervisor_route_id is not None
+        else None
+    )
+
     if route_id is not None:
         row = next((r for r in rows if r.route_id == route_id), None)
         if row is None:
@@ -450,6 +512,7 @@ def select_route(
             explain_ref=explain_ref,
             excluded=excluded,
             pricing=row.pricing,
+            supervisor_route=attested_supervisor,
         )
 
     eligible = sorted(
@@ -473,6 +536,7 @@ def select_route(
         explain_ref=explain_ref,
         excluded=excluded,
         pricing=selected.pricing,
+        supervisor_route=attested_supervisor,
     )
 
 
@@ -491,6 +555,62 @@ def selection_record(outcome: SelectionOutcome) -> dict[str, Any]:
             {"route_id": route_id, "reason": reason}
             for route_id, reason in outcome.excluded
         ],
+    }
+
+
+def _resolve_supervisor_route(
+    catalog: StaffingCatalog,
+    rows: tuple[EligibilityRow, ...],
+    *,
+    supervisor_route_id: str,
+    class_key: str,
+    when: date,
+) -> dict[str, Any]:
+    """Resolve an attested supervisor route id, failing closed (P1-4 r3).
+
+    The attested id must name a known catalog route, be ``active``, and be
+    currently eligible under exactly the same role/class explain path the
+    run itself uses — the same gate explicit ``--route`` selection applies.
+    Any failure raises :class:`RunSelectionError` (exit 3) before anything
+    is launched.
+
+    Returns:
+        The accepted supervisor-route object: the identity tuple
+        ``model``/``effort``/``harness``/``channel`` plus the observed
+        ``provider`` name — exactly the record's ``route`` object shape,
+        never an invented identity.
+    """
+    route = next(
+        (r for r in catalog.routes.routes if r.route_id == supervisor_route_id),
+        None,
+    )
+    if route is None:
+        raise RunSelectionError(
+            f"--supervisor-route {supervisor_route_id!r} does not match any "
+            "route_id in the routes catalog",
+            kind="unknown_route",
+        )
+    if route.status != "active":
+        raise RunSelectionError(
+            f"--supervisor-route {supervisor_route_id!r} is not active "
+            f"(status {route.status!r}); an attested supervisor route must be "
+            "an active catalog route",
+            kind="excluded",
+        )
+    row = next(r for r in rows if r.route_id == supervisor_route_id)
+    if not row.eligible:
+        raise RunSelectionError(
+            f"--supervisor-route {supervisor_route_id!r} is not eligible for "
+            f"class {class_key!r} at {when.isoformat()}: "
+            f"{'; '.join(row.reasons)}",
+            kind="excluded",
+        )
+    return {
+        "model": route.model,
+        "effort": route.effort,
+        "harness": route.harness,
+        "channel": route.channel,
+        "provider": _HARNESS_PROVIDER_NAMES.get(route.harness, route.harness),
     }
 
 
@@ -603,7 +723,9 @@ def build_attempt_record(
         oracle_cmd: Original command string, or ``None`` when no oracle ran.
         parent_attempt_id: Optional escalation parent.
         escalation_reason: Optional paired escalation reason.
-        supervisor_route: Optional observed supervisor route. It must not be
+        supervisor_route: Optional attested supervisor route object (P1-4
+            ruling 3), resolved against the committed catalog by
+            :func:`select_route` from ``--supervisor-route``. It must not be
             invented when the caller records no supervisor identity.
         attempt_id: Optional caller-supplied id; generated when absent.
         captured_at: Optional aware UTC capture timestamp, primarily for tests.
@@ -709,24 +831,54 @@ def build_attempt_record(
 
     # The v2 gate is intentionally conservative. The CLI does not claim to
     # observe its caller's route; direct callers may supply one only when it
-    # is real source evidence. Worker success is also required even though
-    # the schema cannot infer it from the provenance note.
-    record["verified_success"] = bool(
-        dispatch.exit_code == 0
-        and not dispatch.timed_out
-        and verdict == "pass"
-        and record["route"]
-        and record["class_record"]
-        and record.get("supervisor_route") is not None
-        and record["oracle_cmd"]
-        and record["failure_class"] is None
-        and usage.get("basis") != "unavailable"
-        and _known_token_count(usage, "input_tokens")
-        and _known_token_count(usage, "output_tokens")
-        and cost.get("basis") == ["list", "marginal"]
-        and isinstance(record["wall_clock_ms"], int)
-    )
+    # is real source evidence (P1-4 ruling 3: the ``--supervisor-route``
+    # attestation resolved against the committed catalog). Worker success is
+    # also required even though the schema cannot infer it from the
+    # provenance note. When the gate does not hold, exactly one
+    # ``verified_success_reason`` from the closed P1-4 vocabulary names the
+    # first blocking gap in the fixed order below; a true record never
+    # carries a reason (schema-forbidden).
+    reason = _verified_success_reason(dispatch, verdict, record, usage, cost)
+    record["verified_success"] = reason is None
+    if reason is not None:
+        record["verified_success_reason"] = reason
     return record
+
+
+def _verified_success_reason(
+    dispatch: DispatchOutcome,
+    verdict: str,
+    record: Mapping[str, Any],
+    usage: Mapping[str, Any],
+    cost: Mapping[str, Any],
+) -> str | None:
+    """The exact reason ``verified_success`` is false, or ``None`` when true.
+
+    Fixed truthful precedence (P1-4 ruling 3): the attestation gap first,
+    then the worker dispatch result, then the oracle verdict, then the
+    remaining evidence gate. The first blocking gap in this order names the
+    field; later gaps in the same record are never claimed instead, and a
+    passing run is never dressed up as a success it cannot evidence.
+    """
+    if record.get("supervisor_route") is None:
+        return VERIFIED_SUCCESS_REASON_UNATTESTED
+    if dispatch.timed_out or dispatch.exit_code != 0:
+        return VERIFIED_SUCCESS_REASON_WORKER_DISPATCH
+    if verdict != "pass":
+        return VERIFIED_SUCCESS_REASON_ORACLE
+    if (
+        not record["route"]
+        or not record["class_record"]
+        or not record["oracle_cmd"]
+        or record["failure_class"] is not None
+        or usage.get("basis") == "unavailable"
+        or not _known_token_count(usage, "input_tokens")
+        or not _known_token_count(usage, "output_tokens")
+        or cost.get("basis") != ["list", "marginal"]
+        or not isinstance(record["wall_clock_ms"], int)
+    ):
+        return VERIFIED_SUCCESS_REASON_EVIDENCE
+    return None
 
 
 def _failure_class(
