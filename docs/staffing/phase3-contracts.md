@@ -101,3 +101,16 @@ import owner-repository code.
   stop requires an authority boundary, unresolved contradiction, missing
   credential, material irreversible risk, or an external dependency that
   makes useful progress impossible, after reconciling D204–D213.
+
+## P3-6 acceptance ownership correction
+
+The first independent acceptance session correctly stopped after finding that
+the original A2 packet owned only the ledger primitive and its unit test while
+the D213-ruling-6 outcome also requires the production read/decide/append
+callers to hold that primitive. D213 authorizes concurrency control for the
+multiple import writers as the acceptance item; it does not restrict that item
+to two files. The narrower boundary was introduced by P3-0 packetization, not
+by Lee or the Chief. After reconciling D204–D213, the build supervisor therefore
+corrected A2 to own `staffing/import_evidence.py` and its benchmark and
+agent-orch tests, with a 520-line bound and a focused three-file test oracle.
+This is the one P3-6 rerun; the skill's fail-closed authority guard is unchanged.

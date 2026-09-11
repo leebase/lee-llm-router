@@ -19,14 +19,16 @@ Execute both packets through the installed `/supervise` protocol with crew
 ## A2 — Concurrent import-writer control
 
 - Kind: `impl`
-- Declared size: 2 files, at most 180 changed lines
+- Declared size: 4 files, at most 520 changed lines
 - Owned paths: `src/lee_llm_router/staffing/ledger.py`,
-  `tests/test_staffing_ledger.py`
+  `src/lee_llm_router/staffing/import_evidence.py`,
+  `tests/test_staffing_ledger.py`,
+  `tests/test_staffing_import_benchmark.py`,
+  `tests/test_staffing_import_agent_orch.py`
 - Requirement: concurrent processes importing attempts into the same per-host
   ledger cannot interleave, lose, or duplicate accepted records. Preserve the
   append-only format, existing idempotency semantics, schema validation, and
   serialized-writer behavior. Add a deterministic multi-process regression.
-- Oracle: `.venv/bin/pytest -q tests/test_staffing_ledger.py`
+- Oracle: `.venv/bin/pytest -q tests/test_staffing_ledger.py tests/test_staffing_import_benchmark.py tests/test_staffing_import_agent_orch.py`
 - Review: independent review required after the oracle passes.
 - Commit: `feat(staffing P3): serialize concurrent import writers`
-
