@@ -80,12 +80,37 @@ def test_usage_source_is_the_exact_taxonomy_string():
     assert CLAUDE_USAGE_SOURCE == ("claude -p --output-format stream-json result event")
 
 
-def test_governed_command_includes_stream_json_output_format():
+def test_governed_command_includes_stream_json_and_safe_permission_flags():
+    """P1-8: governed argv carries the documented safe noninteractive pair."""
     provider = ClaudeCodeCLIProvider()
 
     cmd = provider.build_command({"command": "claude", **CLAUDE_GOVERNED_CONFIG})
 
-    assert cmd == ["claude", "-p", "--output-format", "stream-json", "{prompt}"]
+    assert cmd == [
+        "claude",
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--permission-mode",
+        "acceptEdits",
+        "--permission-prompts",
+        "none",
+        "{prompt}",
+    ]
+
+
+def test_governed_command_contains_no_bypass_flag():
+    """The governed argv never carries any documented bypass form."""
+    provider = ClaudeCodeCLIProvider()
+
+    cmd = provider.build_command({"command": "claude", **CLAUDE_GOVERNED_CONFIG})
+
+    for forbidden in (
+        "bypassPermissions",
+        "--permission-mode=bypassPermissions",
+        "--dangerously-skip-permissions",
+    ):
+        assert forbidden not in cmd
 
 
 def test_governed_command_keeps_model_and_effort_before_the_format_pair():
@@ -105,6 +130,10 @@ def test_governed_command_keeps_model_and_effort_before_the_format_pair():
         "-p",
         "--output-format",
         "stream-json",
+        "--permission-mode",
+        "acceptEdits",
+        "--permission-prompts",
+        "none",
         "{prompt}",
     ]
 
@@ -122,6 +151,56 @@ def test_legacy_claude_and_codex_argv_are_unchanged():
     assert CodexCLIProvider().build_command(
         {"command": "codex", "model": "m", "json_flag": "--json"}
     ) == ["codex", "exec", "--json", "--model", "m", "{prompt}"]
+
+
+def test_permission_args_without_output_format_still_precede_the_prompt():
+    """The governed pair is prompt-adjacent even without governed capture."""
+    provider = ClaudeCodeCLIProvider()
+
+    cmd = provider.build_command(
+        {
+            "command": "claude",
+            "permission_args": ["--permission-mode", "acceptEdits"],
+        }
+    )
+
+    assert cmd == [
+        "claude",
+        "-p",
+        "--permission-mode",
+        "acceptEdits",
+        "{prompt}",
+    ]
+
+
+@pytest.mark.parametrize(
+    "bypass_args",
+    [
+        ["--permission-mode", "bypassPermissions"],
+        ["--permission-mode=bypassPermissions"],
+        ["--dangerously-skip-permissions"],
+    ],
+    ids=["mode_value", "mode_equals", "skip_flag"],
+)
+def test_permission_args_bypass_forms_are_rejected(bypass_args):
+    """The builder fails closed instead of ever emitting a bypass flag."""
+    provider = ClaudeCodeCLIProvider()
+
+    with pytest.raises(LLMRouterError) as exc_info:
+        provider.build_command({"command": "claude", "permission_args": bypass_args})
+
+    assert "permission bypass flag" in str(exc_info.value)
+
+
+def test_invalid_permission_args_type_is_rejected():
+    provider = ClaudeCodeCLIProvider()
+
+    with pytest.raises(LLMRouterError) as exc_info:
+        provider.build_command(
+            {"command": "claude", "permission_args": ["--permission-mode", 1]}
+        )
+
+    assert "'permission_args' must be a list of strings" in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------

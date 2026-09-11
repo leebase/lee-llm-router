@@ -898,6 +898,11 @@ def test_run_claude_governed_capture_argv_and_usage(
     assert "-p" in argv
     assert "--output-format" in argv
     assert argv[argv.index("--output-format") + 1] == "stream-json"
+    # P1-8: governed noninteractive editing flags, prompt still final.
+    assert argv[argv.index("--permission-mode") + 1] == "acceptEdits"
+    assert argv[argv.index("--permission-prompts") + 1] == "none"
+    assert "bypassPermissions" not in argv
+    assert "--dangerously-skip-permissions" not in argv
     assert argv[-1] == PACKET_TEXT
 
     payload = json.loads(captured.out)
@@ -969,6 +974,48 @@ def test_build_dispatch_command_codex_governed_sandbox_flags() -> None:
     assert "--full-auto" not in argv
     assert "--model" in argv
     assert argv[argv.index("--model") + 1] == "gpt-5.6-sol"
+    assert argv[-1] == "{prompt}"
+
+
+def test_build_dispatch_command_claude_governed_permission_flags() -> None:
+    """P1-8 regression: governed Claude dispatch accepts edits noninteractively.
+
+    Reproduces the live failure where an eligible Claude impl ``run`` in a
+    scratch workdir exited 1 in ~6s with empty stream-json stdout, made no
+    edit, and failed the oracle: the governed argv now carries the
+    documented safe permission flags ``--permission-mode acceptEdits``
+    plus ``--permission-prompts none`` while the stream-json usage capture
+    pair, the model/effort flags, and the trailing ``{prompt}`` placeholder
+    are all retained. No bypass flag is ever emitted.
+    """
+    route = StaffingRoute(
+        route_id="claude-edit-fixture",
+        model="claude-sonnet-5",
+        effort="high",
+        harness="claude",
+        channel="anthropic-sub",
+        dispatch_template="claude {prompt}",
+        usage_capture="claude_stream_json",
+        status="active",
+    )
+    argv = build_dispatch_command(route)
+    assert argv[0] == "claude"
+    assert "-p" in argv
+    assert "--output-format" in argv
+    assert argv[argv.index("--output-format") + 1] == "stream-json"
+    assert argv[argv.index("--permission-mode") + 1] == "acceptEdits"
+    assert argv[argv.index("--permission-prompts") + 1] == "none"
+    assert argv.index("--permission-mode") < argv.index("--permission-prompts")
+    assert "--model" in argv
+    assert argv[argv.index("--model") + 1] == "claude-sonnet-5"
+    assert "--effort" in argv
+    assert argv[argv.index("--effort") + 1] == "high"
+    for forbidden in (
+        "bypassPermissions",
+        "--permission-mode=bypassPermissions",
+        "--dangerously-skip-permissions",
+    ):
+        assert forbidden not in argv
     assert argv[-1] == "{prompt}"
 
 

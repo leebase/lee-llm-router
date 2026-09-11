@@ -24,12 +24,16 @@ Implements the selection-plus-dispatch foundation of the ``run`` command
   mode and captures usage through the accepted P1-4a parser; Codex forces
   ``json_flag: --json`` (the P1-4b governed capture note) and parses the
   JSONL receipt; Claude reuses the committed governed capture
-  (``--output-format stream-json`` + :func:`capture_claude_usage`).
+  (``--output-format stream-json``) and parses the result event through
+  :func:`capture_claude_usage`.
   Governed dispatch (P1-8) also grants implementation routes the minimum
   noninteractive editing capability: Pi receives an explicit bounded
   editing tool allowlist (no ``bash``), Codex receives the exec-level
-  writable-workspace sandbox and git-repo-check skip flags, and no
-  dangerous bypass flag is ever emitted.
+  writable-workspace sandbox and git-repo-check skip flags, and Claude
+  receives the documented noninteractive permission flags
+  (``--permission-mode acceptEdits --permission-prompts none``) so scoped
+  edits are accepted without an interactive host; no dangerous bypass
+  flag is ever emitted on any harness.
   Every other wired harness runs the same boundary and records
   ``usage.basis: unavailable`` with a specific reason — no parser ever
   invents tokens.
@@ -183,9 +187,11 @@ bounded allowlist built from pi's committed built-in tool set minus
 ``bash`` — file edit/create capability for scoped implementation files
 without shell escape. Pi's ``--mode json`` usage capture is unaffected."""
 
-#: Governed ``run`` capture reuses the committed Claude stream-json config
-#: (:data:`CLAUDE_GOVERNED_CONFIG`) verbatim, so ``claude -p`` emits the
-#: result event that ``codex_cli.capture_claude_usage`` parses.
+#: Governed ``run`` capture and noninteractive editing reuse the committed
+#: Claude config (:data:`CLAUDE_GOVERNED_CONFIG`) verbatim, so ``claude -p``
+#: emits the result event that ``codex_cli.capture_claude_usage`` parses
+#: and accepts scoped edits via ``--permission-mode acceptEdits`` with
+#: ``--permission-prompts none``; no bypass flag is ever emitted.
 
 
 class RunSelectionError(Exception):
@@ -776,8 +782,10 @@ def build_dispatch_command(route: StaffingRoute) -> list[str]:
     ``-s workspace-write --skip-git-repo-check`` sandbox flags for
     noninteractive edits in a non-git scratch workdir; Claude config
     reuses the committed ``CLAUDE_GOVERNED_CONFIG``
-    (``--output-format stream-json``) for the same reason. No dangerous
-    bypass flag is ever emitted.
+    (``--output-format stream-json`` plus the documented safe
+    noninteractive permission flags
+    ``--permission-mode acceptEdits --permission-prompts none``) for the
+    same reason. No dangerous bypass flag is ever emitted.
 
     Raises:
         RunDispatchError: When the route's harness has no wired provider,

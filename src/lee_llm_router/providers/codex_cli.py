@@ -23,11 +23,33 @@ CODEX_USAGE_SOURCE = "codex exec --json usage"
 # argv behind it is ``claude -p --output-format stream-json``.
 CLAUDE_USAGE_SOURCE = "claude -p --output-format stream-json result event"
 
-# Governed capture config for ``run`` (counterpart of the Codex
-# ``json_flag`` note): forces ``claude -p`` to emit the stream-json
-# result event that :func:`capture_claude_usage` parses. The provider
-# default stays null so legacy Claude argv contracts are untouched.
-CLAUDE_GOVERNED_CONFIG: dict[str, str] = {"output_format": "stream-json"}
+# Governed capture + noninteractive-edit config for ``run`` (counterpart
+# of the Codex ``json_flag``/``sandbox_args`` note): forces ``claude -p``
+# to emit the stream-json result event that :func:`capture_claude_usage`
+# parses, and grants the documented noninteractive permission flags a
+# headless implementation worker needs to accept scoped edits:
+# ``--permission-mode acceptEdits`` accepts file edits inside the
+# permission rules and ``--permission-prompts none`` never opens an
+# interactive prompt host (denials still fail closed). No bypass flag
+# (``bypassPermissions`` / ``--dangerously-skip-permissions``) is used or
+# ever emitted. The provider defaults stay null/empty so legacy Claude
+# argv contracts are untouched.
+CLAUDE_GOVERNED_CONFIG: dict[str, Any] = {
+    "output_format": "stream-json",
+    "permission_args": [
+        "--permission-mode",
+        "acceptEdits",
+        "--permission-prompts",
+        "none",
+    ],
+}
+
+#: P1-8 fail-closed guard: the governed run argv must never carry a
+#: permission bypass. ``--dangerously-skip-permissions`` is the documented
+#: bypass flag and ``bypassPermissions`` is the documented bypass mode
+#: value (also reachable as ``--permission-mode=bypassPermissions``).
+_CLAUDE_BYPASS_FLAG_TOKENS = ("--dangerously-skip-permissions",)
+_CLAUDE_BYPASS_VALUE_TOKEN = "bypassPermissions"
 
 # ``codex exec --json`` emits JSONL events; the successful
 # ``turn.completed`` receipt is the only accounting boundary. Interim
@@ -375,10 +397,12 @@ class ClaudeCodeCLIProvider(CodexCLIProvider):
     default_model_flag = "--model"
     default_output_flag = None
     default_prompt_flag = "-p"
-    # Governed capture (``run``) sets ``output_format: "stream-json"
+    # Governed capture (``run``) sets ``output_format: "stream-json"``
     # (see :data:`CLAUDE_GOVERNED_CONFIG`) so ``claude -p`` emits the
-    # stream-json result event that :func:`capture_claude_usage` parses.
-    # The default stays null so legacy argv contracts are untouched.
+    # stream-json result event that :func:`capture_claude_usage` parses,
+    # plus ``permission_args`` so the headless worker can accept scoped
+    # edits noninteractively. The defaults stay null/empty so legacy argv
+    # contracts are untouched.
     default_output_format: str | None = None
 
     def _resolve_output_format(self, config: dict[str, Any]) -> str | None:
@@ -388,9 +412,39 @@ class ClaudeCodeCLIProvider(CodexCLIProvider):
             self.default_output_format,
         )
 
+    def _resolve_permission_args(self, config: dict[str, Any]) -> list[str]:
+        """Return the governed permission argv fragment, fail-closed on bypass.
+
+        Governed ``run`` dispatch sets ``permission_args`` (the documented
+        safe noninteractive pair from :data:`CLAUDE_GOVERNED_CONFIG`) so
+        ``claude -p`` can accept scoped edits without an interactive host.
+        Any bypass flag or bypass mode value is rejected instead of
+        emitted.
+
+        Raises:
+            LLMRouterError: When the key is not a list of strings or any
+                element is a permission bypass flag/value.
+        """
+        args = config.get("permission_args", [])
+        if not isinstance(args, list) or any(not isinstance(arg, str) for arg in args):
+            raise LLMRouterError(
+                f"{self.name} provider key 'permission_args' must be a list "
+                "of strings",
+                failure_type=FailureType.PROVIDER_ERROR,
+            )
+        for arg in args:
+            if arg in _CLAUDE_BYPASS_FLAG_TOKENS or _CLAUDE_BYPASS_VALUE_TOKEN in arg:
+                raise LLMRouterError(
+                    f"{self.name} provider key 'permission_args' must never "
+                    f"contain a permission bypass flag: {arg!r}",
+                    failure_type=FailureType.PROVIDER_ERROR,
+                )
+        return args
+
     def validate_config(self, config: dict[str, Any]) -> None:
         super().validate_config(config)
         self._resolve_output_format(config)
+        self._resolve_permission_args(config)
 
     def build_command(
         self,
@@ -400,14 +454,21 @@ class ClaudeCodeCLIProvider(CodexCLIProvider):
     ) -> list[str]:
         """Return the Claude CLI dispatch command template as an argv list.
 
-        Mirrors the Codex builder, with one governed-capture addition:
-        when ``config['output_format']`` is set (governed capture passes
-        ``"stream-json"`` via :data:`CLAUDE_GOVERNED_CONFIG`), the pair
-        ``["--output-format", value]`` is inserted immediately before the
-        trailing ``{prompt}`` placeholder so the argv reads
-        ``claude -p --output-format stream-json {prompt}`` — the exact
-        command behind the :data:`CLAUDE_USAGE_SOURCE` taxonomy string.
-        The default stays null so legacy argv contracts are untouched.
+        Mirrors the Codex builder, with two governed-run additions, both
+        inserted immediately before the trailing ``{prompt}`` placeholder:
+
+        * when ``config['output_format']`` is set (governed capture passes
+          ``"stream-json"`` via :data:`CLAUDE_GOVERNED_CONFIG`), the pair
+          ``["--output-format", value]`` so the argv carries the stream-json
+          result event behind the :data:`CLAUDE_USAGE_SOURCE` taxonomy
+          string;
+        * ``config['permission_args']`` (the documented safe noninteractive
+          pair ``--permission-mode acceptEdits --permission-prompts none``
+          from :data:`CLAUDE_GOVERNED_CONFIG`) so a headless implementation
+          worker can accept scoped edits; bypass flags are rejected by
+          :meth:`_resolve_permission_args` and never emitted.
+
+        The defaults stay null/empty so legacy argv contracts are untouched.
 
         Args:
             config: Provider configuration mapping.
@@ -422,13 +483,17 @@ class ClaudeCodeCLIProvider(CodexCLIProvider):
             LLMRouterError: If the config is invalid.
         """
         output_format = self._resolve_output_format(config)
+        permission_args = self._resolve_permission_args(config)
         cmd = list(super().build_command(config, model=model, effort=effort))
+        tail: list[str] = []
         if output_format:
+            tail.extend(["--output-format", output_format])
+        tail.extend(permission_args)
+        if tail:
             if cmd and cmd[-1] == PROMPT_PLACEHOLDER:
-                cmd.insert(len(cmd) - 1, "--output-format")
-                cmd.insert(len(cmd) - 1, output_format)
+                cmd[len(cmd) - 1 : len(cmd) - 1] = tail
             else:
-                cmd.extend(["--output-format", output_format])
+                cmd.extend(tail)
         return cmd
 
     def _effort_args(self, effort: str) -> list[str]:
