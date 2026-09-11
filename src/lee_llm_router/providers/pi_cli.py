@@ -301,13 +301,14 @@ class PiCLIProvider:
         Args:
             config: Provider configuration mapping. All keys are optional;
                 when present, ``command``, ``provider``, ``model``,
-                ``thinking``, and ``effort`` must be non-empty strings.
+                ``thinking``, ``effort``, and ``tools`` must be non-empty
+                strings.
 
         Raises:
             LLMRouterError: With ``FailureType.PROVIDER_ERROR`` if a key
                 has the wrong type or is empty.
         """
-        for key in ("command", "provider", "model", "thinking", "effort"):
+        for key in ("command", "provider", "model", "thinking", "effort", "tools"):
             value = config.get(key)
             if value is None:
                 continue
@@ -336,9 +337,17 @@ class PiCLIProvider:
         (P1-4a). The argv is always a list; callers must never
         shell-quote it into one string.
 
+        Governed ``run`` dispatch (P1-8) supplies ``config["tools"]`` —
+        an explicit bounded editing allowlist such as
+        :data:`_RUN_EDIT_TOOLS` in ``staffing/run.py`` — because headless
+        implementation workers must edit their scoped files. The default
+        stays :data:`READ_ONLY_TOOLS` so every legacy argv contract is
+        untouched.
+
         Args:
             config: Provider configuration mapping. ``thinking`` (or the
-                ``effort`` alias) supplies the ``--thinking`` value.
+                ``effort`` alias) supplies the ``--thinking`` value;
+                ``tools`` overrides the ``--tools`` allowlist.
             model: Optional model override; beats ``config["model"]``.
             effort: Optional thinking-effort override; beats the config's
                 ``thinking``/``effort`` value.
@@ -354,6 +363,7 @@ class PiCLIProvider:
 
         command = config.get("command", self.default_command)
         provider = config.get("provider")
+        tools = config.get("tools", READ_ONLY_TOOLS)
         resolved_model = model if model is not None else config.get("model")
         resolved_thinking = effort
         if resolved_thinking is None:
@@ -378,7 +388,7 @@ class PiCLIProvider:
             "--no-prompt-templates",
             "--no-themes",
             "--tools",
-            READ_ONLY_TOOLS,
+            tools,
             "--system-prompt",
             SYSTEM_PROMPT,
         ]

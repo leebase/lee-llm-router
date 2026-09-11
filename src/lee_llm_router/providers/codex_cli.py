@@ -98,6 +98,15 @@ class CodexCLIProvider:
 
         self._resolve_response_format(config)
 
+        sandbox_args = config.get("sandbox_args", [])
+        if not isinstance(sandbox_args, list) or any(
+            not isinstance(arg, str) for arg in sandbox_args
+        ):
+            raise LLMRouterError(
+                f"{self.name} provider key 'sandbox_args' must be a list of strings",
+                failure_type=FailureType.PROVIDER_ERROR,
+            )
+
         text_field = config.get("text_field")
         if text_field is not None and not isinstance(text_field, str):
             raise LLMRouterError(
@@ -142,7 +151,12 @@ class CodexCLIProvider:
         ``"--json"``) to request the Codex JSONL usage receipt stream; the
         flag is inserted immediately after the subcommand so the relative
         order of the model, effort, output, prompt, and positional-prompt
-        elements is unchanged.
+        elements is unchanged. Governed ``run`` dispatch (P1-8) also sets
+        ``config['sandbox_args']`` (e.g. ``["-s", "workspace-write",
+        "--skip-git-repo-check"]``) — exec-level flags appended
+        immediately after the json flag so a headless implementation
+        worker can edit its scoped file in a non-git workdir. The default
+        stays empty so legacy argv contracts are untouched.
 
         Args:
             config: Provider configuration mapping.
@@ -190,6 +204,14 @@ class CodexCLIProvider:
             "json_flag",
             self.default_json_flag,
         )
+        sandbox_args = config.get("sandbox_args", [])
+        if not isinstance(sandbox_args, list) or any(
+            not isinstance(arg, str) for arg in sandbox_args
+        ):
+            raise LLMRouterError(
+                f"{self.name} provider key 'sandbox_args' must be a list of strings",
+                failure_type=FailureType.PROVIDER_ERROR,
+            )
         resolved_model = model or config.get("model") or ""
         resolved_effort = effort if effort is not None else config.get("effort")
 
@@ -198,6 +220,8 @@ class CodexCLIProvider:
             cmd.append(subcommand)
         if json_flag:
             cmd.append(json_flag)
+        if sandbox_args:
+            cmd.extend(sandbox_args)
         if resolved_model and model_flag:
             cmd.extend([model_flag, str(resolved_model)])
         if resolved_effort:

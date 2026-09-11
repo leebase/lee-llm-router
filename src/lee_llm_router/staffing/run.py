@@ -25,6 +25,11 @@ Implements the selection-plus-dispatch foundation of the ``run`` command
   ``json_flag: --json`` (the P1-4b governed capture note) and parses the
   JSONL receipt; Claude reuses the committed governed capture
   (``--output-format stream-json`` + :func:`capture_claude_usage`).
+  Governed dispatch (P1-8) also grants implementation routes the minimum
+  noninteractive editing capability: Pi receives an explicit bounded
+  editing tool allowlist (no ``bash``), Codex receives the exec-level
+  writable-workspace sandbox and git-repo-check skip flags, and no
+  dangerous bypass flag is ever emitted.
   Every other wired harness runs the same boundary and records
   ``usage.basis: unavailable`` with a specific reason — no parser ever
   invents tokens.
@@ -160,9 +165,23 @@ _CHANNEL_TO_PI_PROVIDER_ID: dict[str, str] = {
     channel: provider for provider, channel in HARNESS_PROVIDER_CHANNELS.items()
 }
 
-_CODEX_GOVERNED_CONFIG: dict[str, str] = {"json_flag": "--json"}
-"""P1-4b future note: governed ``run`` capture forces Codex to emit the
-JSONL usage receipt stream that ``codex_cli.capture_usage`` parses."""
+_CODEX_GOVERNED_CONFIG: dict[str, Any] = {
+    "json_flag": "--json",
+    "sandbox_args": ["-s", "workspace-write", "--skip-git-repo-check"],
+}
+"""P1-4b future note + P1-8 governed edit fix: governed ``run`` capture
+forces Codex to emit the JSONL usage receipt stream that
+``codex_cli.capture_usage`` parses (``json_flag``), and grants the
+exec-level flags a headless implementation worker needs to edit its
+scoped file: ``-s workspace-write`` for a writable workspace sandbox and
+``--skip-git-repo-check`` because scratch workdirs are not git
+repositories. No approval/sandbox bypass flag is used."""
+
+_RUN_EDIT_TOOLS = "read,edit,write,grep,find,ls"
+"""P1-8 governed Pi editing tools for ``run`` dispatch: an explicit
+bounded allowlist built from pi's committed built-in tool set minus
+``bash`` — file edit/create capability for scoped implementation files
+without shell escape. Pi's ``--mode json`` usage capture is unaffected."""
 
 #: Governed ``run`` capture reuses the committed Claude stream-json config
 #: (:data:`CLAUDE_GOVERNED_CONFIG`) verbatim, so ``claude -p`` emits the
@@ -749,10 +768,16 @@ def build_dispatch_command(route: StaffingRoute) -> list[str]:
     prompt on stdin at the subprocess boundary.
 
     Pi config carries the channel's committed provider id (e.g.
-    ``openrouter``); Codex config forces ``json_flag: --json`` so the
-    governed capture receives the JSONL usage receipt; Claude config
+    ``openrouter``) plus the P1-8 bounded editing tool allowlist
+    (:data:`_RUN_EDIT_TOOLS`, bash excluded) because governed
+    implementation dispatch must be able to edit its scoped file; Codex
+    config forces ``json_flag: --json`` so the governed capture receives
+    the JSONL usage receipt and appends the exec-level
+    ``-s workspace-write --skip-git-repo-check`` sandbox flags for
+    noninteractive edits in a non-git scratch workdir; Claude config
     reuses the committed ``CLAUDE_GOVERNED_CONFIG``
-    (``--output-format stream-json``) for the same reason.
+    (``--output-format stream-json``) for the same reason. No dangerous
+    bypass flag is ever emitted.
 
     Raises:
         RunDispatchError: When the route's harness has no wired provider,
@@ -767,7 +792,8 @@ def build_dispatch_command(route: StaffingRoute) -> list[str]:
     provider = provider_cls()
     if harness == "pi":
         config: dict[str, Any] = {
-            "provider": _pi_provider_id_for_channel(route.channel)
+            "provider": _pi_provider_id_for_channel(route.channel),
+            "tools": _RUN_EDIT_TOOLS,
         }
     elif harness == "codex":
         config = dict(_CODEX_GOVERNED_CONFIG)

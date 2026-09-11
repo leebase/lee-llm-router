@@ -28,6 +28,8 @@ import yaml
 
 from lee_llm_router.doctor import main as cli_main
 from lee_llm_router.staffing import load_staffing_catalog
+from lee_llm_router.staffing.catalog import Route as StaffingRoute
+from lee_llm_router.staffing.run import build_dispatch_command
 
 REPO_CONFIG_DIR = Path(__file__).resolve().parents[1] / "config" / "staffing"
 
@@ -795,10 +797,17 @@ def test_run_pi_dispatch_argv_and_usage(
     argv = proc.argv
     assert argv[0] == "pi"
     assert "--mode" in argv and "json" in argv
+    assert argv[argv.index("--mode") + 1] == "json"
     assert "--provider" in argv
     assert argv[argv.index("--provider") + 1] == "openrouter"
     assert "--model" in argv
     assert argv[argv.index("--model") + 1] == "z-ai/glm-5.3-flash"
+    # P1-8: governed impl dispatch grants the explicit bounded editing
+    # allowlist (no bash); JSON mode is retained for usage capture.
+    assert "--tools" in argv
+    tools = argv[argv.index("--tools") + 1]
+    assert tools == "read,edit,write,grep,find,ls"
+    assert "bash" not in tools
     # The packet text is substituted exactly once; no placeholder remains.
     assert argv[-1] == PACKET_TEXT
     assert "{prompt}" not in argv
@@ -839,6 +848,15 @@ def test_run_codex_dispatch_argv_and_usage(
     assert argv[0] == "codex"
     assert argv[1] == "exec"
     assert argv[2] == "--json"  # governed capture flag forced right after exec
+    # P1-8: writable sandbox + git-repo-check skip so the headless worker
+    # can edit its scoped file in a non-git scratch workdir.
+    assert argv[3] == "-s"
+    assert argv[4] == "workspace-write"
+    assert "--skip-git-repo-check" in argv
+    # No dangerous bypass flag is ever emitted.
+    assert "--dangerously-bypass-approvals-and-sandbox" not in argv
+    assert "--yolo" not in argv
+    assert "--full-auto" not in argv
     assert "--model" in argv
     assert argv[argv.index("--model") + 1] == "gpt-5.6-sol"
     assert "-c" in argv
@@ -892,6 +910,66 @@ def test_run_claude_governed_capture_argv_and_usage(
     assert usage["cached_input_tokens"] == 2
     assert usage["reasoning_tokens"] is None
     assert usage["total_tokens"] == 16
+
+
+def test_build_dispatch_command_pi_governed_edit_tools_retain_json_mode() -> None:
+    """P1-8 regression: governed Pi dispatch edits with bounded tools, JSON kept.
+
+    Reproduces the live defect where a Pi impl ``run`` exited 0 but made no
+    edit twice: the governed config now carries an explicit bounded editing
+    tool allowlist (no bash) while ``--mode json`` usage capture is
+    retained and the prompt stays the final argv element.
+    """
+    route = StaffingRoute(
+        route_id="pi-edit-fixture",
+        model="z-ai/glm-5.3-flash",
+        effort=None,
+        harness="pi",
+        channel="openrouter",
+        dispatch_template="pi {prompt}",
+        usage_capture="pi_json",
+        status="active",
+    )
+    argv = build_dispatch_command(route)
+    assert argv[0] == "pi"
+    assert argv[argv.index("--mode") + 1] == "json"
+    assert "--tools" in argv
+    tools = argv[argv.index("--tools") + 1]
+    assert tools == "read,edit,write,grep,find,ls"
+    assert "bash" not in tools
+    assert "--provider" in argv
+    assert argv[argv.index("--provider") + 1] == "openrouter"
+    assert argv[-1] == "{prompt}"
+
+
+def test_build_dispatch_command_codex_governed_sandbox_flags() -> None:
+    """P1-8 regression: governed Codex dispatch gains its sandbox flags.
+
+    Reproduces the live failure where ``codex exec`` in a non-git scratch
+    workdir exited 1 in ~0.5s with empty stdout: the governed config now
+    appends ``-s workspace-write --skip-git-repo-check`` immediately after
+    the forced ``--json`` capture flag, with no dangerous bypass flag and
+    the prompt still the final argv element.
+    """
+    route = StaffingRoute(
+        route_id="codex-edit-fixture",
+        model="gpt-5.6-sol",
+        effort="low",
+        harness="codex",
+        channel="openai-sub",
+        dispatch_template="codex exec {prompt}",
+        usage_capture="codex_jsonl",
+        status="active",
+    )
+    argv = build_dispatch_command(route)
+    assert argv[:5] == ["codex", "exec", "--json", "-s", "workspace-write"]
+    assert "--skip-git-repo-check" in argv
+    assert "--dangerously-bypass-approvals-and-sandbox" not in argv
+    assert "--yolo" not in argv
+    assert "--full-auto" not in argv
+    assert "--model" in argv
+    assert argv[argv.index("--model") + 1] == "gpt-5.6-sol"
+    assert argv[-1] == "{prompt}"
 
 
 # ---------------------------------------------------------------------------
