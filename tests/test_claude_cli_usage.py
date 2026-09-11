@@ -299,7 +299,9 @@ def test_top_level_usage_fallback_snake_aliases():
         "output_tokens": 4,
         "cached_input_tokens": None,
         "reasoning_tokens": None,
-        "total_tokens": 14,
+        # Astra final-review finding 2: absent cache components are unknown,
+        # never zero, so no total is manufactured from input + output alone.
+        "total_tokens": None,
     }
 
 
@@ -341,7 +343,9 @@ def test_top_level_usage_snake_cached_alias():
     result = capture_claude_usage(output)
 
     assert result["cached_input_tokens"] == 3
-    assert result["total_tokens"] == 17
+    # Cache creation is absent (unknown, never zero), so the total cannot
+    # be calculated from the components and stays unknown.
+    assert result["total_tokens"] is None
 
 
 def test_zero_usage_is_provider_reported_not_unknown():
@@ -820,7 +824,10 @@ def test_normal_multi_row_aggregation_cache_reads_only():
         "output_tokens": 30,
         "cached_input_tokens": 8,
         "reasoning_tokens": None,
-        "total_tokens": 188,
+        # Cache creation is absent from every row: unknown, never zero, so
+        # the total cannot be calculated from the components and stays
+        # unknown unless the source reports it.
+        "total_tokens": None,
     }
 
 
@@ -848,7 +855,10 @@ def test_normal_multi_row_aggregation_no_cache_components():
         "output_tokens": 30,
         "cached_input_tokens": None,
         "reasoning_tokens": None,
-        "total_tokens": 180,
+        # Astra final-review finding 2 reproducer shape: cache components
+        # absent from every row are unknown, never zero, so the total is
+        # never manufactured as input + output.
+        "total_tokens": None,
     }
 
 
@@ -930,6 +940,29 @@ def test_invalid_total_tokens_raises():
     with pytest.raises(LLMRouterError) as exc_info:
         capture_claude_usage(output)
     assert exc_info.value.failure_type == FailureType.CONTRACT_VIOLATION
+
+
+def test_astra_final_review_finding2_absent_cache_components_keep_total_unknown():
+    """Quoted Astra final-review finding 2 reproducer.
+
+    ``{"type":"result","usage":{"input_tokens":10,"output_tokens":2}}``
+    previously returned ``total_tokens=12`` by substituting zero for the
+    absent cache components; the total must stay unknown unless reported
+    or calculated from complete authoritative components.
+    """
+    result = capture_claude_usage(
+        '{"type":"result","usage":{"input_tokens":10,"output_tokens":2}}'
+    )
+
+    assert result == {
+        "basis": "provider_reported",
+        "source": CLAUDE_USAGE_SOURCE,
+        "input_tokens": 10,
+        "output_tokens": 2,
+        "cached_input_tokens": None,
+        "reasoning_tokens": None,
+        "total_tokens": None,
+    }
 
 
 def test_regression_usages_are_schema_valid():

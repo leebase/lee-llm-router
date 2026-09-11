@@ -81,8 +81,12 @@ from lee_llm_router.availability import AvailabilitySnapshot
 from lee_llm_router.crews import HARNESS_PROVIDER_CHANNELS
 from lee_llm_router.dispatch import run_dispatch
 from lee_llm_router.providers.antigravity_cli import (
+    AGY_GOVERNED_CONFIG,
     AGY_USAGE_SOURCE,
     AntigravityCLIProvider,
+)
+from lee_llm_router.providers.antigravity_cli import (
+    capture_usage as capture_agy_usage,
 )
 from lee_llm_router.providers.base import FailureType, LLMRouterError
 from lee_llm_router.providers.codex_cli import (
@@ -92,14 +96,26 @@ from lee_llm_router.providers.codex_cli import (
     ClaudeCodeCLIProvider,
     CodexCLIProvider,
     capture_claude_usage,
+    claude_aggregate_models,
 )
 from lee_llm_router.providers.codex_cli import (
     capture_usage as capture_codex_usage,
 )
-from lee_llm_router.providers.omp_cli import OMP_USAGE_SOURCE, OmpCLIProvider
+from lee_llm_router.providers.omp_cli import (
+    OMP_GOVERNED_CONFIG,
+    OMP_USAGE_SOURCE,
+    OmpCLIProvider,
+)
+from lee_llm_router.providers.omp_cli import (
+    capture_usage as capture_omp_usage,
+)
 from lee_llm_router.providers.opencode_cli import (
+    OPENCODE_GOVERNED_CONFIG,
     OPENCODE_USAGE_SOURCE,
     OpenCodeCLIProvider,
+)
+from lee_llm_router.providers.opencode_cli import (
+    capture_usage as capture_opencode_usage,
 )
 from lee_llm_router.providers.pi_cli import (
     PI_USAGE_SOURCE,
@@ -258,6 +274,15 @@ without shell escape. Pi's ``--mode json`` usage capture is unaffected."""
 
 _TOKENS_PER_1M = 1_000_000
 
+#: Harnesses whose authoritative ``total_tokens`` includes the cache-read
+#: and cache-write components (Pi and OMP sum ``cacheRead``/``cacheWrite``
+#: into ``totalTokens``; the Claude result event reports the same four
+#: components). Codex treats cached input as a subset of input with
+#: ``total = input + output``, and the proven agy receipt semantics keep
+#: cache counters outside ``total_tokens``, so neither can derive cache
+#: billing evidence from the total.
+_TOTAL_INCLUDES_CACHE_HARNESSES = frozenset({"pi", "omp", "claude"})
+
 
 class RunSelectionError(Exception):
     """A ``run`` selection refusal: nothing launched, the CLI exits 3.
@@ -336,7 +361,9 @@ class DispatchOutcome:
     timeout (``timed_out`` True); ``stdout``/``stderr`` are the captured
     streams decoded with ``errors="replace"``; ``usage`` is the schema-valid
     attempt-record v2 usage mapping from the accepted harness capture
-    function.
+    function; ``usage_models`` is the sorted distinct Claude ``modelUsage``
+    model ids when the receipt is a Claude result event with ``modelUsage``
+    evidence (billing-relevance evidence for cost; ``None`` otherwise).
     """
 
     argv: tuple[str, ...]
@@ -346,6 +373,7 @@ class DispatchOutcome:
     duration_seconds: float
     timed_out: bool
     usage: dict[str, Any]
+    usage_models: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -821,7 +849,10 @@ def _is_cached_input_subset(
 
 
 def _attempt_cost(
-    outcome: SelectionOutcome, usage: Mapping[str, Any]
+    outcome: SelectionOutcome,
+    usage: Mapping[str, Any],
+    *,
+    aggregate_models: tuple[str, ...] | None = None,
 ) -> tuple[dict[str, Any], str]:
     """Calculate list and marginal token cost from the selected P0-4 price.
 
@@ -842,6 +873,21 @@ def _attempt_cost(
     * Null/absent cached tokens do not bill cache and do not fabricate zeros.
     * Reasoning tokens remain an evidence subset of output and are never billed
       as an unknown extra counter.
+
+    Complete-billing-evidence gates (Astra final review finding 1):
+    * The selected dated price terms price exactly the selected route's
+      model. A usage aggregate that spans multiple models (the Claude
+      ``modelUsage`` ids surfaced as ``aggregate_models``) cannot be priced
+      at that single rate and fails closed as unavailable, as does a
+      single-model aggregate for a model other than the priced route model.
+    * For harnesses whose authoritative ``total_tokens`` includes the
+      cache-read and cache-write components (Pi, OMP, Claude), cost exists
+      only when the total is known and every token it counts is
+      representable as billing evidence: an unknown total could hide
+      cache-write tokens, and a positive remainder over the represented
+      input/output/cache-read components is exactly the unrepresentable
+      cache-write charge. Either gap fails closed as unavailable cost
+      rather than billing a subset of the receipt.
     """
     if usage.get("basis") == "unavailable":
         return {"basis": ["unavailable"]}, "usage basis is unavailable"
@@ -853,8 +899,40 @@ def _attempt_cost(
     if pricing is None:
         return {"basis": ["unavailable"]}, "selected route has no dated price"
 
+    if aggregate_models is not None:
+        if len(aggregate_models) > 1:
+            return {"basis": ["unavailable"]}, (
+                "aggregated multi-model usage cannot be priced at the "
+                "selected route's model rate"
+            )
+        if aggregate_models and aggregate_models[0] != outcome.route.model:
+            return {"basis": ["unavailable"]}, (
+                "usage model does not match the selected route's priced model"
+            )
+
     input_tokens = usage["input_tokens"]
     output_tokens = usage["output_tokens"]
+
+    if getattr(outcome.route, "harness", None) in _TOTAL_INCLUDES_CACHE_HARNESSES:
+        if not _known_token_count(usage, "total_tokens"):
+            return {"basis": ["unavailable"]}, (
+                "total_tokens is unknown, so unrepresented cache-write "
+                "tokens cannot be ruled out"
+            )
+        cached_known = _known_token_count(usage, "cached_input_tokens")
+        cached_represented = usage["cached_input_tokens"] if cached_known else 0
+        unrepresented = (
+            usage["total_tokens"] - input_tokens - output_tokens - cached_represented
+        )
+        if unrepresented < 0:
+            return {"basis": ["unavailable"]}, (
+                "total_tokens contradicts the represented billing components"
+            )
+        if unrepresented > 0:
+            return {"basis": ["unavailable"]}, (
+                "total_tokens includes cache-write tokens that the v2 "
+                "usage mapping cannot represent as billing evidence"
+            )
 
     cached_tokens: int | None = None
     if "cached_input_tokens" in usage and usage["cached_input_tokens"] is not None:
@@ -976,7 +1054,9 @@ def build_attempt_record(
     """
     route = outcome.route
     usage = dict(dispatch.usage)
-    cost, cost_note = _attempt_cost(outcome, usage)
+    cost, cost_note = _attempt_cost(
+        outcome, usage, aggregate_models=dispatch.usage_models
+    )
     verdict = _oracle_verdict(oracle)
     timestamp = captured_at or _utc_timestamp()
     channel_headroom = availability.headroom(route.channel)
@@ -1177,7 +1257,13 @@ def build_dispatch_command(route: StaffingRoute) -> list[str]:
     (``--output-format stream-json`` plus the documented safe
     noninteractive permission flags
     ``--permission-mode acceptEdits --permission-prompts none``) for the
-    same reason. No dangerous bypass flag is ever emitted.
+    same reason; the agy, OpenCode, and OMP configs apply their accepted
+    governed JSON flags (:data:`AGY_GOVERNED_CONFIG` →
+    ``--output-format json``, :data:`OPENCODE_GOVERNED_CONFIG` →
+    ``--format json``, :data:`OMP_GOVERNED_CONFIG` → ``--mode json``) so
+    each harness emits exactly the receipt its accepted P1-4d–f parser
+    captures (Astra final review finding 3). No dangerous bypass flag is
+    ever emitted.
 
     Raises:
         RunDispatchError: When the route's harness has no wired provider,
@@ -1199,6 +1285,12 @@ def build_dispatch_command(route: StaffingRoute) -> list[str]:
         config = dict(_CODEX_GOVERNED_CONFIG)
     elif harness == "claude":
         config = dict(CLAUDE_GOVERNED_CONFIG)
+    elif harness == "agy":
+        config = {"model": route.model, **AGY_GOVERNED_CONFIG}
+    elif harness == "opencode":
+        config = {"model": route.model, **OPENCODE_GOVERNED_CONFIG}
+    elif harness == "omp":
+        config = dict(OMP_GOVERNED_CONFIG)
     else:
         config = {}
     return provider.build_command(config, model=route.model, effort=route.effort)
@@ -1226,13 +1318,17 @@ def _capture_failure_usage(harness: str, exc: Exception) -> dict[str, Any]:
 def _usage_for_harness(harness: str, stdout_text: str) -> dict[str, Any]:
     """Schema-valid v2 usage from the harness's accepted capture function.
 
-    Pi and Codex have accepted P1-4a/P1-4b capture parsers and Claude the
-    committed P1-4c governed capture; every other wired harness records
-    ``unavailable`` with a specific reason. When a capture function raises
-    after the worker completes, the failure is recorded as unavailable usage
-    preserving the failure diagnostic so the completed worker is never
-    dropped from the attempt ledger. No parser estimates tokens from text,
-    context length, cost, or elapsed time.
+    Pi, Codex, Claude, agy, OpenCode, and OMP have accepted P1-4a–f capture
+    parsers; every wired harness records ``unavailable`` with a specific
+    reason only when its accepted parser fails closed. The dispatch argv for
+    agy, OpenCode, and OMP carries the accepted governed JSON flags
+    (:data:`AGY_GOVERNED_CONFIG`, :data:`OPENCODE_GOVERNED_CONFIG`,
+    :data:`OMP_GOVERNED_CONFIG`) so the harness emits exactly the receipt
+    its parser accepts. When a capture function raises after the worker
+    completes, the failure is recorded as unavailable usage preserving the
+    failure diagnostic so the completed worker is never dropped from the
+    attempt ledger. No parser estimates tokens from text, context length,
+    cost, or elapsed time.
     """
     try:
         if harness == "pi":
@@ -1241,6 +1337,12 @@ def _usage_for_harness(harness: str, stdout_text: str) -> dict[str, Any]:
             return capture_codex_usage(stdout_text)
         if harness == "claude":
             return capture_claude_usage(stdout_text)
+        if harness == "agy":
+            return capture_agy_usage(stdout_text)
+        if harness == "opencode":
+            return capture_opencode_usage(stdout_text)
+        if harness == "omp":
+            return capture_omp_usage(stdout_text)
     except Exception as exc:
         return _capture_failure_usage(harness, exc)
     return {
@@ -1319,9 +1421,10 @@ def dispatch_route(
 
     Returns:
         The :class:`DispatchOutcome` with the final argv, captured
-        stdout/stderr, exit code, wall-clock duration, timeout flag, and
-        the schema-valid usage from the harness's accepted capture
-        function.
+        stdout/stderr, exit code, wall-clock duration, timeout flag, the
+        schema-valid usage from the harness's accepted capture function,
+        and the Claude ``usage_models`` billing evidence when the receipt
+        carries ``modelUsage`` model ids.
 
     Raises:
         RunDispatchError: When the harness has no wired provider, a Pi
@@ -1385,6 +1488,10 @@ def dispatch_route(
         usage = _usage_for_harness(harness, stdout_text)
     except Exception as exc:
         usage = _capture_failure_usage(harness, exc)
+    # Claude ``modelUsage`` model ids are billing-relevance evidence: the
+    # selected dated price terms price exactly the route's model, so cost
+    # needs to know when the receipt aggregates several models.
+    usage_models = claude_aggregate_models(stdout_text) if harness == "claude" else None
     return DispatchOutcome(
         argv=tuple(argv),
         exit_code=exit_code,
@@ -1393,6 +1500,7 @@ def dispatch_route(
         duration_seconds=duration,
         timed_out=(exit_code == _TIMEOUT_EXIT_CODE),
         usage=usage,
+        usage_models=usage_models,
     )
 
 

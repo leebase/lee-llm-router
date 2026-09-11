@@ -27,9 +27,12 @@ import pytest
 import yaml
 
 from lee_llm_router.doctor import main as cli_main
+from lee_llm_router.providers.antigravity_cli import AGY_USAGE_SOURCE
+from lee_llm_router.providers.omp_cli import OMP_USAGE_SOURCE
+from lee_llm_router.providers.opencode_cli import OPENCODE_USAGE_SOURCE
 from lee_llm_router.staffing import load_staffing_catalog
 from lee_llm_router.staffing.catalog import Route as StaffingRoute
-from lee_llm_router.staffing.run import build_dispatch_command
+from lee_llm_router.staffing.run import _usage_for_harness, build_dispatch_command
 
 REPO_CONFIG_DIR = Path(__file__).resolve().parents[1] / "config" / "staffing"
 
@@ -68,6 +71,53 @@ CLAUDE_RESULT_STDOUT = json.dumps(
             "input_tokens": 10,
             "output_tokens": 4,
             "cache_read_input_tokens": 2,
+        },
+    }
+)
+AGY_RECEIPT_STDOUT = json.dumps(
+    {
+        "conversation_id": "recorded-conversation",
+        "status": "SUCCESS",
+        "response": "done",
+        "error": "",
+        "duration_seconds": 1.25,
+        "num_turns": 1,
+        "usage": {
+            "input_tokens": 100,
+            "output_tokens": 25,
+            "thinking_tokens": 10,
+            "cache_read_tokens": 50,
+            "total_tokens": 125,
+        },
+    }
+)
+OPENCODE_RECEIPT_STDOUT = json.dumps(
+    {
+        "type": "step_finish",
+        "part": {
+            "tokens": {
+                "input": 100,
+                "output": 25,
+                "reasoning": 5,
+                "cache": {"read": 40, "write": 3},
+            },
+            "cost": 0.01,
+        },
+    }
+)
+OMP_RECEIPT_STDOUT = json.dumps(
+    {
+        "type": "message_end",
+        "message": {
+            "role": "assistant",
+            "model": "openai/gpt-5.2",
+            "usage": {
+                "input": 100,
+                "output": 20,
+                "cacheRead": 5,
+                "cacheWrite": 2,
+                "totalTokens": 127,
+            },
         },
     }
 )
@@ -969,7 +1019,10 @@ def test_run_claude_governed_capture_argv_and_usage(
     assert usage["output_tokens"] == 4
     assert usage["cached_input_tokens"] == 2
     assert usage["reasoning_tokens"] is None
-    assert usage["total_tokens"] == 16
+    # Astra final-review finding 2: the receipt reports no totalTokens and
+    # no cache-creation count, so the total is never manufactured as
+    # input + output + cache read; it stays unknown.
+    assert usage["total_tokens"] is None
 
 
 def test_build_dispatch_command_pi_governed_edit_tools_retain_json_mode() -> None:
@@ -1072,6 +1125,179 @@ def test_build_dispatch_command_claude_governed_permission_flags() -> None:
     ):
         assert forbidden not in argv
     assert argv[-1] == "{prompt}"
+
+
+def test_build_dispatch_command_agy_governed_json_flag() -> None:
+    """Astra blocker 3: agy dispatch carries the accepted governed JSON flags.
+
+    Reproduces the finding where ``build_dispatch_command`` built an empty
+    configuration for the agy harness, so the worker emitted text instead
+    of the JSON receipt the accepted P1-4d parser captures. The argv now
+    applies ``AGY_GOVERNED_CONFIG`` (``--output-format json``) with the
+    route's model and effort, and the prompt stays the final element.
+    """
+    route = StaffingRoute(
+        route_id="agy-fixture",
+        model="gemini-3.8-flash",
+        effort="medium",
+        harness="agy",
+        channel="gemini-sub",
+        dispatch_template="agy {prompt}",
+        usage_capture="agy_json",
+        status="active",
+    )
+    argv = build_dispatch_command(route)
+    assert argv[0] == "agy"
+    assert "--model" in argv
+    assert argv[argv.index("--model") + 1] == "gemini-3.8-flash"
+    assert argv[argv.index("--effort") + 1] == "medium"
+    assert "--output-format" in argv
+    assert argv[argv.index("--output-format") + 1] == "json"
+    # The prompt placeholder stays the final element after the JSON flags.
+    assert argv[-2:] == ["-p", "{prompt}"]
+    assert argv.index("--output-format") < argv.index("-p")
+
+
+def test_build_dispatch_command_opencode_governed_json_flag() -> None:
+    """Astra blocker 3: OpenCode dispatch carries the governed ``--format json``.
+
+    Reproduces the finding where the OpenCode harness got an empty config
+    and the accepted P1-4e parser never received the JSON usage event. The
+    argv now applies ``OPENCODE_GOVERNED_CONFIG`` (``--format json``) with
+    the route's model, prompt placeholder still final.
+    """
+    route = StaffingRoute(
+        route_id="opencode-fixture",
+        model="opencode-go/deepseek-v4-flash",
+        effort=None,
+        harness="opencode",
+        channel="opencode-go",
+        dispatch_template="opencode run {prompt}",
+        usage_capture="opencode_json",
+        status="active",
+    )
+    argv = build_dispatch_command(route)
+    assert argv[0] == "opencode"
+    assert argv[1] == "run"
+    assert argv[argv.index("-m") + 1] == "opencode-go/deepseek-v4-flash"
+    assert "--format" in argv
+    assert argv[argv.index("--format") + 1] == "json"
+    # OpenCode exposes no effort flag; no effort argv is ever emitted.
+    assert "--effort" not in argv
+    assert argv[-1] == "{prompt}"
+    assert argv.index("--format") < len(argv) - 2
+
+
+def test_build_dispatch_command_omp_governed_json_mode() -> None:
+    """Astra blocker 3: OMP dispatch carries the governed ``--mode json``.
+
+    Reproduces the finding where the OMP harness got an empty config, so
+    the legacy text default ran and the accepted P1-4f parser never saw
+    the JSON event stream. The argv now applies ``OMP_GOVERNED_CONFIG``
+    (``--mode json``) with the route's model; omp exposes no effort flag.
+    """
+    route = StaffingRoute(
+        route_id="omp-fixture",
+        model="openai/gpt-5.2",
+        effort="low",
+        harness="omp",
+        channel="openrouter",
+        dispatch_template="omp {prompt}",
+        usage_capture="omp_json",
+        status="active",
+    )
+    argv = build_dispatch_command(route)
+    assert argv[0] == "omp"
+    assert argv[1] == "-p"
+    assert "--mode" in argv
+    assert argv[argv.index("--mode") + 1] == "json"
+    assert "--model" in argv
+    assert argv[argv.index("--model") + 1] == "openai/gpt-5.2"
+    assert "--effort" not in argv
+
+
+def _assert_unavailable_usage(usage: dict[str, Any], reason_fragment: str) -> None:
+    assert set(usage) == USAGE_KEYS | {"unavailable_reason"}
+    assert usage["basis"] == "unavailable"
+    assert reason_fragment in usage["unavailable_reason"]
+    assert usage["input_tokens"] is None
+    assert usage["output_tokens"] is None
+    assert usage["cached_input_tokens"] is None
+    assert usage["reasoning_tokens"] is None
+    assert usage["total_tokens"] is None
+
+
+def test_usage_for_harness_agy_valid_and_missing_receipt() -> None:
+    """Astra blocker 3: agy usage flows through the accepted P1-4d parser.
+
+    A valid ``agy -p --output-format json`` receipt yields provider-reported
+    counters with the exact Phase 1 taxonomy source; output without a
+    terminal usage receipt records unavailable with null counters — never
+    zeros or estimates.
+    """
+    usage = _usage_for_harness("agy", AGY_RECEIPT_STDOUT)
+    assert set(usage) == PROVIDER_REPORTED_KEYS
+    assert usage["source"] == AGY_USAGE_SOURCE
+    assert AGY_USAGE_SOURCE == "agy -p usage line (agent-orch worker.py)"
+    assert usage["input_tokens"] == 100
+    assert usage["output_tokens"] == 25
+    assert usage["cached_input_tokens"] == 50
+    assert usage["reasoning_tokens"] == 10
+    assert usage["total_tokens"] == 125
+
+    missing = _usage_for_harness("agy", "worker printed plain text only")
+    _assert_unavailable_usage(missing, "agy -p output")
+
+
+def test_usage_for_harness_opencode_valid_and_missing_usage() -> None:
+    """Astra blocker 3: OpenCode usage flows through the accepted P1-4e parser.
+
+    A valid ``opencode run --format json`` step_finish event yields
+    provider-reported counters with the exact Phase 1 taxonomy source;
+    output without a step_finish usage event records unavailable with null
+    counters.
+    """
+    usage = _usage_for_harness("opencode", OPENCODE_RECEIPT_STDOUT)
+    assert set(usage) == PROVIDER_REPORTED_KEYS
+    assert usage["source"] == OPENCODE_USAGE_SOURCE
+    assert OPENCODE_USAGE_SOURCE == "opencode run JSON usage event"
+    assert usage["input_tokens"] == 100
+    assert usage["output_tokens"] == 25
+    assert usage["cached_input_tokens"] == 40
+    assert usage["reasoning_tokens"] == 5
+    # OpenCode reports no native total; it is derived only from the
+    # reported input/output/reasoning components, cache kept separate.
+    assert usage["total_tokens"] == 130
+
+    missing = _usage_for_harness(
+        "opencode", json.dumps({"type": "text", "part": {"text": "hi"}})
+    )
+    _assert_unavailable_usage(missing, "no step_finish usage event")
+
+
+def test_usage_for_harness_omp_valid_and_missing_usage() -> None:
+    """Astra blocker 3: OMP usage flows through the accepted P1-4f parser.
+
+    A valid ``omp -p --mode json`` message_end event yields
+    provider-reported counters with the exact Phase 1 taxonomy source;
+    output without an assistant terminal event records unavailable with
+    null counters.
+    """
+    usage = _usage_for_harness("omp", OMP_RECEIPT_STDOUT)
+    assert set(usage) == PROVIDER_REPORTED_KEYS
+    assert usage["source"] == OMP_USAGE_SOURCE
+    assert OMP_USAGE_SOURCE == "omp -p --mode json events"
+    assert usage["input_tokens"] == 100
+    assert usage["output_tokens"] == 20
+    assert usage["cached_input_tokens"] == 5
+    assert usage["reasoning_tokens"] is None
+    # cacheWrite contributes to the reported total but has no v2 field.
+    assert usage["total_tokens"] == 127
+
+    missing = _usage_for_harness(
+        "omp", json.dumps({"type": "message_end", "message": {"role": "user"}})
+    )
+    _assert_unavailable_usage(missing, "no assistant message_end events")
 
 
 # ---------------------------------------------------------------------------
@@ -1970,6 +2196,11 @@ def test_attempt_cost_edge_case_null_cached_count(catalog_dir) -> None:
             "input_tokens": 4501,
             "output_tokens": 457,
             "cached_input_tokens": None,
+            # Pi's authoritative total includes the cache components; with
+            # the total reported and a zero remainder over the represented
+            # components, cache-write is arithmetically zero and cost stays
+            # known without fabricating a cached zero.
+            "total_tokens": 4958,
         },
     )
     assert cost_glm["basis"] == ["list", "marginal"]
@@ -2031,6 +2262,9 @@ def test_attempt_cost_edge_case_unavailable_price_evidence(catalog_dir) -> None:
             "input_tokens": 1000,
             "output_tokens": 200,
             "cached_input_tokens": 500,
+            # Pi's total includes the cache components; a zero remainder
+            # lets the cache-price gate be reached.
+            "total_tokens": 1700,
         },
     )
     assert cost == {"basis": ["unavailable"]}
@@ -2044,6 +2278,7 @@ def test_attempt_cost_edge_case_unavailable_price_evidence(catalog_dir) -> None:
             "input_tokens": 1000,
             "output_tokens": 200,
             "cached_input_tokens": 0,
+            "total_tokens": 1200,
         },
     )
     assert cost_zero["basis"] == ["list", "marginal"]

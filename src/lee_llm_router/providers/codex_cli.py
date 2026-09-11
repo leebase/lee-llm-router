@@ -1063,15 +1063,20 @@ def _usage_from_claude_model_usage(model_usage: dict[str, Any]) -> dict[str, Any
             row,
             subject=f"modelUsage row for model {model_id!r}",
         )
-        expected_row_total = (
-            input_value + output_value + (cached_val or 0) + (cache_write_val or 0)
-        )
-        if row_total_val is not None and row_total_val != expected_row_total:
-            raise LLMRouterError(
-                f"Claude result modelUsage row for model {model_id!r} "
-                "total contradicts its components",
-                failure_type=FailureType.CONTRACT_VIOLATION,
+        # A reported row total is validated only against complete row
+        # components: an absent cache component is unknown, never zero, so
+        # no contradiction can be derived across an unknown component.
+        row_cache_complete = cached_val is not None and cache_write_val is not None
+        if row_total_val is not None and row_cache_complete:
+            expected_row_total = (
+                input_value + output_value + cached_val + cache_write_val
             )
+            if row_total_val != expected_row_total:
+                raise LLMRouterError(
+                    f"Claude result modelUsage row for model {model_id!r} "
+                    "total contradicts its components",
+                    failure_type=FailureType.CONTRACT_VIOLATION,
+                )
 
         input_tokens += input_value
         output_tokens += output_value
@@ -1093,18 +1098,19 @@ def _usage_from_claude_model_usage(model_usage: dict[str, Any]) -> dict[str, Any
     else:
         aggregate_cached_tokens = None
 
-    cache_read_partial = 0 < cached_read_presence < num_rows
-    cache_write_partial = 0 < cache_write_presence < num_rows
-
-    if not cache_read_partial and not cache_write_partial:
-        calculated_total: int | None = (
-            input_tokens
-            + output_tokens
-            + (cached_tokens_sum if cached_read_presence == num_rows else 0)
-            + (cache_write_tokens_sum if cache_write_presence == num_rows else 0)
-        )
-    else:
-        calculated_total = None
+    # D209 usage truth: a total stays unknown unless the source reports it
+    # or it is calculated from complete authoritative components. A cache
+    # component absent from every row is unknown, never zero, so the
+    # component sum is a calculable total only when every contributing row
+    # reports both cache components.
+    cache_complete = (
+        cached_read_presence == num_rows and cache_write_presence == num_rows
+    )
+    calculated_total: int | None = (
+        input_tokens + output_tokens + cached_tokens_sum + cache_write_tokens_sum
+        if cache_complete
+        else None
+    )
 
     if row_total_presence == num_rows:
         if calculated_total is not None and reported_total_sum != calculated_total:
@@ -1133,8 +1139,11 @@ def _usage_from_claude_result_usage(usage: dict[str, Any]) -> dict[str, Any]:
     Fallback path used only when ``modelUsage`` is absent. Snake/camel
     aliases are reconciled; missing input or output counts fail closed
     as ``unavailable`` while present-but-invalid values raise. Cache
-    reads map to ``cached_input_tokens`` and cache creation contributes
-    to ``total_tokens``.
+    reads map to ``cached_input_tokens``; cache creation contributes to
+    ``total_tokens`` contradiction checking. ``total_tokens`` stays
+    unknown unless the source reports it or both cache components are
+    reported and the component sum is calculable — an absent cache
+    component is unknown, never zero.
 
     Args:
         usage: The result event's ``usage`` mapping.
@@ -1163,13 +1172,20 @@ def _usage_from_claude_result_usage(usage: dict[str, Any]) -> dict[str, Any]:
         usage,
         subject="usage",
     )
-    expected_total = (
-        input_value
-        + output_value
-        + (cached_value if cached_value is not None else 0)
-        + (cache_write_value if cache_write_value is not None else 0)
+    # D209 usage truth: the total stays unknown unless the source reports
+    # it or it is calculated from complete authoritative components.
+    # Absent cache components are unknown, never zero, so a calculated
+    # total requires both cache components to be reported.
+    calculated_total = (
+        input_value + output_value + cached_value + cache_write_value
+        if cached_value is not None and cache_write_value is not None
+        else None
     )
-    if total_value is not None and total_value != expected_total:
+    if (
+        total_value is not None
+        and calculated_total is not None
+        and total_value != calculated_total
+    ):
         raise LLMRouterError(
             "Claude result usage total contradicts its components",
             failure_type=FailureType.CONTRACT_VIOLATION,
@@ -1181,7 +1197,7 @@ def _usage_from_claude_result_usage(usage: dict[str, Any]) -> dict[str, Any]:
         "output_tokens": output_value,
         "cached_input_tokens": cached_value,
         "reasoning_tokens": None,
-        "total_tokens": total_value if total_value is not None else expected_total,
+        "total_tokens": (total_value if total_value is not None else calculated_total),
     }
 
 
@@ -1313,6 +1329,44 @@ def capture_claude_usage(output: str) -> dict[str, Any]:
             usage_result["total_tokens"] = event_total
 
     return usage_result
+
+
+def claude_aggregate_models(output: str) -> tuple[str, ...] | None:
+    """Return the distinct ``modelUsage`` model ids of the terminal result event.
+
+    Billing-relevance evidence for governed ``run`` cost (Astra final review
+    finding 1): the selected dated price terms price exactly the selected
+    route's model, so a usage aggregate that spans multiple models cannot
+    be priced at that single rate. The stream is read with the same lenient
+    parser as :func:`capture_claude_usage`; ``None`` is returned when the
+    stream has no parsable terminal result event or the event carries no
+    non-empty ``modelUsage`` mapping. This helper never raises: the usage
+    parser owns every contradiction and malformed-shape failure, and a
+    missing model fact must not mask the captured usage itself.
+
+    Args:
+        output: Captured stdout of a governed ``claude -p`` run — one
+            JSON object or JSON lines.
+
+    Returns:
+        The sorted distinct ``modelUsage`` model ids, or ``None`` when no
+        model evidence exists in the terminal result event.
+    """
+    events, _ = _parse_claude_events(output)
+    result_event = next(
+        (
+            event
+            for event in reversed(events)
+            if event.get("type") == _CLAUDE_RESULT_EVENT_TYPE
+        ),
+        None,
+    )
+    if result_event is None:
+        return None
+    model_usage = result_event.get("modelUsage")
+    if not isinstance(model_usage, dict) or not model_usage:
+        return None
+    return tuple(sorted(str(model_id) for model_id in model_usage))
 
 
 def _snippet(text: str, limit: int = 200) -> str:
