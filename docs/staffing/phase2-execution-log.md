@@ -23,3 +23,44 @@ Each staffed row records packet/role, explain and selected route, selection
 reason, exclusion summary, start/end, exit, provider usage truth, knowable
 cost, result, parent/escalation reason, and attempts to acceptance. Hand
 dispatches record the same fields as `run`.
+
+| Packet | Role | Explain / selection | Excluded summary | Route | Start / end | Exit | Usage / cost | Result |
+|---|---|---|---|---|---|---:|---|---|
+| P2-1 author 1 | impl | `catalog explain --role impl --class impl/deterministic/none/s/python --json`; Phase 2 implementation ladder first rung eligible | likely-exhausted 7; never-automatic 4; Gemini Pro role-scope 1; unpriced/pricing 1 (overlap) | `pi-z-ai-glm-5-3-flash-openrouter` | 08:25 / 08:35 | 590 s ceiling, process group terminated | `provider_reported`, `pi --mode json events`; input 231, output 78, cached 55,744, reasoning 0, total 56,053; provider event cost `$0.000872985` | implemented evidence source/tests; supervisor focused gate found 2 evidence-test blockers plus concurrent P2-6 blocker; repair required |
+| P2-2 author 1 | impl | `catalog explain --role impl --class impl/deterministic/none/xs/python --json`; ladder first rung eligible | same exclusions | `pi-z-ai-glm-5-3-flash-openrouter` | 08:25 / 08:35 | 590 s ceiling, process group terminated | `provider_reported`; input 718, output 2,454, cached 41,216, reasoning 52, total 44,388; `$0.00128559` | partial `proof.py`, no tests; timed-out packet escalates |
+| P2-6 author 1 | impl | same XS explain; ladder first rung eligible | same exclusions | `pi-z-ai-glm-5-3-flash-openrouter` | 08:25 / 08:35 | 590 s ceiling, process group terminated | `provider_reported`; input 22,467, output 54, cached 704, reasoning 1, total 23,225; `$0.001709085` | source/tests; supervisor reproducer: trailing whitespace incorrectly enters `platform_*`; repair required |
+| P2-7 author 1 | impl | same S explain; ladder first rung eligible | same exclusions | `pi-z-ai-glm-5-3-flash-openrouter` | 08:25 / 08:28 | 0 | `provider_reported`; input 517, output 799, cached 14,784, reasoning 73, total 16,100; `$0.000460285` | five fixtures + 42 tests; 37 passed/5 dependency skips pending P2-6 |
+
+## First-wave remediation and acceptance
+
+- P2-1 same-route repair corrected two supervisor-found test expectations
+  (16,549 provider-reported tokens, `$0.00042791`). The first broad DeepSeek
+  review reached the 590 s ceiling after 120,007 tokens/`$0.002965585208` and
+  no verdict. Supervisor/reviewer probes exposed route-global evidence and
+  benchmark double-count blockers. Luna XHigh escalation (parent P2-1 repair,
+  `non_convergence`) completed route-scoped, supersession-aware evidence:
+  83,237 provider-reported subscription tokens, `$0.0052596` execution
+  equivalent. Split DeepSeek re-review PASS, 0 blockers (96,540 tokens,
+  `$0.001985606176`). P2-1: 3 author attempts + 2 reviews, about 31 min.
+- P2-2 GLM ceiling partial escalated with `platform_timeout` to Luna XHigh;
+  101,797 provider-reported subscription tokens, `$0.0038252` execution
+  equivalent; 37 focused passed. DeepSeek PASS, 0 blockers; 2 hardening and 2
+  future concerns (55,841 tokens, `$0.001539377394`). P2-2: 2 authors + 1
+  review, about 18 min.
+- P2-6 same-route repair closed the whitespace reproducer (13,180 tokens,
+  `$0.000350455`). DeepSeek PASS, 0 blockers; invisible-control-character
+  handling is non-blocking hardening (45,060 tokens, `$0.001191192946`).
+  P2-6: 2 authors + 1 review, about 15 min.
+- P2-7 dependency rerun is 42 passed/0 skipped. DeepSeek PASS, 0 blockers
+  (74,847 tokens, `$0.001723904`). P2-7: 1 author + 1 review, about 10 min.
+- P2-0 full-suite check exposed 23 synthetic-catalog failures and the schema's
+  erroneous frozen `$5` value. GLM repair made the current value data,
+  finite/nonnegative schema, and typed catalog field (37,898 tokens,
+  `$0.001932`). Split DeepSeek review PASS, 0 blockers; 3 documentation/type
+  hardening notes (74,920 tokens, `$0.001918465362`). Reviewer full gate:
+  1,515 passed/1 skipped. P2-0: 1 repair + 1 review after supervisor contract
+  pass, about 10 min.
+- Supervisor read every owned diff. No out-of-scope worker change accepted.
+  OpenRouter metered receipts through this wave total `$0.018362441086`;
+  Luna subscription execution equivalents are separate, never counted as
+  metered spend. All usage above is provider-reported from Pi JSON events.

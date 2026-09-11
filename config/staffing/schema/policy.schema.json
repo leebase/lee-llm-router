@@ -52,9 +52,9 @@
       "uniqueItems": true
     },
     "human_escalation_cost_usd": {
-      "description": "Terminal human-escalation cost in USD for staffing ladder arithmetic (D211 ruling 3).",
+      "description": "Terminal human-escalation cost in USD for staffing ladder arithmetic (D211 ruling 3). The current value is the Chief's placeholder; Lee may change it, so the schema fixes only the shape: a finite nonnegative number (JSON Schema numbers are finite by construction; the loader additionally rejects the non-finite floats YAML permits, such as .nan and .inf). The current committed value lives in policy.yaml, not here.",
       "type": "number",
-      "const": 5.0
+      "minimum": 0
     }
   },
   "$defs": {

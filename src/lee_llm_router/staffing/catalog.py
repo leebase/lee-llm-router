@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import re
 import types
 from dataclasses import MISSING, dataclass, fields
@@ -262,12 +263,24 @@ class SpendCap:
 
 @dataclass(frozen=True)
 class PolicyCatalog:
+    """Typed policy document, including the D211 escalation-cost constant.
+
+    ``human_escalation_cost_usd`` is the terminal human-escalation cost in
+    USD used by staffing ladder arithmetic when automated rungs are
+    exhausted (D211 ruling 3). The current committed value is the Chief's
+    placeholder and Lee may change it, so the schema fixes only the shape
+    (finite nonnegative number); this field exposes the loaded value so
+    Phase 2 consumers read it from the frozen catalog without raw YAML
+    access. Shape only; no decision logic.
+    """
+
     never_automatic: tuple[NeverAutomaticRule, ...]
     role_scoped: tuple[RoleScopedRule, ...]
     role_class: tuple[RoleClassEntry, ...]
     role_floors: tuple[RoleFloorRecord, ...]
     reviewer_independence: tuple[ReviewIndependenceRule, ...]
     spend_caps: tuple[SpendCap, ...]
+    human_escalation_cost_usd: float
 
 
 @dataclass(frozen=True)
@@ -577,6 +590,22 @@ def _build_terms(data: Mapping[str, Any]) -> TermsCatalog:
 
 
 def _build_policy(data: Mapping[str, Any]) -> PolicyCatalog:
+    cost = data["human_escalation_cost_usd"]
+    # The schema (minimum: 0, type: number) rejects negatives and non-numbers,
+    # but YAML permits non-finite floats (.nan/.inf) that jsonschema's numeric
+    # keywords cannot see, so finiteness is enforced here at the loader boundary.
+    if (
+        isinstance(cost, bool)
+        or not isinstance(cost, (int, float))
+        or not math.isfinite(cost)
+        or cost < 0
+    ):
+        raise StaffingCatalogError(
+            "staffing catalog document 'policy': 'human_escalation_cost_usd' "
+            f"must be a finite nonnegative number (USD, D211), got {cost!r}",
+            document="policy",
+            path="$.human_escalation_cost_usd",
+        )
     return PolicyCatalog(
         never_automatic=_build_tuple(
             NeverAutomaticRule, data["never_automatic"], "$.never_automatic"
@@ -590,6 +619,7 @@ def _build_policy(data: Mapping[str, Any]) -> PolicyCatalog:
             "$.reviewer_independence",
         ),
         spend_caps=_build_tuple(SpendCap, data["spend_caps"], "$.spend_caps"),
+        human_escalation_cost_usd=cost,
     )
 
 

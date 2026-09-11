@@ -170,6 +170,7 @@ def policy_doc() -> dict:
                 "source": "scratch fixture policy",
             }
         ],
+        "human_escalation_cost_usd": 5.00,
     }
 
 
@@ -411,6 +412,7 @@ def test_policy_document_types(catalog_dir: Path) -> None:
     assert policy.role_floors[0].effective_from == "2026-01-01"
     assert policy.reviewer_independence[0].fresh_eyes_mode == "fresh-eyes-preferred"
     assert policy.spend_caps[0].cap == 50
+    assert policy.human_escalation_cost_usd == 5.00
 
 
 def test_classes_document_types(catalog_dir: Path) -> None:
@@ -715,6 +717,117 @@ def test_unknown_field_inside_crew_worker_routes_rejected(tmp_path: Path) -> Non
 # ---------------------------------------------------------------------------
 # Other stable failure modes
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# human_escalation_cost_usd (D211): shape is schema-fixed (finite nonnegative
+# number); the value itself is the Chief's placeholder and Lee may change it.
+# ---------------------------------------------------------------------------
+
+
+def test_human_escalation_cost_placeholder_value_loads(catalog_dir: Path) -> None:
+    """The committed placeholder (5.00) loads into the frozen catalog."""
+    policy = load_staffing_catalog(catalog_dir).policy
+    assert isinstance(policy, PolicyCatalog)
+    assert policy.human_escalation_cost_usd == 5.0
+    assert isinstance(policy.human_escalation_cost_usd, float)
+
+
+@pytest.mark.parametrize("value", [0, 0.0, 1, 12.5, 250, 1000000])
+def test_human_escalation_cost_accepts_other_nonnegative_finite_values(
+    tmp_path: Path, value: object
+) -> None:
+    """Any finite nonnegative number is schema-valid (Lee may change it)."""
+    doc = policy_doc()
+    doc["human_escalation_cost_usd"] = value
+    write_docs(tmp_path, {"policy": doc})
+    policy = load_staffing_document("policy", tmp_path / "policy.yaml")
+    assert policy.human_escalation_cost_usd == value
+
+
+@pytest.mark.parametrize("value", [-1, -0.01, -5.0, -1e9])
+def test_human_escalation_cost_negative_rejected_by_schema(
+    tmp_path: Path, value: object
+) -> None:
+    doc = policy_doc()
+    doc["human_escalation_cost_usd"] = value
+    write_docs(tmp_path, {"policy": doc})
+    with pytest.raises(StaffingCatalogError) as excinfo:
+        load_staffing_document("policy", tmp_path / "policy.yaml")
+    assert excinfo.value.document == "policy"
+    assert excinfo.value.path == "$.human_escalation_cost_usd"
+    assert "minimum" in str(excinfo.value)
+    assert excinfo.value.failure_type == FailureType.CONTRACT_VIOLATION
+
+
+@pytest.mark.parametrize("value", ["5", "five", True, False, None, [5], {"usd": 5}])
+def test_human_escalation_cost_non_number_rejected_by_schema(
+    tmp_path: Path, value: object
+) -> None:
+    doc = policy_doc()
+    doc["human_escalation_cost_usd"] = value
+    write_docs(tmp_path, {"policy": doc})
+    with pytest.raises(StaffingCatalogError) as excinfo:
+        load_staffing_document("policy", tmp_path / "policy.yaml")
+    assert excinfo.value.document == "policy"
+    assert excinfo.value.path == "$.human_escalation_cost_usd"
+    assert "is not of type 'number'" in str(excinfo.value)
+    assert excinfo.value.failure_type == FailureType.CONTRACT_VIOLATION
+
+
+@pytest.mark.parametrize(
+    ("raw", "label", "message_fragment"),
+    [
+        # NaN and +inf pass jsonschema's numeric keywords (all comparisons are
+        # False) and reach the loader's finite guard; -inf is rejected earlier
+        # by the schema's minimum keyword.
+        ("human_escalation_cost_usd: .nan\n", "nan", "finite nonnegative number"),
+        ("human_escalation_cost_usd: .inf\n", "+inf", "finite nonnegative number"),
+        ("human_escalation_cost_usd: -.inf\n", "-inf", "minimum of 0"),
+    ],
+)
+def test_human_escalation_cost_non_finite_rejected(
+    tmp_path: Path, raw: str, label: str, message_fragment: str
+) -> None:
+    """YAML permits non-finite floats the schema cannot see; the loader
+    boundary rejects them so the catalog only ever carries finite USD."""
+    doc = policy_doc()
+    lines = yaml.safe_dump(doc).splitlines(keepends=True)
+    # Replace the placeholder line with the non-finite literal under test.
+    replaced = [
+        raw if line.startswith("human_escalation_cost_usd:") else line for line in lines
+    ]
+    (tmp_path / "policy.yaml").write_text("".join(replaced), encoding="utf-8")
+    assert label  # each literal variant exercises the same rejection path
+    with pytest.raises(StaffingCatalogError) as excinfo:
+        load_staffing_document("policy", tmp_path / "policy.yaml")
+    assert excinfo.value.document == "policy"
+    assert excinfo.value.path == "$.human_escalation_cost_usd"
+    assert message_fragment in str(excinfo.value)
+    assert excinfo.value.failure_type == FailureType.CONTRACT_VIOLATION
+
+
+def test_human_escalation_cost_missing_rejected_by_schema(tmp_path: Path) -> None:
+    doc = policy_doc()
+    del doc["human_escalation_cost_usd"]
+    write_docs(tmp_path, {"policy": doc})
+    with pytest.raises(StaffingCatalogError) as excinfo:
+        load_staffing_document("policy", tmp_path / "policy.yaml")
+    assert excinfo.value.document == "policy"
+    assert "'human_escalation_cost_usd' is a required property" in str(excinfo.value)
+    assert excinfo.value.path == "$"
+    assert excinfo.value.failure_type == FailureType.CONTRACT_VIOLATION
+
+
+def test_human_escalation_cost_unknown_sibling_field_rejected(tmp_path: Path) -> None:
+    """Strict unknown-field rejection still applies alongside the new field."""
+    doc = policy_doc()
+    doc["escalation_cost_note"] = "no such field"
+    write_docs(tmp_path, {"policy": doc})
+    with pytest.raises(StaffingCatalogError) as excinfo:
+        load_staffing_document("policy", tmp_path / "policy.yaml")
+    assert excinfo.value.document == "policy"
+    assert excinfo.value.path == "$.escalation_cost_note"
 
 
 def test_missing_document_raises_stable_error(tmp_path: Path) -> None:
