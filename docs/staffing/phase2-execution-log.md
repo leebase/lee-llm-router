@@ -64,3 +64,37 @@ dispatches record the same fields as `run`.
   OpenRouter metered receipts through this wave total `$0.018362441086`;
   Luna subscription execution equivalents are separate, never counted as
   metered spend. All usage above is provider-reported from Pi JSON events.
+
+## P2-3 — Ladder arithmetic
+
+- `catalog explain --role impl --class impl/deterministic/none/s/python
+  --json` selected the eligible GLM/Pi OpenRouter first rung; exclusions were
+  likely-exhausted 7, never-automatic 4, Gemini Pro role-scope 1, and one
+  unpriced/pricing row. The GLM attempt exited before its 590 s ceiling with
+  no file candidate (76,743 provider-reported tokens, `$0.00318172`).
+- Three Luna XHigh/Pi native launches entered harness I/O stalls before any
+  edit; all processes were terminated and verified absent. Their terminal
+  subscription usage events were retained as harness-calculated evidence,
+  not provider billing; the launches did not create a candidate. Rule B was
+  already satisfied because P2-3 was one pure arithmetic topic, so the packet
+  advanced to Sol High.
+- A fresh explain showed `codex-gpt-5-6-sol-high-openai-sub` eligible with the
+  same exclusions. Sol High authored only `staffing/ladder.py` and its focused
+  tests; its final Pi event reported 69,751 tokens and a `$0.08135`
+  subscription execution equivalent. Supervisor inspection and 17 focused
+  tests found the arithmetic coherent.
+- Independent review explain used `--role review --class
+  review/judge/none/s/python --author-route
+  codex-gpt-5-6-sol-high-openai-sub`; DeepSeek/Pi OpenRouter was eligible and
+  cross-family. First review FAIL: one blocker, the candidate read invented
+  `supervisor_overhead_usd`, absent from attempt v2, so real ledgers could
+  never compute `E`; one Decimal hardening note. Supervisor repair now
+  cross-references attested `supervisor_route` ids to those routes' real
+  schema-valid `cost.usd_marginal` observations and keeps the five-sample
+  gate. Focused tests, Black, Ruff, and diff check pass.
+- DeepSeek re-review PASS, 0 blockers; it ran adversarial identity, ineligible,
+  missing-cost, nonfinite, and sample-gate probes. The last review event
+  reported 32,098 tokens / `$0.000737284382`; intermediate OpenRouter review
+  events were provider-reported but their aggregate was not retained by the
+  attached no-session harness, so no invented aggregate is claimed. P2-3:
+  5 author launches (1 GLM, 3 stalled Luna, 1 Sol), 2 reviews, about 34 min.
