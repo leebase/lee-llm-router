@@ -1239,6 +1239,7 @@ def build_attempt_record(
     supervisor_route: Mapping[str, Any] | None = None,
     attempt_id: str | None = None,
     captured_at: str | None = None,
+    class_derivation: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build one strict v2 router-run attempt record.
 
@@ -1264,6 +1265,9 @@ def build_attempt_record(
             invented when the caller records no supervisor identity.
         attempt_id: Optional caller-supplied id; generated when absent.
         captured_at: Optional aware UTC capture timestamp, primarily for tests.
+        class_derivation: Optional validated packet-derivation evidence. Only
+            its override records are preserved in provenance; it never selects
+            or ranks a route.
 
     Returns:
         A mapping in the committed attempt-record v2 shape. It is not
@@ -1322,6 +1326,16 @@ def build_attempt_record(
             "oracle evidence: "
             f"exit_code={oracle.exit_code}, timed_out={oracle.timed_out}, "
             f"error={oracle.error or 'none'}"
+        )
+    if class_derivation is not None:
+        notes.append(
+            "class derivation overrides: "
+            + json.dumps(
+                class_derivation.get("override_records", []),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
         )
 
     record: dict[str, Any] = {

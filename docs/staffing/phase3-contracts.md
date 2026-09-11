@@ -19,6 +19,7 @@ lee-llm-router staff --role ROLE --class CLASS
 lee-llm-router run --role ROLE --class CLASS --packet FILE
   [--route ROUTE_ID] [--supervisor-route ROUTE_ID]
   [--author-route ROUTE_ID] [--oracle CMD] [--workdir DIR]
+  [--class-derivation FILE]
   [--parent ATTEMPT_ID] [--escalation-reason R] [--timeout S]
   [--at DATE] [--availability-file PATH] [--catalog-dir PATH]
   [--openrouter-snapshot PATH] [--rate-table PATH] [--json]
@@ -97,4 +98,3 @@ import owner-repository code.
   stop requires an authority boundary, unresolved contradiction, missing
   credential, material irreversible risk, or an external dependency that
   makes useful progress impossible, after reconciling D204–D213.
-

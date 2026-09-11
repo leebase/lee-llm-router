@@ -36,7 +36,7 @@ canonical_encoding:
   tag_order: ascending codepoint
   tag_dedup: true
   empty_tags_segment: none
-  notes: >-
+  notes: |
     The domain-tags key segment is the tag set sorted ascending by codepoint
     (persistence+security, never security+persistence), deduplicated, and
     joined by '+', which is unambiguous because no tag value contains '+';
@@ -49,6 +49,42 @@ canonical_encoding:
     it. Canonical examples: impl/deterministic/none/s/python;
     impl/judge/authority+persistence/m/python;
     review/judge/none/xs/markdown.
+
+    Phase 3 P3-3 packet domain-tag keyword table (D213 ruling 2): packet
+    domain tags are derived ONLY by literal matches against the table below
+    -- no other inference is permitted. Grammar: one 'keyword -> tag' entry
+    per line under the 'domain-keyword-table:' marker; 'tag' must be a
+    member of the closed value_sets.domain_tags vocabulary; matching is a
+    case-insensitive literal substring test of the keyword against the
+    packet text. Every matched table entry is recorded as source evidence;
+    a packet with no match carries no tag. This table joins
+    comparable evidence only and names no model, route, provider, or
+    preference (D206). The table is placed in this notes field because the
+    classes schema (additionalProperties: false) permits no additional
+    top-level property; the literal lines below are the authoritative table.
+
+    domain-keyword-table:
+      migration -> persistence
+      sqlite -> persistence
+      database -> persistence
+      concurrent -> concurrency
+      concurrency -> concurrency
+      interleave -> concurrency
+      thread-safety -> concurrency
+      credential -> security
+      secret -> security
+      sandbox -> security
+      authority -> authority
+      escalation -> authority
+      browser -> ui-browser
+      playwright -> ui-browser
+      selenium -> ui-browser
+      erd -> data-schema
+      ddl -> data-schema
+      check-constraint -> data-schema
+      makefile -> infra-env
+      cron -> infra-env
+      dockerfile -> infra-env
 
 # Recommendation §3.1 "Initial value sets" table, copied whole and only;
 # each array is closed with exact cardinality (no taxonomy growth).

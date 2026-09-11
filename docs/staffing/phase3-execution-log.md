@@ -41,3 +41,27 @@ usage basis and knowable cost, verdict, findings, next action, and escalation.
   non-passing review verdict and are never inferred from prose.
 - Focused gate 152 passed; Black, Ruff, and diff check clean. P3-1 metered
   OpenRouter spend `$0.0810939292`; subscription attempts remain separate.
+
+## P3-3 — Conservative class-key derivation
+
+- The named `sol-low-glm-pi` crew selected GLM/Pi. Its first attempt created
+  no files; the same-route repair produced only the keyword table. Both
+  failed collection and were classified `oracle_failed`, not the legacy
+  runner's inferred `spec_rejected`. GLM usage/cost: 468,951 / `$0.011386385`
+  and 835,182 / `$0.02157127`, provider-reported and metered.
+- Luna XHigh/Pi received the partial candidate and timed out at 590 s after
+  restoring/adding most source and tests; 2,467,986 provider-reported
+  subscription tokens and `$0.11595296` list-equivalent, not metered. Sol High
+  repaired the accidental test-file truncation and finished the candidate,
+  then timed out at 590 s; its subscription usage was unavailable.
+- DeepSeek review passed the 112-test candidate, but supervisor inspection
+  found one contract blocker: overrides were printed by `staff` but absent
+  from the eventual attempt. The repair adds validated `run
+  --class-derivation FILE`; effective class mismatch refuses before launch,
+  and exact override records enter attempt provenance without selecting a
+  route. Re-review passed with 200 focused tests. DeepSeek receipts were
+  1,997,966 / `$0.0423871224` and 2,155,512 / `$0.044175852`, provider-reported
+  metered usage.
+- Accepted behavior derives only from explicit packet facts and the reviewed
+  `classes.yaml` keyword table, never from model preference. Black, Ruff, and
+  diff check are clean. P3-3 metered spend `$0.1195206294`.

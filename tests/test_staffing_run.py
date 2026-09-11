@@ -3861,3 +3861,67 @@ def test_run_oracle_cleanup_timeout_expired_preserves_completed_worker(
         in payload["provenance"]["notes"][-1]
     )
     assert payload["verified_success"] is False
+
+
+def test_run_records_validated_class_derivation_overrides(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state, tmp_path
+):
+    derivation = tmp_path / "derivation.json"
+    derivation.write_text(
+        json.dumps(
+            {
+                "class_derivation": {
+                    "class": {"class_key": IMPL_CLASS},
+                    "override_records": [
+                        {"field": "size_band", "derived": "xs", "value": "s"}
+                    ],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=PI_ROUTE,
+        extra=("--class-derivation", str(derivation)),
+    )
+    assert code == 0
+    payload = _assert_output_matches_single_append(captured, scratch_state)
+    assert (
+        'class derivation overrides: [{"derived":"xs","field":"size_band",'
+        '"value":"s"}]' in payload["provenance"]["notes"]
+    )
+
+
+def test_run_refuses_mismatched_class_derivation_before_launch(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state, tmp_path
+):
+    derivation = tmp_path / "derivation.json"
+    derivation.write_text(
+        json.dumps(
+            {
+                "class": {"class_key": "impl/deterministic/none/l/python"},
+                "override_records": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    launcher = LaunchRecorder()
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=PI_ROUTE,
+        extra=("--class-derivation", str(derivation)),
+        launcher=launcher,
+    )
+    assert code == 3
+    assert launcher.processes == []
+    assert not scratch_state["attempts"].exists()
+    assert "must match --class" in captured.err

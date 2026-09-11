@@ -1499,6 +1499,7 @@ def _run_run(args: argparse.Namespace) -> int:
     route_id = getattr(args, "route", None)
     role = args.role
     class_string = args.class_string
+    class_derivation = None
 
     # Optional parent/escalation pair: parsed, pairing-checked, and
     # value-validated against the committed attempt-record v2 rules before
@@ -1544,6 +1545,33 @@ def _run_run(args: argparse.Namespace) -> int:
             f"{class_role!r}",
             as_json=as_json,
         )
+
+    derivation_path = getattr(args, "class_derivation", None)
+    if derivation_path is not None:
+        try:
+            derivation_payload = json.loads(
+                Path(derivation_path).expanduser().read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            return fail(f"class derivation cannot be read: {exc}", as_json=as_json)
+        if not isinstance(derivation_payload, dict):
+            return fail("class derivation must be a JSON object", as_json=as_json)
+        candidate = derivation_payload.get("class_derivation", derivation_payload)
+        if not isinstance(candidate, dict):
+            return fail("class_derivation must be a JSON object", as_json=as_json)
+        derived_class = candidate.get("class")
+        overrides = candidate.get("override_records")
+        if (
+            not isinstance(derived_class, dict)
+            or derived_class.get("class_key") != class_string
+            or not isinstance(overrides, list)
+            or not all(isinstance(item, dict) for item in overrides)
+        ):
+            return fail(
+                "class derivation must match --class and contain override_records",
+                as_json=as_json,
+            )
+        class_derivation = candidate
 
     if args.at is not None:
         try:
@@ -1661,6 +1689,7 @@ def _run_run(args: argparse.Namespace) -> int:
             escalation_reason=escalation_reason,
             supervisor_route=outcome.supervisor_route,
             attempt_id=getattr(args, "attempt_id", None),
+            class_derivation=class_derivation,
         )
     except (LLMRouterError, OSError, TypeError, ValueError) as exc:
         return fail(f"attempt record could not be built: {exc}", as_json=as_json)
@@ -1706,13 +1735,17 @@ def _run_staff(args: argparse.Namespace) -> int:
     exits 3; success exits 0. Nothing is dispatched and no provider is
     prompted. A successful ``bind`` appends exactly one event through the
     normal event path (``$LEE_LLM_ROUTER_EVENTS_FILE`` or the per-host
-    default), keeping its authorization boundary intact.
+    default), keeping its authorization boundary intact. Phase 3 additionally
+    accepts ``staff --from-packet FILE`` for auto mode. Packet derivation is a
+    class-metadata boundary only: the effective class is passed through that
+    same staffing service, and no class field maps to a model or route (D206).
     """
     from datetime import date
     from pathlib import Path
 
     from lee_llm_router.availability import load_availability
     from lee_llm_router.staffing import StaffingCatalogError, load_staffing_catalog
+    from lee_llm_router.staffing.derive_class import PacketClassError, derive_class
     from lee_llm_router.staffing.json_int import dump_json
     from lee_llm_router.staffing.ledger import resolve_attempts_path
     from lee_llm_router.staffing.staff import (
@@ -1758,14 +1791,62 @@ def _run_staff(args: argparse.Namespace) -> int:
     if args.availability_file is not None and availability.problem is not None:
         return fail(f"availability snapshot unusable: {availability.problem}")
 
+    derived = None
+    from_packet = getattr(args, "from_packet", None)
+    packet_override_supplied = any(
+        getattr(args, name, None) is not None
+        for name in ("oracle_type", "domain_tags", "size_band", "language", "override")
+    ) or bool(getattr(args, "domain_tag", None))
+    if from_packet is None and packet_override_supplied:
+        return fail("packet class overrides require --from-packet FILE")
+    if from_packet is not None:
+        if mode != MODE_AUTO:
+            return fail("--from-packet is only valid with the auto mode")
+        overrides: dict[str, object] = {}
+        if args.class_string is not None:
+            overrides["class_key"] = args.class_string
+        if args.role is not None:
+            overrides["role"] = args.role
+        if getattr(args, "oracle_type", None) is not None:
+            overrides["oracle_type"] = args.oracle_type
+        if getattr(args, "size_band", None) is not None:
+            overrides["size_band"] = args.size_band
+        if getattr(args, "language", None) is not None:
+            overrides["language"] = args.language
+        if getattr(args, "domain_tags", None) is not None:
+            overrides["domain_tags"] = args.domain_tags
+        domain_tag_values = getattr(args, "domain_tag", None) or []
+        if domain_tag_values:
+            if "domain_tags" in overrides:
+                return fail("use only one of --domain-tags or --domain-tag")
+            overrides["domain_tags"] = domain_tag_values
+        for raw_override in getattr(args, "override", None) or []:
+            if "=" not in raw_override:
+                return fail(
+                    "--override must use FIELD=VALUE for role, oracle_type, "
+                    "domain_tags, size_band, or language"
+                )
+            field, value = raw_override.split("=", 1)
+            if not field.strip() or not value.strip():
+                return fail("--override must use a non-empty FIELD=VALUE")
+            overrides[field.strip()] = value.strip()
+        try:
+            derived = derive_class(
+                from_packet,
+                classes_path=catalog_dir / "classes.yaml",
+                overrides=overrides,
+            )
+        except PacketClassError as exc:
+            return fail(f"packet class invalid: {exc}")
+
     # The service owns the strict calendar-date boundary; an omitted --at
     # falls back to today exactly like ``catalog explain`` and ``run``.
     at_date: str | date = args.at if args.at is not None else date.today()
 
     arguments: dict[str, object] = {
         "mode": mode,
-        "role": args.role,
-        "class_key": args.class_string,
+        "role": derived.role if derived is not None else args.role,
+        "class_key": derived.class_key if derived is not None else args.class_string,
         "at_date": at_date,
     }
     if mode == MODE_AUTO:
@@ -1790,7 +1871,23 @@ def _run_staff(args: argparse.Namespace) -> int:
     except Exception as exc:  # no traceback on unexpected service problems
         return fail(f"staffing service failed: {exc}")
 
-    if args.json:
+    if derived is not None:
+        derivation = derived.as_dict()
+        payload = render_staff_json(result)
+        payload["class_derivation"] = derivation
+        payload["overrides"] = derivation["overrides"]
+        if args.json:
+            print(dump_json(payload))
+        else:
+            text = render_staff_text(result)
+            text += f"\nClass derived from packet: {derived.class_key}"
+            if derivation["overrides"]:
+                text += "\nOverrides: " + ", ".join(
+                    f"{field}={value}"
+                    for field, value in derivation["overrides"].items()
+                )
+            print(text)
+    elif args.json:
         print(dump_json(render_staff_json(result)))
     else:
         print(render_staff_text(result))
@@ -2174,6 +2271,15 @@ def main(argv: list[str] | None = None):
         help="Path to the packet file whose text is dispatched verbatim",
     )
     run_parser.add_argument(
+        "--class-derivation",
+        default=None,
+        metavar="FILE",
+        help=(
+            "JSON output from staff --from-packet; its effective class must "
+            "match --class and its override records are preserved on the attempt"
+        ),
+    )
+    run_parser.add_argument(
         "--route",
         default=None,
         metavar="ROUTE_ID",
@@ -2307,8 +2413,8 @@ def main(argv: list[str] | None = None):
         default=None,
         metavar="ROLE",
         help=(
-            "Class role (impl, plan, review, judge, prose); required by the "
-            "auto and bind modes, unused by crew"
+            "Class role (impl, plan, review, judge, prose); required by auto "
+            "and bind, an explicit override with --from-packet, unused by crew"
         ),
     )
     staff_parser.add_argument(
@@ -2319,8 +2425,64 @@ def main(argv: list[str] | None = None):
         help=(
             "Canonical five-segment class string "
             "role/oracle_type/domain_tags/size_band/language; required by "
-            "the auto and bind modes, unused by crew"
+            "auto and bind, a full override with --from-packet, unused by crew"
         ),
+    )
+    staff_parser.add_argument(
+        "--from-packet",
+        default=None,
+        metavar="FILE",
+        help=(
+            "Derive the class conservatively from a Markdown packet; valid "
+            "with auto mode and records the packet evidence in --json output"
+        ),
+    )
+    staff_parser.add_argument(
+        "--oracle-type",
+        default=None,
+        choices=("deterministic", "judge", "human", "none"),
+        help="Explicit packet class override",
+    )
+    staff_parser.add_argument(
+        "--domain-tags",
+        default=None,
+        metavar="TAGS",
+        help="Explicit packet domain-tag override (comma- or +-separated)",
+    )
+    staff_parser.add_argument(
+        "--domain-tag",
+        action="append",
+        default=None,
+        metavar="TAG",
+        help="Add an explicit packet domain tag; repeatable",
+    )
+    staff_parser.add_argument(
+        "--size-band",
+        default=None,
+        choices=("xs", "s", "m", "l"),
+        help="Explicit packet class override",
+    )
+    staff_parser.add_argument(
+        "--language",
+        default=None,
+        choices=(
+            "python",
+            "typescript",
+            "shell",
+            "c",
+            "sql",
+            "yaml-config",
+            "markdown",
+            "mixed",
+        ),
+        help="Explicit packet class override",
+    )
+    staff_parser.add_argument(
+        "--override",
+        action="append",
+        default=None,
+        metavar="FIELD=VALUE",
+        help="Explicit packet class override; repeatable",
     )
     staff_parser.add_argument(
         "--mode",

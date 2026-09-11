@@ -1625,3 +1625,101 @@ def test_classify_failure_cli_malformed_record_exits_3(tmp_path, capsys):
         main(["classify-failure", "--record", str(bad)])
     assert exc_info.value.code == 3
     assert "not valid JSON" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# staff --from-packet (P3-3 / D213 ruling 2)
+# ---------------------------------------------------------------------------
+
+
+def test_staff_from_packet_derives_and_records_class_overrides(tmp_path, capsys):
+    """The packet class feeds the existing staff service without a route map."""
+    from lee_llm_router.doctor import _default_catalog_dir, main
+
+    packet = tmp_path / "packet.md"
+    packet.write_text(
+        """\
+- Kind: impl
+- Declared size: 2 files, at most 80 changed lines
+- Owned paths: `src/database.py`, `tests/test_database.py`
+- Oracle: `.venv/bin/pytest -q tests/test_database.py`
+- Review: independent review required after the oracle passes.
+""",
+        encoding="utf-8",
+    )
+    snapshot = _write_snapshot(tmp_path)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "staff",
+                "--from-packet",
+                str(packet),
+                "--size-band",
+                "l",
+                "--at",
+                "2026-10-01",
+                "--availability-file",
+                str(snapshot),
+                "--catalog-dir",
+                str(_default_catalog_dir()),
+                "--json",
+            ]
+        )
+    assert exc_info.value.code == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["class_key"] == "impl/deterministic/persistence/l/python"
+    assert payload["class_derivation"]["class"]["oracle_type"] == "deterministic"
+    assert payload["overrides"] == {"size_band": "l"}
+    assert payload["class_derivation"]["domain_matches"] == [
+        {"keyword": "database", "tag": "persistence"},
+    ]
+    assert "selected_route" in payload
+    assert "selected_route" not in payload["class_derivation"]
+
+
+def test_staff_from_packet_malformed_input_exits_3_without_output(tmp_path, capsys):
+    """Malformed packet input fails closed through the normal staff boundary."""
+    from lee_llm_router.doctor import main
+
+    packet = tmp_path / "bad-packet.md"
+    packet.write_text("- Owned paths: `src/a.py`\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["staff", "--from-packet", str(packet), "--json"])
+
+    assert exc_info.value.code == 3
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("staff: packet class invalid:")
+    assert len(captured.err.splitlines()) == 1
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--size-band", "l"],
+        ["--from-packet", "packet.md", "--mode", "crew", "luna-sol"],
+    ],
+)
+def test_staff_packet_options_do_not_change_existing_mode_contracts(
+    tmp_path, capsys, args
+):
+    """Packet-only options are rejected rather than altering legacy modes."""
+    from lee_llm_router.doctor import main
+
+    (tmp_path / "packet.md").write_text(
+        "- Kind: impl\n- Owned paths: `src/a.py`\n", encoding="utf-8"
+    )
+    resolved = [
+        str(tmp_path / value) if value == "packet.md" else value for value in args
+    ]
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["staff", *resolved])
+
+    assert exc_info.value.code == 3
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert len(captured.err.splitlines()) == 1
