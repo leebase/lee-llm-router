@@ -1,4 +1,4 @@
-"""Tests for harness shims parity across all four targets (Sprint 4 P32, P2-8).
+"""Tests for harness shims parity across all five targets (Sprint 4 P32, P2-8, D224-1).
 
 The generated shims are resolve-only: ``/crew auto`` and ``/crew NAME`` run
 ``lee-llm-router staff``, display the returned block, never dispatch or
@@ -100,7 +100,7 @@ def _staff_args(
     return argv
 
 
-def test_four_harness_staff_parity_subprocess(tmp_path, monkeypatch):
+def test_five_harness_staff_parity_subprocess(tmp_path, monkeypatch):
     """Run each shim's auto and crew staff commands; parity + no event writes."""
     tmp_home = tmp_path / "home"
     tmp_project = tmp_path / "project"
@@ -109,7 +109,7 @@ def test_four_harness_staff_parity_subprocess(tmp_path, monkeypatch):
     monkeypatch.setenv(shims.ENV_SHIM_HOME, str(tmp_home))
 
     targets = shims.get_targets(project=tmp_project, home=tmp_home)
-    assert len(targets) == 4
+    assert len(targets) == 5
 
     outputs: dict[str, dict[str, str]] = {}
     events_files: dict[str, Path] = {}
@@ -142,12 +142,12 @@ def test_four_harness_staff_parity_subprocess(tmp_path, monkeypatch):
         ), f"staff commands for {target.harness} wrote events"
         events_files[target.harness] = events_file
 
-    # The four harnesses produce equivalent blocks: every output for a form
+    # The five harnesses produce equivalent blocks: every output for a form
     # is byte-identical modulo harness-irrelevant facts (there are none —
     # staff commands carry no harness tag), so outputs are byte-identical.
     for label, per_harness in outputs.items():
         values = list(per_harness.values())
-        assert len(values) == 4
+        assert len(values) == 5
         for i in range(1, len(values)):
             assert values[i] == values[0], (
                 f"{label} output for harness {targets[i].harness} differed from "
@@ -208,7 +208,7 @@ def test_supervise_bodies_are_parity_checked_against_d213(tmp_path, monkeypatch)
         home=tmp_home,
         command=shims.SUPERVISE_COMMAND,
     )
-    assert len(targets) == 4
+    assert len(targets) == 5
 
     # This template needs no harness-specific body token, so the stronger
     # form of the D213 parity rule applies: complete managed bodies match.
@@ -324,7 +324,7 @@ def test_shims_rendered_body_offers_run_never_executes(tmp_path, monkeypatch):
     monkeypatch.setenv(shims.ENV_SHIM_HOME, str(tmp_home))
 
     targets = shims.get_targets(project=tmp_project, home=tmp_home)
-    assert len(targets) == 4
+    assert len(targets) == 5
 
     forbidden_substrings = (
         "lee-llm-router resolve",
@@ -368,3 +368,18 @@ def test_shims_rendered_body_offers_run_never_executes(tmp_path, monkeypatch):
             == 1
         )
         assert body.count("lee-llm-router staff --mode crew <name>") == 1
+
+
+def test_each_target_body_contains_arguments_binding_line(tmp_path, monkeypatch):
+    """Each rendered body carries the explicit $ARGUMENTS binding line (D224-1)."""
+    tmp_home = tmp_path / "home"
+    tmp_project = tmp_path / "project"
+    tmp_home.mkdir(parents=True, exist_ok=True)
+    tmp_project.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv(shims.ENV_SHIM_HOME, str(tmp_home))
+
+    for cmd in shims.COMMAND_NAMES:
+        targets = shims.get_targets(project=tmp_project, home=tmp_home, command=cmd)
+        assert len(targets) == 5
+        for t in targets:
+            assert "Arguments as supplied: `$ARGUMENTS`" in t.body

@@ -1,6 +1,6 @@
 """Harness shims generation and management.
 
-Provides templated command shims for Claude Code, Codex, OMP, and OpenCode.
+Provides templated command shims for Claude Code, Codex, OMP, OpenCode, and Pi.
 """
 
 from __future__ import annotations
@@ -19,13 +19,14 @@ if TYPE_CHECKING:
 
 ENV_SHIM_HOME = "LEE_LLM_ROUTER_SHIM_HOME"
 
-HARNESS_TAGS: tuple[str, ...] = ("claude-code", "codex", "omp", "opencode")
+HARNESS_TAGS: tuple[str, ...] = ("claude-code", "codex", "omp", "opencode", "pi")
 
 HARNESS_FORMS: dict[str, str] = {
     "claude-code": "Claude Code slash command",
     "codex": "Codex custom prompt",
     "omp": "OMP prompt template",
     "opencode": "OpenCode command file",
+    "pi": "Pi prompt template",
 }
 
 HARNESS_FRONTMATTER_EXTRA: dict[str, str] = {
@@ -35,6 +36,7 @@ HARNESS_FRONTMATTER_EXTRA: dict[str, str] = {
     "codex": "argument-hint: auto|NAME\n",
     "omp": "argument-hint: auto|NAME\n",
     "opencode": "",
+    "pi": "argument-hint: auto|NAME\n",
 }
 
 #: Managed shim commands (Phase 3 P3-5, D213 ruling 1): ``crew`` is the
@@ -63,9 +65,13 @@ COMMAND_FRONTMATTER_EXTRA: dict[str, dict[str, str]] = {
             "argument-hint: <plan-path> [crew NAME | auto]\n"
             "allowed-tools: Bash(lee-llm-router:*)\n"
         ),
-        "codex": "argument-hint: <plan-path> [crew NAME | auto]\n",
+        "codex": (
+            "argument-hint: <plan-path> [crew NAME | auto]\n"
+            "# Codex invocation: /prompts:supervise <args> (custom prompts namespace)\n"
+        ),
         "omp": "argument-hint: <plan-path> [crew NAME | auto]\n",
         "opencode": "",
+        "pi": "argument-hint: <plan-path> [crew NAME | auto]\n",
     },
 }
 
@@ -173,6 +179,8 @@ def target_path_for_harness(
         return p / ".omp" / "prompts" / filename
     elif harness == "opencode":
         return h / ".config" / "opencode" / "command" / filename
+    elif harness == "pi":
+        return h / ".pi" / "agent" / "prompts" / filename
     else:
         raise ShimUsageError(
             f"unknown harness {harness!r} (known: {', '.join(HARNESS_TAGS)})"
