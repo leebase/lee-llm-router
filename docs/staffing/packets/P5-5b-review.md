@@ -11,7 +11,7 @@
 
 ## Scope
 
-lee-llm-router `7666ff3..2e02929` and ai-workforce-benchmark `62e6494`.
+lee-llm-router `7666ff3..0ff6b7f` and ai-workforce-benchmark `62e6494`.
 
 ## Judge
 
@@ -27,7 +27,7 @@ lee-llm-router `7666ff3..2e02929` and ai-workforce-benchmark `62e6494`.
    `tests/test_harvested_packets.py`; the test still passes.
 3. **Finding 3** — the Chief's disposition: worker owned-path boundaries held in every
    commit; the packet-doc grouping was the supervisor's commit hygiene, history is left
-   intact, and from `2e02929` docs get their own commit. State whether you accept that
+   intact, and from `24a737a` docs get their own commit. State whether you accept that
    disposition as non-blocking or still consider it blocking, and why.
 
 End with a single line `REVIEW VERDICT: ACCEPT` or `REVIEW VERDICT: REJECT`. Do not run
