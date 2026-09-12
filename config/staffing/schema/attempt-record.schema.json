@@ -1699,7 +1699,9 @@
       "enum": [
         "pass",
         "fail",
-        "unverified"
+        "unverified",
+        "judge_pass",
+        "judge_fail"
       ]
     },
     "agentOrchAttemptVerdict": {
@@ -1972,6 +1974,13 @@
             "type": "string",
             "minLength": 1
           }
+        },
+        "worker_output_dir": {
+          "description": "Optional absolute path to the directory persisting worker stdout and stderr per attempt, or null when persistence failed.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       }
     },

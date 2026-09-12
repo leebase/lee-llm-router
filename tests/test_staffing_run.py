@@ -23,7 +23,7 @@ import shutil
 import subprocess
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -245,10 +245,17 @@ def scratch_state(monkeypatch, tmp_path):
     events = tmp_path / "events.jsonl"
     attempts = tmp_path / "attempts.jsonl"
     registry = tmp_path / "run-registry"
+    artifacts = tmp_path / "artifacts"
     monkeypatch.setenv("LEE_LLM_ROUTER_EVENTS_FILE", str(events))
     monkeypatch.setenv("LEE_LLM_ROUTER_ATTEMPTS_FILE", str(attempts))
     monkeypatch.setenv("LEE_LLM_ROUTER_RUN_REGISTRY_DIR", str(registry))
-    return {"events": events, "attempts": attempts, "registry": registry}
+    monkeypatch.setenv("LEE_LLM_ROUTER_ARTIFACTS_DIR", str(artifacts))
+    return {
+        "events": events,
+        "attempts": attempts,
+        "registry": registry,
+        "artifacts": artifacts,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -4336,3 +4343,430 @@ def test_run_refuses_blank_owned_path_before_launch(
     assert "owned paths invalid" in captured.err
     assert not scratch_state["attempts"].exists()
     assert not any(scratch_state["registry"].glob("*.json"))
+
+
+# ---------------------------------------------------------------------------
+# P4-5c: Artifact persistence and judge verdict parsing
+# ---------------------------------------------------------------------------
+
+
+def test_persist_worker_output_writes_files_and_records_dir(
+    catalog_dir, snapshot, scratch_state
+):
+    """1. Successful attempt writes stdout/stderr byte-for-byte and records dir."""
+    from lee_llm_router.staffing.eligibility import EligibilityPrice
+    from lee_llm_router.staffing.run import (
+        DispatchOutcome,
+        SelectionOutcome,
+        build_attempt_record,
+    )
+
+    catalog = load_staffing_catalog(catalog_dir)
+    route = next(r for r in catalog.routes.routes if r.route_id == CODEX_ROUTE)
+    pricing = EligibilityPrice(
+        badge="TOO FAST",
+        multiplier=1.0,
+        replacement_input_usd_per_token=0.0,
+        replacement_output_usd_per_token=0.0,
+        marginal_input_usd_per_token=0.0,
+        marginal_output_usd_per_token=0.0,
+        source="rate-table:gpt-5.6-sol",
+    )
+    outcome = SelectionOutcome(
+        route=route,
+        basis="explicit",
+        reason="test",
+        explain_ref="explain",
+        excluded=(),
+        pricing=pricing,
+    )
+    stdout_text = "line 1\nline 2\nline 3\n"
+    stderr_text = "warning: something\n"
+    dispatch = DispatchOutcome(
+        argv=("codex", "exec"),
+        exit_code=0,
+        stdout=stdout_text,
+        stderr=stderr_text,
+        duration_seconds=1.0,
+        timed_out=False,
+        usage={
+            "basis": "provider_reported",
+            "input_tokens": 10,
+            "output_tokens": 5,
+        },
+    )
+    availability = load_availability(snapshot)
+    class_record = {
+        "role": "impl",
+        "oracle_type": "deterministic",
+        "size_band": "s",
+        "language": "python",
+        "class_key": "impl/deterministic/none/s/python",
+    }
+    record = build_attempt_record(
+        outcome=outcome,
+        dispatch=dispatch,
+        oracle=None,
+        packet_id="sha256:test",
+        class_record=class_record,
+        availability=availability,
+        at_date=date(2026, 9, 15),
+    )
+    attempt_id = record["attempt_id"]
+    artifacts_root = scratch_state["artifacts"]
+    expected_dir = artifacts_root / attempt_id
+    assert record["provenance"]["worker_output_dir"] == str(expected_dir)
+    assert (expected_dir / "stdout.txt").read_text(encoding="utf-8") == stdout_text
+    assert (expected_dir / "stderr.txt").read_text(encoding="utf-8") == stderr_text
+
+
+def test_judge_verdict_accept_with_json_harness_shape(
+    catalog_dir, snapshot, scratch_state
+):
+    """2. REVIEW VERDICT: ACCEPT embedded in JSON event stream records judge_pass."""
+    from lee_llm_router.staffing.eligibility import EligibilityPrice
+    from lee_llm_router.staffing.run import (
+        DispatchOutcome,
+        SelectionOutcome,
+        build_attempt_record,
+    )
+
+    catalog = load_staffing_catalog(catalog_dir)
+    route = next(r for r in catalog.routes.routes if r.route_id == PI_ROUTE)
+    pricing = EligibilityPrice(
+        badge="NO DATA",
+        multiplier=1.0,
+        replacement_input_usd_per_token=0.0,
+        replacement_output_usd_per_token=0.0,
+        marginal_input_usd_per_token=0.0,
+        marginal_output_usd_per_token=0.0,
+        source="openrouter-snapshot:z-ai/glm-5.3-flash",
+    )
+    outcome = SelectionOutcome(
+        route=route,
+        basis="explicit",
+        reason="test",
+        explain_ref="explain",
+        excluded=(),
+        pricing=pricing,
+    )
+    # Pi/agy JSON event stream: marker embedded in a JSON string field
+    # followed by a wire-format newline, not the literal last line.
+    stdout_text = (
+        '{"type":"message","message":{"role":"assistant",'
+        '"content":"Let me review this.\\nREVIEW VERDICT: ACCEPT"}}'
+        '\n{"type":"finish","reason":"done"}\n'
+    )
+    dispatch = DispatchOutcome(
+        argv=("pi", "--mode", "json"),
+        exit_code=0,
+        stdout=stdout_text,
+        stderr="",
+        duration_seconds=1.0,
+        timed_out=False,
+        usage={
+            "basis": "provider_reported",
+            "input_tokens": 10,
+            "output_tokens": 5,
+        },
+    )
+    availability = load_availability(snapshot)
+    class_record = {
+        "role": "review",
+        "oracle_type": "none",
+        "size_band": "s",
+        "language": "python",
+        "class_key": "review/judge/none/s/python",
+    }
+    record = build_attempt_record(
+        outcome=outcome,
+        dispatch=dispatch,
+        oracle=None,
+        packet_id="sha256:test",
+        class_record=class_record,
+        availability=availability,
+        at_date=date(2026, 9, 15),
+    )
+    assert record["verdict"] == "judge_pass"
+
+
+def test_judge_verdict_reject_with_json_harness_shape(
+    catalog_dir, snapshot, scratch_state
+):
+    """3. REVIEW VERDICT: REJECT embedded in JSON event stream records judge_fail."""
+    from lee_llm_router.staffing.eligibility import EligibilityPrice
+    from lee_llm_router.staffing.run import (
+        DispatchOutcome,
+        SelectionOutcome,
+        build_attempt_record,
+    )
+
+    catalog = load_staffing_catalog(catalog_dir)
+    route = next(r for r in catalog.routes.routes if r.route_id == PI_ROUTE)
+    pricing = EligibilityPrice(
+        badge="NO DATA",
+        multiplier=1.0,
+        replacement_input_usd_per_token=0.0,
+        replacement_output_usd_per_token=0.0,
+        marginal_input_usd_per_token=0.0,
+        marginal_output_usd_per_token=0.0,
+        source="openrouter-snapshot:z-ai/glm-5.3-flash",
+    )
+    outcome = SelectionOutcome(
+        route=route,
+        basis="explicit",
+        reason="test",
+        explain_ref="explain",
+        excluded=(),
+        pricing=pricing,
+    )
+    stdout_text = (
+        '{"type":"message","message":{"role":"assistant",'
+        '"content":"This needs fixing.\\nREVIEW VERDICT: REJECT"}}'
+        '\n{"type":"finish","reason":"done"}\n'
+    )
+    dispatch = DispatchOutcome(
+        argv=("pi", "--mode", "json"),
+        exit_code=0,
+        stdout=stdout_text,
+        stderr="",
+        duration_seconds=1.0,
+        timed_out=False,
+        usage={
+            "basis": "provider_reported",
+            "input_tokens": 10,
+            "output_tokens": 5,
+        },
+    )
+    availability = load_availability(snapshot)
+    class_record = {
+        "role": "judge",
+        "oracle_type": "none",
+        "size_band": "s",
+        "language": "python",
+        "class_key": "review/judge/none/s/python",
+    }
+    record = build_attempt_record(
+        outcome=outcome,
+        dispatch=dispatch,
+        oracle=None,
+        packet_id="sha256:test",
+        class_record=class_record,
+        availability=availability,
+        at_date=date(2026, 9, 15),
+    )
+    assert record["verdict"] == "judge_fail"
+
+
+def test_judge_verdict_no_marker_falls_back_to_oracle(
+    catalog_dir, snapshot, scratch_state
+):
+    """4. No marker in review stdout: verdict stays as plain oracle-derived value."""
+    from lee_llm_router.staffing.eligibility import EligibilityPrice
+    from lee_llm_router.staffing.run import (
+        DispatchOutcome,
+        SelectionOutcome,
+        build_attempt_record,
+    )
+
+    catalog = load_staffing_catalog(catalog_dir)
+    route = next(r for r in catalog.routes.routes if r.route_id == PI_ROUTE)
+    pricing = EligibilityPrice(
+        badge="NO DATA",
+        multiplier=1.0,
+        replacement_input_usd_per_token=0.0,
+        replacement_output_usd_per_token=0.0,
+        marginal_input_usd_per_token=0.0,
+        marginal_output_usd_per_token=0.0,
+        source="openrouter-snapshot:z-ai/glm-5.3-flash",
+    )
+    outcome = SelectionOutcome(
+        route=route,
+        basis="explicit",
+        reason="test",
+        explain_ref="explain",
+        excluded=(),
+        pricing=pricing,
+    )
+    stdout_text = (
+        '{"type":"message","message":{"role":"assistant",'
+        '"content":"Everything looks good."}}'
+        '\n{"type":"finish","reason":"done"}\n'
+    )
+    dispatch = DispatchOutcome(
+        argv=("pi", "--mode", "json"),
+        exit_code=0,
+        stdout=stdout_text,
+        stderr="",
+        duration_seconds=1.0,
+        timed_out=False,
+        usage={
+            "basis": "provider_reported",
+            "input_tokens": 10,
+            "output_tokens": 5,
+        },
+    )
+    availability = load_availability(snapshot)
+    class_record = {
+        "role": "review",
+        "oracle_type": "none",
+        "size_band": "s",
+        "language": "python",
+        "class_key": "review/judge/none/s/python",
+    }
+    record = build_attempt_record(
+        outcome=outcome,
+        dispatch=dispatch,
+        oracle=None,
+        packet_id="sha256:test",
+        class_record=class_record,
+        availability=availability,
+        at_date=date(2026, 9, 15),
+    )
+    # No marker found → verdict stays as _oracle_verdict(None) = "unverified"
+    assert record["verdict"] == "unverified"
+
+
+def test_judge_verdict_non_review_role_unaffected_by_marker(
+    catalog_dir, snapshot, scratch_state
+):
+    """5. Non-review/judge role unaffected even when stdout contains the marker."""
+    from lee_llm_router.staffing.eligibility import EligibilityPrice
+    from lee_llm_router.staffing.run import (
+        DispatchOutcome,
+        SelectionOutcome,
+        build_attempt_record,
+    )
+
+    catalog = load_staffing_catalog(catalog_dir)
+    route = next(r for r in catalog.routes.routes if r.route_id == CODEX_ROUTE)
+    pricing = EligibilityPrice(
+        badge="TOO FAST",
+        multiplier=1.0,
+        replacement_input_usd_per_token=0.0,
+        replacement_output_usd_per_token=0.0,
+        marginal_input_usd_per_token=0.0,
+        marginal_output_usd_per_token=0.0,
+        source="rate-table:gpt-5.6-sol",
+    )
+    outcome = SelectionOutcome(
+        route=route,
+        basis="explicit",
+        reason="test",
+        explain_ref="explain",
+        excluded=(),
+        pricing=pricing,
+    )
+    # Impl worker's stdout incidentally contains the marker text.
+    stdout_text = (
+        "I implemented the feature. The reviewer said\n"
+        "REVIEW VERDICT: ACCEPT but that's just context.\n"
+    )
+    dispatch = DispatchOutcome(
+        argv=("codex", "exec"),
+        exit_code=0,
+        stdout=stdout_text,
+        stderr="",
+        duration_seconds=1.0,
+        timed_out=False,
+        usage={
+            "basis": "provider_reported",
+            "input_tokens": 10,
+            "output_tokens": 5,
+        },
+    )
+    availability = load_availability(snapshot)
+    class_record = {
+        "role": "impl",
+        "oracle_type": "deterministic",
+        "size_band": "s",
+        "language": "python",
+        "class_key": "impl/deterministic/none/s/python",
+    }
+    record = build_attempt_record(
+        outcome=outcome,
+        dispatch=dispatch,
+        oracle=None,
+        packet_id="sha256:test",
+        class_record=class_record,
+        availability=availability,
+        at_date=date(2026, 9, 15),
+    )
+    # Judge verdict is never evaluated for impl → plain oracle-derived
+    assert record["verdict"] == "unverified"
+
+
+def test_artifacts_write_failure_sets_none_dir_and_notes(
+    monkeypatch, catalog_dir, snapshot, scratch_state
+):
+    """6. Artifacts write failure: no raise; worker_output_dir=None; noted."""
+    from lee_llm_router.staffing.eligibility import EligibilityPrice
+    from lee_llm_router.staffing.run import (
+        DispatchOutcome,
+        SelectionOutcome,
+        build_attempt_record,
+    )
+
+    catalog = load_staffing_catalog(catalog_dir)
+    route = next(r for r in catalog.routes.routes if r.route_id == CODEX_ROUTE)
+    pricing = EligibilityPrice(
+        badge="TOO FAST",
+        multiplier=1.0,
+        replacement_input_usd_per_token=0.0,
+        replacement_output_usd_per_token=0.0,
+        marginal_input_usd_per_token=0.0,
+        marginal_output_usd_per_token=0.0,
+        source="rate-table:gpt-5.6-sol",
+    )
+    outcome = SelectionOutcome(
+        route=route,
+        basis="explicit",
+        reason="test",
+        explain_ref="explain",
+        excluded=(),
+        pricing=pricing,
+    )
+    stdout_text = "line 1\n"
+    dispatch = DispatchOutcome(
+        argv=("codex", "exec"),
+        exit_code=0,
+        stdout=stdout_text,
+        stderr="",
+        duration_seconds=1.0,
+        timed_out=False,
+        usage={
+            "basis": "provider_reported",
+            "input_tokens": 10,
+            "output_tokens": 5,
+        },
+    )
+
+    # Point LEE_LLM_ROUTER_ARTIFACTS_DIR at a regular file so mkdir fails
+    # with OSError (FileExistsError), which build_attempt_record catches.
+    scratch_state["artifacts"].mkdir(parents=True, exist_ok=True)
+    bad_path = scratch_state["artifacts"] / "blocker.txt"
+    bad_path.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setenv("LEE_LLM_ROUTER_ARTIFACTS_DIR", str(bad_path))
+
+    availability = load_availability(snapshot)
+    class_record = {
+        "role": "impl",
+        "oracle_type": "deterministic",
+        "size_band": "s",
+        "language": "python",
+        "class_key": "impl/deterministic/none/s/python",
+    }
+    # build_attempt_record must not raise.
+    record = build_attempt_record(
+        outcome=outcome,
+        dispatch=dispatch,
+        oracle=None,
+        packet_id="sha256:test",
+        class_record=class_record,
+        availability=availability,
+        at_date=date(2026, 9, 15),
+    )
+    assert record["provenance"]["worker_output_dir"] is None
+    assert any(
+        "persistence failed" in note for note in record["provenance"]["notes"]
+    ), f"expected persistence failure in notes: {record['provenance']['notes']}"

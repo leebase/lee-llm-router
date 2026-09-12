@@ -659,6 +659,8 @@ def test_v2_verdict_vocabulary_is_canonical(
         "pass",
         "fail",
         "unverified",
+        "judge_pass",
+        "judge_fail",
     ]
     assert "engine_validation" not in schema["$defs"]["canonicalVerdict"]["enum"]
     record = copy.deepcopy(examples["a6a85c6b02c6"])

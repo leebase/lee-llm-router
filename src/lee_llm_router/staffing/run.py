@@ -105,6 +105,7 @@ import yaml
 
 from lee_llm_router.availability import AvailabilitySnapshot
 from lee_llm_router.crews import HARNESS_PROVIDER_CHANNELS
+from lee_llm_router.doctor import _INDEPENDENCE_APPLICABLE_ROLES
 from lee_llm_router.providers.antigravity_cli import (
     AGY_GOVERNED_CONFIG,
     AGY_USAGE_SOURCE,
@@ -170,6 +171,12 @@ from lee_llm_router.watchdog import (
 )
 
 __all__ = [
+    "ARTIFACTS_DIR_ENV_VAR",
+    "ARTIFACTS_FILE_ENV_VAR",
+    "ARTIFACTS_STATE_ROOT_ENV_VAR",
+    "DEFAULT_ARTIFACTS_DIR",
+    "resolve_artifacts_dir",
+    "resolve_artifacts_path",
     "DEFAULT_POLL_SECONDS",
     "DEFAULT_RUN_TIMEOUT_SECONDS",
     "VERIFIED_SUCCESS_REASON_EVIDENCE",
@@ -259,6 +266,42 @@ class Resolution:
 
 DEFAULT_ORACLE_TIMEOUT_SECONDS = DEFAULT_MAX_MINUTES * 60.0
 """Standard wall-clock bound for an oracle when ``--timeout`` is absent."""
+
+DEFAULT_ARTIFACTS_DIR = Path("~/.local/state/lee-llm-router/artifacts")
+"""Directory holding attempt artifacts per attempt id (``~`` expanded at use)."""
+
+ARTIFACTS_DIR_ENV_VAR = "LEE_LLM_ROUTER_ARTIFACTS_DIR"
+"""Test-only override of the directory holding per-attempt artifacts."""
+
+ARTIFACTS_FILE_ENV_VAR = "LEE_LLM_ROUTER_ARTIFACTS_FILE"
+"""Test-only override of the artifacts directory (analogue to attempts file env var)."""
+
+ARTIFACTS_STATE_ROOT_ENV_VAR = "LEE_LLM_ROUTER_ARTIFACTS_STATE_ROOT"
+"""Test-only override of the app state root the ``artifacts/`` dir lives under."""
+
+
+def resolve_artifacts_dir(explicit: str | Path | None = None) -> Path:
+    """Resolve the directory holding attempt artifacts.
+
+    Precedence mirrors :func:`lee_llm_router.staffing.ledger.resolve_attempts_path`:
+    an explicit path wins, then :data:`ARTIFACTS_DIR_ENV_VAR` /
+    :data:`ARTIFACTS_FILE_ENV_VAR`, then :data:`ARTIFACTS_STATE_ROOT_ENV_VAR`
+    (``<root>/artifacts``), then :data:`DEFAULT_ARTIFACTS_DIR`.
+    """
+    if explicit is not None:
+        return Path(explicit).expanduser()
+    from_file_env = os.environ.get(ARTIFACTS_DIR_ENV_VAR) or os.environ.get(
+        ARTIFACTS_FILE_ENV_VAR
+    )
+    if from_file_env:
+        return Path(from_file_env).expanduser()
+    from_root_env = os.environ.get(ARTIFACTS_STATE_ROOT_ENV_VAR)
+    if from_root_env:
+        return Path(from_root_env).expanduser() / "artifacts"
+    return DEFAULT_ARTIFACTS_DIR.expanduser()
+
+
+resolve_artifacts_path = resolve_artifacts_dir
 
 # Injected boundaries default to the real subprocess and clock so the CLI
 # path is real; tests monkeypatch these module names for fake subprocesses.
@@ -1248,6 +1291,57 @@ def _attempt_cost(
     }, note
 
 
+def _parse_judge_verdict(stdout: str) -> str | None:
+    """Parse the last verdict marker from worker stdout for review/judge roles.
+
+    Returns ``"judge_pass"`` for a final ``"REVIEW VERDICT: ACCEPT"`` marker,
+    ``"judge_fail"`` for ``"REVIEW VERDICT: REJECT"``, or ``None`` if absent.
+
+    The marker is matched by its last occurrence in ``stdout``, not by exact
+    equality with the final line: a harness whose captured stdout is a raw
+    JSON event stream (e.g. ``pi``/``agy``) embeds the worker's real final
+    text inside a JSON string field followed by wire-format closing tokens
+    (e.g. ``...REVIEW VERDICT: ACCEPT"}]}``), so the marker is never
+    literally the last line even though it is the worker's true conclusion.
+    Using the last occurrence (not the first) still avoids a false match on
+    a marker the worker merely quotes or discusses earlier in its output.
+    """
+    accept_at = stdout.rfind("REVIEW VERDICT: ACCEPT")
+    reject_at = stdout.rfind("REVIEW VERDICT: REJECT")
+    if accept_at == -1 and reject_at == -1:
+        return None
+    if accept_at > reject_at:
+        return "judge_pass"
+    return "judge_fail"
+
+
+def _persist_worker_output(
+    artifacts_root: Path,
+    attempt_id: str,
+    dispatch: DispatchOutcome,
+) -> tuple[str | None, str]:
+    """Persist worker stdout and stderr into `<artifacts_root>/<attempt_id>/`.
+
+    Writes ``stdout.txt`` and ``stderr.txt`` verbatim from ``dispatch.stdout``
+    and ``dispatch.stderr``.
+
+    Returns ``(worker_output_dir_str, note_str)``. Directory creation and
+    file writes fail open on any ``OSError``: returns ``(None, note_str)``
+    describing the failure.
+    """
+    try:
+        attempt_dir = (artifacts_root / attempt_id).expanduser()
+        if not attempt_dir.is_absolute():
+            attempt_dir = attempt_dir.resolve()
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+        (attempt_dir / "stdout.txt").write_text(dispatch.stdout, encoding="utf-8")
+        (attempt_dir / "stderr.txt").write_text(dispatch.stderr, encoding="utf-8")
+        dir_str = str(attempt_dir)
+        return dir_str, f"worker output persisted to {dir_str} (stdout.txt, stderr.txt)"
+    except OSError as exc:
+        return None, f"worker output persistence failed: {exc}"
+
+
 def build_attempt_record(
     outcome: SelectionOutcome,
     dispatch: DispatchOutcome,
@@ -1264,6 +1358,7 @@ def build_attempt_record(
     attempt_id: str | None = None,
     captured_at: str | None = None,
     class_derivation: Mapping[str, Any] | None = None,
+    artifacts_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Build one strict v2 router-run attempt record.
 
@@ -1292,6 +1387,7 @@ def build_attempt_record(
         class_derivation: Optional validated packet-derivation evidence. Only
             its override records are preserved in provenance; it never selects
             or ranks a route.
+        artifacts_dir: Optional explicit root directory for attempt artifacts.
 
     Returns:
         A mapping in the committed attempt-record v2 shape. It is not
@@ -1303,6 +1399,19 @@ def build_attempt_record(
         outcome, usage, aggregate_models=dispatch.usage_models
     )
     verdict = _oracle_verdict(oracle)
+    if class_record.get("role") in _INDEPENDENCE_APPLICABLE_ROLES:
+        judge_verdict = _parse_judge_verdict(dispatch.stdout)
+        if judge_verdict is not None:
+            verdict = judge_verdict
+    record_attempt_id = attempt_id or _new_attempt_id()
+    try:
+        artifacts_root = resolve_artifacts_dir(artifacts_dir)
+        worker_output_dir, output_note = _persist_worker_output(
+            artifacts_root, record_attempt_id, dispatch
+        )
+    except OSError as exc:
+        worker_output_dir = None
+        output_note = f"worker output persistence failed: {exc}"
     timestamp = captured_at or _utc_timestamp()
     channel_headroom = availability.headroom(route.channel)
     provider = _HARNESS_PROVIDER_NAMES.get(route.harness, route.harness)
@@ -1342,6 +1451,7 @@ def build_attempt_record(
         "router-run dispatch facts: "
         f"exit_code={dispatch.exit_code}, timed_out={dispatch.timed_out}, "
         f"duration_seconds={dispatch.duration_seconds:.6f}",
+        output_note,
         f"oracle verdict: {verdict}; command={'present' if oracle_cmd else 'none'}",
         f"cost: {cost_note}; dated terms at {at_date.isoformat()}",
     ]
@@ -1364,7 +1474,7 @@ def build_attempt_record(
 
     record: dict[str, Any] = {
         "schema_version": 2,
-        "attempt_id": attempt_id or _new_attempt_id(),
+        "attempt_id": record_attempt_id,
         "record_kind": "router_run",
         "packet_id": packet_id,
         "parent_attempt_id": parent_attempt_id,
@@ -1399,6 +1509,7 @@ def build_attempt_record(
                 ),
             ],
             "notes": notes,
+            "worker_output_dir": worker_output_dir,
         },
     }
     if supervisor_route is not None:
