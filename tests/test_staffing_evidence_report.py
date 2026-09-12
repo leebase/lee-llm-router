@@ -469,6 +469,9 @@ _FALLBACK_REASON = (
     "selection.excluded records independence exclusions without explain order; "
     "fallback cannot be read from the record"
 )
+_NO_SELECTION_REASON = (
+    "record carries no selection object; fallback cannot be read from the record"
+)
 
 
 @pytest.mark.parametrize(
@@ -511,7 +514,11 @@ _FALLBACK_REASON = (
             "no-sel",
             None,
             True,
-            {"count": 0, "undecidable": 1, "unavailable_reason": _FALLBACK_REASON},
+            {
+                "count": 0,
+                "undecidable": 1,
+                "unavailable_reason": _NO_SELECTION_REASON,
+            },
         ),
     ],
 )
