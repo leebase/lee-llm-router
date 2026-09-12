@@ -27,6 +27,13 @@ checks, each with a named reason string:
   channel whose headroom is ``exhausted``, ``likely_exhausted``, or
   ``unknown`` vetoes its routes. Metered and local channels carry no
   committed quota records and are never vetoed for their absence;
+* subscription reserve (D216) — a subscription channel whose
+  ``remaining_fraction`` in any binding window is at or below its
+  configured ``reserve_fraction`` (default 0.10; Anthropic and Gemini
+  explicitly 0.10) excludes its routes with the reason
+  ``reserve: N% kept in the tank (D216)``. The reserve is a policy floor,
+  distinct from the availability reader's ``likely_exhausted`` fail-safe;
+  both checks run and either can independently exclude a route;
 * dated terms at the requested date and the badge marginal multiplier —
   each route is priced at the badge derived from its own channel's record
   in the availability snapshot (the limiting bucket's raw status badge);
@@ -103,6 +110,9 @@ _SUBSCRIPTION_VETO_HEALTH: frozenset[Health] = frozenset(
     {Health.EXHAUSTED, Health.LIKELY_EXHAUSTED, Health.UNKNOWN}
 )
 """Subscription-channel headroom states that veto a route (fail closed)."""
+
+_RESERVE_REASON = "reserve"
+"""Exact prefix for the subscription-channel reserve exclusion reason (D216)."""
 
 _NO_DATA_BADGE = "NO DATA"
 """Committed badge used when a route's channel records no status badge.
@@ -553,6 +563,18 @@ def evaluate_eligibility(
                 and headroom.health in _SUBSCRIPTION_VETO_HEALTH
             ):
                 reasons.append(f"channel {headroom.health.value}")
+            if (
+                channel.kind == "subscription"
+                and headroom.remaining_fraction is not None
+            ):
+                reserve = catalog.policy.reserve_fraction.fraction_for(
+                    channel.channel_id
+                )
+                if headroom.remaining_fraction <= reserve:
+                    reasons.append(
+                        f"{_RESERVE_REASON}: {reserve * 100:.0f}% kept in "
+                        "the tank (D216)"
+                    )
             if _dated_terms_entry(catalog.terms, channel.channel_id, when) is None:
                 reasons.append(
                     f"terms unavailable at {when.isoformat()} for channel "

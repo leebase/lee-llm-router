@@ -166,8 +166,15 @@ def test_explain_reproduces_p0_5_acceptance(tmp_path, catalog_dir, capsys):
 
     fable = _by_route(payload, FABLE_ROUTE)
     assert fable["eligible"] is False
-    assert fable["reasons"] == ["never_automatic", "channel exhausted"]
-    assert "; ".join(fable["reasons"]) == "never_automatic; channel exhausted"
+    assert fable["reasons"] == [
+        "never_automatic",
+        "channel exhausted",
+        "reserve: 10% kept in the tank (D216)",
+    ]
+    assert (
+        "; ".join(fable["reasons"])
+        == "never_automatic; channel exhausted; reserve: 10% kept in the tank (D216)"
+    )
     assert fable["channel"] == "anthropic-sub"
     assert fable["badge"] == "HOT"
     assert fable["health"] == "exhausted"

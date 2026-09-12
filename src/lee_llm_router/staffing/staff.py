@@ -87,8 +87,11 @@ STAFF_MODES: tuple[str, ...] = (MODE_AUTO, MODE_CREW, MODE_BIND)
 NEVER_AUTOMATIC_REASON = "never_automatic"
 """The exact eligibility reason marking the never-automatic boundary."""
 
+_RESERVE_REASON_PREFIX = "reserve:"
+"""The exact prefix for the subscription-channel reserve exclusion reason (D216)."""
+
 BIND_AUTHORIZED_BY = "lee"
-"""The only ``--authorized-by`` value that may bind a never-automatic route."""
+"""The only ``--authorized-by`` value that binds a never-automatic or reserved route."""
 
 REVIEW_ROLE = "review"
 """The role under which the independent review route is chosen."""
@@ -101,7 +104,7 @@ class StaffServiceError(Exception):
         kind: A stable machine-readable refusal kind: ``invalid_mode``,
             ``invalid_arguments``, ``invalid_class``, ``invalid_date``,
             ``unknown_crew``, ``reserved_auto_crew``, ``unknown_route``,
-            or ``never_automatic``.
+            ``never_automatic``, or ``reserve``.
         cause: The underlying exception, when one was caught.
     """
 
@@ -769,6 +772,13 @@ def _staff_bind(
             f"--authorized-by {BIND_AUTHORIZED_BY!r}, got {authorized_by!r}",
             kind="never_automatic",
         )
+    reserved = any(r.startswith(_RESERVE_REASON_PREFIX) for r in row.reasons)
+    if reserved and authorized_by != BIND_AUTHORIZED_BY:
+        raise StaffServiceError(
+            f"route {bind_route!r} is on a reserved channel; it binds only with "
+            f"--authorized-by {BIND_AUTHORIZED_BY!r}, got {authorized_by!r}",
+            kind="reserve",
+        )
 
     observed_at = getattr(availability, "observed_at", None)
     if observed_at is not None and not hasattr(observed_at, "isoformat"):
@@ -817,6 +827,11 @@ def _staff_bind(
             f"Never-automatic: yes (bound by {BIND_AUTHORIZED_BY}, "
             "the only authorized exception)"
         )
+    if reserved:
+        lines.append(
+            f"Reserve: yes (bound by {BIND_AUTHORIZED_BY}, "
+            "the only authorized exception)"
+        )
     lines.append(f"Reason: {reason}")
     lines.append(f"Event: appended to {path}")
     payload = {
@@ -827,6 +842,7 @@ def _staff_bind(
         "reason": reason,
         "authorized_by": authorized_by,
         "never_automatic": never_automatic,
+        "reserved": reserved,
         "event": event,
         "event_path": str(path),
     }

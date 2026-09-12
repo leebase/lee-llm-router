@@ -12,6 +12,7 @@
     "role_floors",
     "reviewer_independence",
     "spend_caps",
+    "reserve_fraction",
     "crew_ordering_rule",
     "human_escalation_cost_usd"
   ],
@@ -51,6 +52,26 @@
       "type": "array",
       "items": { "$ref": "#/$defs/spendCap" },
       "uniqueItems": true
+    },
+    "reserve_fraction": {
+      "description": "Subscription-channel reserve fraction (D216). A default value (0.10) applies to every subscription channel; per-channel overrides may override the default for a named channel_id. When a channel's remaining_fraction in any binding window is at or below its reserve, the channel's routes are excluded from automatic staffing with the reason `reserve: N% kept in the tank (D216)`. The reserve is a policy floor, distinct from the availability reader's health heuristics (`likely_exhausted` below 10%, which stays as a fail-safe). `bind` may still use a reserved channel only with `--authorized-by lee`. Every policy rule and reason must cite D216.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["default"],
+      "properties": {
+        "default": {
+          "description": "Default reserve fraction (0.0 to 1.0) applied to every subscription channel that has no explicit per-channel override. D216 sets the default to 0.10.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "overrides": {
+          "description": "Optional per-channel overrides of the default reserve fraction. Each entry names a channel_id and its explicit reserve fraction (0.0 to 1.0). Anthropic and Gemini are explicitly 0.10 per D216. Array entries must be pairwise distinct by channel_id.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/reserveOverride" },
+          "uniqueItems": true
+        }
+      }
     },
     "crew_ordering_rule": {
       "description": "Named-crew ordering rule: within a role's array, order by marginal price at authoring time with prepaid-first as the tie-break; a human may pin otherwise with a stated reason (D215 ruling 3). Field is a single object with nonempty decision and source.",
@@ -255,6 +276,24 @@
     "independenceSource": {
       "description": "Nonempty citation for this rule (decision record, archive note, or equivalent provenance).",
       "$ref": "#/$defs/nonemptyString"
+    },
+    "reserveOverride": {
+      "description": "Per-channel override of the default reserve fraction (D216). Each entry names a single channel_id and the reserve fraction applied to it instead of the default.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["channel_id", "reserve_fraction"],
+      "properties": {
+        "channel_id": {
+          "description": "Stable opaque reference to the subscription channel this override applies to.",
+          "$ref": "#/$defs/stableRef"
+        },
+        "reserve_fraction": {
+          "description": "Reserve fraction (0.0 to 1.0) for this channel. D216 sets Anthropic and Gemini to 0.10 explicitly.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
     },
     "crewOrderingRule": {
       "description": "Named-crew ordering rule recorded in policy.yaml (D215 ruling 3). A single required object with nonempty decision and source; not an array.",

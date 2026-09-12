@@ -131,7 +131,10 @@ def test_fable_reason_is_never_automatic_then_channel_exhausted(catalog) -> None
     )
     row = _by_route(_evaluate(catalog, snapshot), FABLE_ROUTE)
     assert row.eligible is False
-    assert "; ".join(row.reasons) == "never_automatic; channel exhausted"
+    assert (
+        "; ".join(row.reasons)
+        == "never_automatic; channel exhausted; reserve: 10% kept in the tank (D216)"
+    )
     assert row.availability_health == "exhausted"
 
 
@@ -347,6 +350,66 @@ def test_class_metadata_never_changes_eligibility(catalog, healthy_snapshot):
     for safe_row, denied_row in zip(safe, denied):
         assert safe_row.eligible == denied_row.eligible
         assert safe_row.reasons == denied_row.reasons
+
+
+# ---------------------------------------------------------------------------
+# D216 subscription-channel reserve: a channel at or below its reserve
+# fraction excludes its routes with the reserve reason; above the reserve
+# they remain eligible (all else equal).
+# ---------------------------------------------------------------------------
+
+_SONNET_HIGH_ROUTE = "claude-claude-sonnet-5-high-anthropic-sub"
+"""A never-automatic-free route on anthropic-sub for reserve tests."""
+
+
+def test_reserve_at_or_below_excludes_with_reserve_reason(catalog) -> None:
+    """Anthropic at exactly 10%% remaining (at reserve): the Sonnet route is
+    excluded with the reserve: 10%% kept in the tank (D216) reason."""
+    snapshot = _snapshot(
+        {
+            "provider": "Anthropic/Claude",
+            "bucket": "Current session",
+            "status": "ON TRACK",
+            "remaining_pct": 10,
+        },
+    )
+    row = _by_route(_evaluate(catalog, snapshot), _SONNET_HIGH_ROUTE)
+    assert row.eligible is False
+    assert "reserve: 10% kept in the tank (D216)" in row.reasons
+
+
+def test_reserve_above_remains_eligible(catalog) -> None:
+    """Anthropic at 11%% remaining (above reserve): the Sonnet route is
+    eligible, no reserve reason."""
+    snapshot = _snapshot(
+        {
+            "provider": "Anthropic/Claude",
+            "bucket": "Current session",
+            "status": "ON TRACK",
+            "remaining_pct": 11,
+        },
+    )
+    row = _by_route(_evaluate(catalog, snapshot), _SONNET_HIGH_ROUTE)
+    assert row.eligible is True
+    assert not any(r.startswith("reserve:") for r in row.reasons)
+
+
+def test_reserve_and_health_both_exclude_independently(catalog) -> None:
+    """Both the reserve check and the health-based veto run and can each
+    independently exclude a route. At 0%% remaining (at or below reserve AND
+    exhausted), the row carries both reasons.
+    """
+    snapshot = _snapshot(
+        {
+            "provider": "Anthropic/Claude",
+            "bucket": "Current session",
+            "status": "HOT",
+            "remaining_pct": 0,
+        },
+    )
+    row = _by_route(_evaluate(catalog, snapshot), _SONNET_HIGH_ROUTE)
+    assert "reserve: 10% kept in the tank (D216)" in row.reasons
+    assert "channel exhausted" in row.reasons
 
 
 # ---------------------------------------------------------------------------

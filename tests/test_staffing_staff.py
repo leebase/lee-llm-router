@@ -606,3 +606,153 @@ def test_bind_validation_failures_never_create_a_ledger(
     with pytest.raises(StaffServiceError):
         staff(catalog, availability, **arguments)
     assert not path.exists()
+
+
+# ---------------------------------------------------------------------------
+# D216 subscription-channel reserve: auto ladder skips reserved channels;
+# bind refuses without --authorized-by lee and succeeds with it.
+# ---------------------------------------------------------------------------
+
+_SONNET_HIGH = "claude-claude-sonnet-5-high-anthropic-sub"
+_FABLE = "claude-claude-fable-5-1-high-anthropic-sub"
+
+
+def _snapshot_reserved(openai_pct: int = 7, anthropic_pct: int = 8):
+    """Both subscription channels below the 0.10 default reserve."""
+    return parse_availability(
+        {
+            "host": "staff-test",
+            "observed_at": "2026-09-09T11:59:00+00:00",
+            "subscriptions": [
+                {
+                    "provider": "OpenAI/Codex",
+                    "bucket": "Weekly limit",
+                    "status": "ON TRACK",
+                    "remaining_pct": openai_pct,
+                },
+                {
+                    "provider": "Anthropic/Claude",
+                    "bucket": "Current session",
+                    "status": "ON TRACK",
+                    "remaining_pct": anthropic_pct,
+                },
+                {
+                    "provider": "Gemini/agy",
+                    "bucket": "Gemini models",
+                    "status": "ON TRACK",
+                    "remaining_pct": 8,
+                },
+                {
+                    "provider": "OpenCode/Go",
+                    "bucket": "Weekly",
+                    "status": "ON TRACK",
+                    "remaining_pct": 8,
+                },
+            ],
+        },
+        now=NOW,
+    )
+
+
+@pytest.fixture
+def reserved_availability():
+    return _snapshot_reserved(openai_pct=7, anthropic_pct=8)
+
+
+def test_auto_ladder_skips_reserved_channel_to_cheapest_metered(
+    catalog, reserved_availability
+) -> None:
+    """With both subscriptions reserved, the cheapest metered route is
+    selected (z-ai glm-5.3-flash on openrouter)."""
+    result = _auto(catalog, reserved_availability)
+    payload = result.payload
+    selected = payload["selected_route"]
+    # The cheapest metered route is GLM on openrouter.
+    assert (
+        selected == GLM_OPENROUTER
+    ), f"expected cheapest metered route {GLM_OPENROUTER}, got {selected}"
+    for worker in payload["workers"]:
+        route_id = worker["route_id"]
+        if worker["channel"] in (
+            "openai-sub",
+            "anthropic-sub",
+            "gemini-sub",
+            "opencode-go",
+        ):
+            assert (
+                any(r.startswith("reserve:") for r in worker["reasons"])
+                or worker["eligible"] is False
+            ), f"subscription route {route_id} should be excluded by reserve"
+    assert selected == GLM_OPENROUTER
+    assert f"- {GLM_OPENROUTER} " in result.text and "eligible" in result.text
+
+
+def test_bind_reserved_channel_refuses_non_lee_without_writing(
+    catalog, reserved_availability, tmp_path: Path
+) -> None:
+    """A reserved channel's route binds only with --authorized-by lee."""
+    path = tmp_path / "reserved-refused.jsonl"
+    with pytest.raises(StaffServiceError) as excinfo:
+        staff(
+            catalog,
+            reserved_availability,
+            mode="bind",
+            role="impl",
+            class_key=CLASS_KEY,
+            at_date=AT,
+            bind_route=SOL_LOW,
+            authorized_by="chief",
+            reason="bypass reserve",
+            events_path=path,
+        )
+
+    assert excinfo.value.kind == "reserve"
+    assert not path.exists()
+
+
+def test_bind_reserved_channel_accepts_exact_lee_once(
+    catalog, reserved_availability, tmp_path: Path
+) -> None:
+    """A reserved channel's route binds successfully with --authorized-by lee."""
+    path = tmp_path / "reserved-accepted.jsonl"
+    result = staff(
+        catalog,
+        reserved_availability,
+        mode="bind",
+        role="impl",
+        class_key=CLASS_KEY,
+        at_date=AT,
+        bind_route=SOL_LOW,
+        authorized_by=BIND_AUTHORIZED_BY,
+        reason="Lee bypasses the subscription reserve",
+        events_path=path,
+        now=datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert result.payload["reserved"] is True
+    assert result.payload["never_automatic"] is False
+    assert result.event["authorized_by"] == "lee"
+    assert len(path.read_text().splitlines()) == 1
+    assert len(read_events(path)) == 1
+
+
+def test_bind_reserved_lane_shows_reserve_in_text(
+    catalog, reserved_availability, tmp_path: Path
+) -> None:
+    """The bind text output includes the reserve line."""
+    path = tmp_path / "reserved-text.jsonl"
+    result = staff(
+        catalog,
+        reserved_availability,
+        mode="bind",
+        role="impl",
+        class_key=CLASS_KEY,
+        at_date=AT,
+        bind_route=SOL_LOW,
+        authorized_by=BIND_AUTHORIZED_BY,
+        reason="Lee bypasses reserve",
+        events_path=path,
+        now=datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc),
+    )
+    assert "Reserve: yes" in result.text
+    assert "bound by lee" in result.text

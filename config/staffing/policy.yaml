@@ -282,6 +282,20 @@ crew_ordering_rule:
   source: decisions.md D215 ruling 3 (named-crew ordering rule recorded in
     policy.yaml)
 
+# D216: subscription-channel reserve fraction (policy floor, distinct from
+# the availability reader's health heuristics). Default 0.10 applies to every
+# subscription channel; per-channel overrides list explicit values. When a
+# channel's remaining_fraction in any binding window is at or below its
+# reserve, the channel's routes are excluded from automatic staffing with a
+# named reason citing D216. Anthropic and Gemini are explicitly 0.10 per D216.
+reserve_fraction:
+  default: 0.10
+  overrides:
+    - channel_id: anthropic-sub
+      reserve_fraction: 0.10
+    - channel_id: gemini-sub
+      reserve_fraction: 0.10
+
 # D211 ruling 3: terminal cost used by staffing ladder arithmetic when
 # automated rungs are exhausted. Chief's placeholder; Lee may change it.
 human_escalation_cost_usd: 5.00

@@ -54,6 +54,8 @@ __all__ = [
     "FeeEntry",
     "NeverAutomaticRule",
     "PolicyCatalog",
+    "ReserveFractionOverride",
+    "ReserveFractionPolicy",
     "ReviewIndependenceRule",
     "RoleClassEntry",
     "RoleFloorRecord",
@@ -253,6 +255,43 @@ class ReviewIndependenceRule:
 
 
 @dataclass(frozen=True)
+class ReserveFractionOverride:
+    """Per-channel override of the default reserve fraction (D216).
+
+    Each entry names a ``channel_id`` and the ``reserve_fraction`` applied
+    to it instead of the policy default. The override only has effect on
+    subscription channels; kind is validated by the catalog, not here.
+    """
+
+    channel_id: str
+    reserve_fraction: float
+
+
+@dataclass(frozen=True)
+class ReserveFractionPolicy:
+    r"""Subscription-channel reserve fraction policy (D216).
+
+    ``default`` is the reserve fraction applied to every subscription
+    channel that has no explicit ``override``. ``overrides`` is a tuple of
+    per-channel overrides, each naming a single channel_id and its explicit
+    reserve fraction. The reserve is a policy floor, distinct from the
+    availability reader's health heuristics (``likely_exhausted`` below
+    10\%, which stays as a fail-safe). D216 sets the default to 0.10 and
+    Anthropic and Gemini to 0.10 explicitly.
+    """
+
+    default: float
+    overrides: tuple[ReserveFractionOverride, ...]
+
+    def fraction_for(self, channel_id: str) -> float:
+        """Return the reserve fraction for a channel (override wins)."""
+        for override in self.overrides:
+            if override.channel_id == channel_id:
+                return override.reserve_fraction
+        return self.default
+
+
+@dataclass(frozen=True)
 class SpendCap:
     cap: float
     unit: str
@@ -305,6 +344,7 @@ class PolicyCatalog:
     role_floors: tuple[RoleFloorRecord, ...]
     reviewer_independence: tuple[ReviewIndependenceRule, ...]
     spend_caps: tuple[SpendCap, ...]
+    reserve_fraction: ReserveFractionPolicy
     crew_ordering_rule: CrewOrderingRule
     human_escalation_cost_usd: float
 
@@ -632,6 +672,28 @@ def _build_policy(data: Mapping[str, Any]) -> PolicyCatalog:
             document="policy",
             path="$.human_escalation_cost_usd",
         )
+    reserve = data["reserve_fraction"]
+    default = reserve["default"]
+    if not isinstance(default, (int, float)) or isinstance(default, bool):
+        raise StaffingCatalogError(
+            "staffing catalog document 'policy': 'reserve_fraction.default' "
+            f"must be a number (0 to 1, D216), got {default!r}",
+            document="policy",
+            path="$.reserve_fraction.default",
+        )
+    if default < 0 or default > 1:
+        raise StaffingCatalogError(
+            "staffing catalog document 'policy': 'reserve_fraction.default' "
+            f"must be between 0 and 1, got {default!r}",
+            document="policy",
+            path="$.reserve_fraction.default",
+        )
+    overrides = _build_tuple(
+        ReserveFractionOverride,
+        reserve.get("overrides", []),
+        "$.reserve_fraction.overrides",
+    )
+    reserve_policy = ReserveFractionPolicy(default=default, overrides=overrides)
     return PolicyCatalog(
         never_automatic=_build_tuple(
             NeverAutomaticRule, data["never_automatic"], "$.never_automatic"
@@ -645,6 +707,7 @@ def _build_policy(data: Mapping[str, Any]) -> PolicyCatalog:
             "$.reviewer_independence",
         ),
         spend_caps=_build_tuple(SpendCap, data["spend_caps"], "$.spend_caps"),
+        reserve_fraction=reserve_policy,
         crew_ordering_rule=_build(
             CrewOrderingRule, data["crew_ordering_rule"], "$.crew_ordering_rule"
         ),

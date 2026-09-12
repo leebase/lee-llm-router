@@ -178,6 +178,13 @@ def policy_doc() -> dict:
             ),
             "source": "scratch fixture crew_ordering_rule D215",
         },
+        "reserve_fraction": {
+            "default": 0.10,
+            "overrides": [
+                {"channel_id": "anthropic-sub", "reserve_fraction": 0.10},
+                {"channel_id": "gemini-sub", "reserve_fraction": 0.10},
+            ],
+        },
         "human_escalation_cost_usd": 5.00,
     }
 
