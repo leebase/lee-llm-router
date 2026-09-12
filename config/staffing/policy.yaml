@@ -271,6 +271,17 @@ reviewer_independence:
 
 spend_caps: []
 
+# D215 ruling 3: Named-crew ordering rule — within a role's array, order by
+# marginal price at authoring time with prepaid-first as the tie-break; a human
+# may pin otherwise with a stated reason.
+crew_ordering_rule:
+  decision: >-
+    Within a role's array, order by marginal price at authoring time with
+    prepaid-first as the tie-break; a human may pin otherwise with a stated
+    reason.
+  source: decisions.md D215 ruling 3 (named-crew ordering rule recorded in
+    policy.yaml)
+
 # D211 ruling 3: terminal cost used by staffing ladder arithmetic when
 # automated rungs are exhausted. Chief's placeholder; Lee may change it.
 human_escalation_cost_usd: 5.00

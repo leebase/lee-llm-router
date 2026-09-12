@@ -12,6 +12,7 @@
     "role_floors",
     "reviewer_independence",
     "spend_caps",
+    "crew_ordering_rule",
     "human_escalation_cost_usd"
   ],
   "properties": {
@@ -50,6 +51,10 @@
       "type": "array",
       "items": { "$ref": "#/$defs/spendCap" },
       "uniqueItems": true
+    },
+    "crew_ordering_rule": {
+      "description": "Named-crew ordering rule: within a role's array, order by marginal price at authoring time with prepaid-first as the tie-break; a human may pin otherwise with a stated reason (D215 ruling 3). Field is a single object with nonempty decision and source.",
+      "$ref": "#/$defs/crewOrderingRule"
     },
     "human_escalation_cost_usd": {
       "description": "Terminal human-escalation cost in USD for staffing ladder arithmetic (D211 ruling 3). The current value is the Chief's placeholder; Lee may change it, so the schema fixes only the shape: a finite nonnegative number (JSON Schema numbers are finite by construction; the loader additionally rejects the non-finite floats YAML permits, such as .nan and .inf). The current committed value lives in policy.yaml, not here.",
@@ -250,6 +255,22 @@
     "independenceSource": {
       "description": "Nonempty citation for this rule (decision record, archive note, or equivalent provenance).",
       "$ref": "#/$defs/nonemptyString"
+    },
+    "crewOrderingRule": {
+      "description": "Named-crew ordering rule recorded in policy.yaml (D215 ruling 3). A single required object with nonempty decision and source; not an array.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision", "source"],
+      "properties": {
+        "decision": {
+          "description": "Nonempty statement of the decided ordering rule.",
+          "$ref": "#/$defs/nonemptyString"
+        },
+        "source": {
+          "description": "Nonempty citation for this rule (decision record, archive note, or equivalent provenance).",
+          "$ref": "#/$defs/nonemptyString"
+        }
+      }
     },
     "spendCap": {
       "description": "One nonnegative spend cap with an opaque unit and scope. No unit, scope, or dollar-cap values are enumerated or baked in here.",

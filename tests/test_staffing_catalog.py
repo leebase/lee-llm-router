@@ -170,6 +170,14 @@ def policy_doc() -> dict:
                 "source": "scratch fixture policy",
             }
         ],
+        "crew_ordering_rule": {
+            "decision": (
+                "Within a role's array, order by marginal price at "
+                "authoring time with prepaid-first as the tie-break; a "
+                "human may pin otherwise with a stated reason."
+            ),
+            "source": "scratch fixture crew_ordering_rule D215",
+        },
         "human_escalation_cost_usd": 5.00,
     }
 

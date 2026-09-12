@@ -425,7 +425,8 @@ crews:
     governed_ref: sol-low-glm-pi
     supervisor_route: codex-gpt-5-6-sol-low-openai-sub
     worker_routes:
-      impl: [pi-z-ai-glm-5-3-flash-openrouter, pi-glm-5-3-flash-opencode-go]
+      # D215 ruling 1: prepaid-first (opencode-go) supersedes D204 round-14 order (openrouter first) for this interactive crew
+      impl: [pi-glm-5-3-flash-opencode-go, pi-z-ai-glm-5-3-flash-openrouter]
       plan: [codex-gpt-5-6-sol-low-openai-sub]
       review: [pi-deepseek-v4-pro-opencode-go, pi-deepseek-deepseek-v4-flash-openrouter]
       judge: [codex-gpt-6-astra-low-openai-sub]

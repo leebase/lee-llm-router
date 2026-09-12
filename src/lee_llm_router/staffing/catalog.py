@@ -46,6 +46,7 @@ __all__ = [
     "ChannelsCatalog",
     "CheapTrialRule",
     "ClassesCatalog",
+    "CrewOrderingRule",
     "Crew",
     "CrewsCatalog",
     "CrewSupervisor",
@@ -262,8 +263,23 @@ class SpendCap:
 
 
 @dataclass(frozen=True)
+class CrewOrderingRule:
+    """Named-crew ordering rule recorded in policy.yaml (D215 ruling 3).
+
+    A single object with nonempty decision and source; not an array of
+    records. This is recorded-data policy — a documented authoring rule,
+    not new selection code; nothing in this class computes or enforces
+    route ordering at runtime.
+    """
+
+    decision: str
+    source: str
+
+
+@dataclass(frozen=True)
 class PolicyCatalog:
-    """Typed policy document, including the D211 escalation-cost constant.
+    """Typed policy document, including the D211 escalation-cost constant
+    and the D215 crew-ordering rule.
 
     ``human_escalation_cost_usd`` is the terminal human-escalation cost in
     USD used by staffing ladder arithmetic when automated rungs are
@@ -271,7 +287,16 @@ class PolicyCatalog:
     placeholder and Lee may change it, so the schema fixes only the shape
     (finite nonnegative number); this field exposes the loaded value so
     Phase 2 consumers read it from the frozen catalog without raw YAML
-    access. Shape only; no decision logic.
+    access.
+
+    ``crew_ordering_rule`` is the named-crew ordering rule recorded in
+    policy.yaml (D215 ruling 3): a single object with nonempty decision and
+    source documenting that within a role's array, routes are ordered by
+    marginal price at authoring time with prepaid-first as the tie-break;
+    a human may pin otherwise with a stated reason. This is recorded-data
+    policy — a documented authoring rule, not new selection code; nothing
+    in this class computes or enforces route ordering at runtime. Shape
+    only; no decision logic.
     """
 
     never_automatic: tuple[NeverAutomaticRule, ...]
@@ -280,6 +305,7 @@ class PolicyCatalog:
     role_floors: tuple[RoleFloorRecord, ...]
     reviewer_independence: tuple[ReviewIndependenceRule, ...]
     spend_caps: tuple[SpendCap, ...]
+    crew_ordering_rule: CrewOrderingRule
     human_escalation_cost_usd: float
 
 
@@ -619,6 +645,9 @@ def _build_policy(data: Mapping[str, Any]) -> PolicyCatalog:
             "$.reviewer_independence",
         ),
         spend_caps=_build_tuple(SpendCap, data["spend_caps"], "$.spend_caps"),
+        crew_ordering_rule=_build(
+            CrewOrderingRule, data["crew_ordering_rule"], "$.crew_ordering_rule"
+        ),
         human_escalation_cost_usd=cost,
     )
 

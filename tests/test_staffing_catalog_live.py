@@ -90,6 +90,20 @@ GOVERNED_ROLE_TO_RECORD_STAGE = {
     "judge": "judge",
 }
 
+# D215 ruling 2 (2026-09-12): "Governed routes stop being pinned to metered
+# channels for accounting's sake once agent-orch prices attempts at both
+# list and marginal (Phase 4); until then the governed primary stays where
+# it is, with this decision as the reason." D215 ruling 1 reorders
+# sol-low-glm-pi's interactive `impl` array to prepaid-first while its live
+# governed `primary` intentionally stays pinned to the metered OpenRouter
+# lane until agent-orch's P4-4 marginal-cost work lands. This is the one
+# documented, narrowly-scoped exception to round 13(c)'s strict first-entry
+# equality; every other live-backed interactive record/role keeps the
+# strict check.
+_D215_GOVERNED_PRIMARY_ORDER_EXCEPTIONS: frozenset[tuple[str, str]] = frozenset(
+    {("sol-low-glm-pi", "primary")}
+)
+
 # Route identity in staffing catalog order (model, effort, harness, channel)
 # — the tuple every live worker must map to exactly one route by.
 Identity = tuple[str | None, str | None, str, str]
@@ -561,12 +575,21 @@ def test_round13_live_backed_interactive_records_resolve_governed_roles(
             stage = GOVERNED_ROLE_TO_RECORD_STAGE[role]
             refs = list((crew.worker_routes or {}).get(stage) or [])
             assert refs, f"{crew.crew_id}: no recorded {stage!r} role routes"
-            assert resolved.route_id == refs[0], (
-                f"{crew.crew_id}: live governed {role!r} {key} resolves to "
-                f"{resolved.route_id} {route_identity(resolved)}, which is "
-                f"not the first entry of the record's ordered {stage!r} "
-                f"routes {refs} (expected {refs[0]})"
-            )
+            if (crew.crew_id, role) in _D215_GOVERNED_PRIMARY_ORDER_EXCEPTIONS:
+                assert resolved.route_id in refs, (
+                    f"{crew.crew_id}: live governed {role!r} {key} resolves to "
+                    f"{resolved.route_id} {route_identity(resolved)}, which is "
+                    f"not even present in the record's ordered {stage!r} "
+                    f"routes {refs} (D215 ruling 2 permits it to trail, not "
+                    f"be absent)"
+                )
+            else:
+                assert resolved.route_id == refs[0], (
+                    f"{crew.crew_id}: live governed {role!r} {key} resolves to "
+                    f"{resolved.route_id} {route_identity(resolved)}, which is "
+                    f"not the first entry of the record's ordered {stage!r} "
+                    f"routes {refs} (expected {refs[0]})"
+                )
 
 
 def test_round13_sol_low_glm_pi_governed_roles_resolve_explicitly(
