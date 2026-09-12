@@ -1022,3 +1022,32 @@ def test_render_evidence_report_recommended_changes_both_states() -> None:
     assert "Recommended route changes:" in text_nonempty
     assert "Recommended route changes: none" not in text_nonempty
     assert "  recommended: route-cheaper" in text_nonempty
+
+
+def test_reviewer_fallbacks_no_selection_reason_is_distinct() -> None:
+    """A review record without a selection object is undecidable for its own
+    reason, not the independence-without-order reason (Chief, P5-1c review)."""
+    from lee_llm_router.staffing.evidence_report import (
+        _REVIEWER_FALLBACK_NO_SELECTION_REASON,
+        _REVIEWER_FALLBACK_UNAVAILABLE_REASON,
+        _reviewer_fallbacks,
+    )
+
+    no_selection = {"class_record": {"role": "review"}}
+    result = _reviewer_fallbacks([no_selection])
+    assert result == {
+        "count": 0,
+        "undecidable": 1,
+        "unavailable_reason": _REVIEWER_FALLBACK_NO_SELECTION_REASON,
+    }
+    independence = {
+        "class_record": {"role": "judge"},
+        "selection": {
+            "basis": "explain_cheapest_eligible",
+            "excluded": [{"route_id": "r", "reason": "independence"}],
+        },
+    }
+    both = _reviewer_fallbacks([no_selection, independence])
+    assert both["undecidable"] == 2
+    assert _REVIEWER_FALLBACK_NO_SELECTION_REASON in both["unavailable_reason"]
+    assert _REVIEWER_FALLBACK_UNAVAILABLE_REASON in both["unavailable_reason"]

@@ -429,6 +429,9 @@ _REVIEWER_FALLBACK_UNAVAILABLE_REASON: str = (
     "selection.excluded records independence exclusions without explain order; "
     "fallback cannot be read from the record"
 )
+_REVIEWER_FALLBACK_NO_SELECTION_REASON: str = (
+    "record carries no selection object; fallback cannot be read from the record"
+)
 
 
 def _is_reviewer_role(record: Mapping[str, Any]) -> bool:
@@ -468,12 +471,20 @@ def _reviewer_fallbacks(
     """
     count = 0
     undecidable = 0
+    reasons: list[str] = []
+
+    def _undecidable(reason: str) -> None:
+        nonlocal undecidable
+        undecidable += 1
+        if reason not in reasons:
+            reasons.append(reason)
+
     for record in members:
         if not _is_reviewer_role(record):
             continue
         selection = record.get("selection")
         if not isinstance(selection, Mapping):
-            undecidable += 1
+            _undecidable(_REVIEWER_FALLBACK_NO_SELECTION_REASON)
             continue
 
         basis = selection.get("basis")
@@ -493,14 +504,12 @@ def _reviewer_fallbacks(
                             has_independence = True
                             break
             if has_independence:
-                undecidable += 1
+                _undecidable(_REVIEWER_FALLBACK_UNAVAILABLE_REASON)
             continue
 
-        undecidable += 1
+        _undecidable(f"selection.basis {basis!r} is not a recognized basis")
 
-    unavailable_reason = (
-        _REVIEWER_FALLBACK_UNAVAILABLE_REASON if undecidable > 0 else None
-    )
+    unavailable_reason = "; ".join(reasons) if undecidable > 0 else None
     return {
         "count": count,
         "undecidable": undecidable,
