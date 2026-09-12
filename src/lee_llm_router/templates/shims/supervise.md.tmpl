@@ -70,26 +70,53 @@ schema-v2 attempt record to the per-host ledger.
 
 5. **Staff each packet as requested.** Form 1 — run exactly:
 
-       lee-llm-router staff --mode crew <name>
+       lee-llm-router staff --mode crew <name> --json
 
    Form 2 — run exactly:
 
        lee-llm-router staff --mode auto --role <role> --class <class> --json
 
-   filling `<role>` and `<class>` from the derivation. Read the staffing
-   block's selection basis, reason, exclusions, and reviewer disclosures
-   before dispatching.
+   filling `<role>` and `<class>` from the derivation. The two forms name
+   the chosen route and its same-role fallback ladder under different
+   JSON keys — read the one that matches the form you ran:
 
-6. **Dispatch the packet.** Run exactly:
+   - Form 1 (crew): the chosen route is `worker_routes.<role>[0]`; the
+     same-role fallback ladder is the remaining entries,
+     `worker_routes.<role>[1:]`, in order. Ignore the top-level
+     `escalation`/`escalation_ladder` fields — they are not role-scoped and
+     do not name the fallback ladder for every role.
+   - Form 2 (auto): the chosen route is `selected_route`; the same-role
+     fallback ladder is `escalation`, in order.
 
-       lee-llm-router run --role <role> --class <class> --packet <packet-path> --supervisor-route <supervisor-route-id> --owned-paths <owned-path> [--owned-paths <owned-path> ...] --class-derivation <derivation-json-path> --oracle <oracle-cmd> --json
+   Either way, also read the block's selection basis, reason, exclusions,
+   and reviewer disclosures before dispatching.
 
-   `--supervisor-route` attests your own route identity. `--owned-paths`
-   repeats every exact path this packet owns — nothing more.
-   `--class-derivation` carries the step-4 evidence. Pass `--oracle` with
-   the packet's finite oracle whenever it is a deterministic command; for a
-   judge-oracle packet the named reviewer is step 11. Dispatch parallel
-   packets only when their owned paths are disjoint.
+6. **Dispatch the packet with the block's chosen route.** Run exactly:
+
+       lee-llm-router run --role <role> --class <class> --packet <packet-path> --route <chosen-route-id> --supervisor-route <supervisor-route-id> --owned-paths <owned-path> [--owned-paths <owned-path> ...] --class-derivation <derivation-json-path> --oracle <oracle-cmd> --json
+
+   `--route` is exactly step 5's chosen route — never omitted, and never a
+   different route than the block chose. `run` never re-selects inside a
+   supervised loop: an omitted `--route` lets `run` auto-select its own
+   cheapest-eligible route, silently discarding the crew or auto-mode
+   choice the block just made. `--supervisor-route` attests your own route
+   identity. `--owned-paths` repeats every exact path this packet owns —
+   nothing more. `--class-derivation` carries the step-4 evidence. Pass
+   `--oracle` with the packet's finite oracle whenever it is a
+   deterministic command; for a judge-oracle packet the named reviewer is
+   step 11. Dispatch parallel packets only when their owned paths are
+   disjoint.
+
+   If `run` refuses the dispatch on eligibility (exit 3) because the
+   chosen route became ineligible between staffing and dispatch, do not
+   re-run `staff` and do not let `run` auto-select: take the next route in
+   step 5's same-role fallback ladder, record the fallback route and the
+   exact refusal reason on the attempt, and dispatch again with `--route`
+   set to that fallback. Repeat in ladder order only while `run` refuses on
+   eligibility (exit 3); stop and escalate per step 9 if the ladder is
+   exhausted. Any other nonzero exit (not 0, not 3) is not an eligibility
+   refusal — stop the fallback loop immediately and escalate per step 9
+   rather than treating it as a reason to keep trying the ladder.
 
 7. **Personally verify the oracle.** A worker's summary is never evidence.
    Run the oracle yourself, read the full candidate diff (`git status
@@ -123,16 +150,33 @@ schema-v2 attempt record to the per-host ledger.
         lee-llm-router evidence rollup
 
 11. **Independent review.** For every candidate you intend to accept,
-    staff an independent reviewer with the worker's route excluded as the
-    author (`--author-route <worker-route-id>` on both staff and run) and
-    dispatch exactly:
+    find the review route the same way step 5 found the worker route, from
+    the same form you are running:
 
-        lee-llm-router run --role review --class <review-class> --packet <review-packet-path> --author-route <worker-route-id> --supervisor-route <supervisor-route-id> --owned-paths <owned-path> [--owned-paths <owned-path> ...] --json
+    - Form 1 (crew): reuse step 5's crew block for this packet — one
+      `staff --mode crew <name> --json` call already names every role's
+      routes. The review route is `worker_routes.review[0]`; its same-role
+      fallback ladder is `worker_routes.review[1:]`. Crew bindings are a
+      fixed, pre-authorized declaration, so there is no `--author-route`
+      exclusion to apply here.
+    - Form 2 (auto): run
+      `staff --mode auto --role review --class <review-class>
+      --author-route <worker-route-id> --json` (excluding the worker's own
+      route as the author so review independence is evaluated), and read
+      that block's `selected_route` and `escalation` exactly as in step 5.
 
-    Classify its findings: contract-blocking defects, non-blocking
-    hardening, or future concerns; blocking findings cite the violated
-    requirement and a reproducer. Re-derive any classification that would
-    drive a change; never feed review labels straight into remediation.
+    Then dispatch exactly:
+
+        lee-llm-router run --role review --class <review-class> --packet <review-packet-path> --route <review-route-id> --author-route <worker-route-id> --supervisor-route <supervisor-route-id> --owned-paths <owned-path> [--owned-paths <owned-path> ...] --json
+
+    `--route` is exactly the review route found above — the review
+    dispatch never re-selects inside a supervised loop either, and follows
+    the same same-role-ladder-only fallback discipline as step 6 if `run`
+    refuses it on eligibility (exit 3). Classify its findings:
+    contract-blocking defects, non-blocking hardening, or future concerns;
+    blocking findings cite the violated requirement and a reproducer.
+    Re-derive any classification that would drive a change; never feed
+    review labels straight into remediation.
 
 12. **Inspect every diff.** After every worker run that had repository
     access, compare what changed against the packet's owned paths —

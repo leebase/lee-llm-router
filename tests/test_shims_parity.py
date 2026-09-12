@@ -219,12 +219,12 @@ def test_supervise_bodies_are_parity_checked_against_d213(tmp_path, monkeypatch)
 
     expected_signatures = (
         "lee-llm-router staff --from-packet <packet-path> --json",
-        "lee-llm-router staff --mode crew <name>",
+        "lee-llm-router staff --mode crew <name> --json",
         "lee-llm-router staff --mode auto --role <role> --class <class> --json",
         "lee-llm-router run --role <role> --class <class> --packet <packet-path> "
-        "--supervisor-route <supervisor-route-id> --owned-paths <owned-path> "
-        "[--owned-paths <owned-path> ...] --class-derivation "
-        "<derivation-json-path> --oracle <oracle-cmd> --json",
+        "--route <chosen-route-id> --supervisor-route <supervisor-route-id> "
+        "--owned-paths <owned-path> [--owned-paths <owned-path> ...] "
+        "--class-derivation <derivation-json-path> --oracle <oracle-cmd> --json",
         "lee-llm-router classify-failure --record <attempt-record-path> --json",
         "lee-llm-router next-action --input <classify-json-path>",
         "lee-llm-router census --json",
@@ -232,7 +232,8 @@ def test_supervise_bodies_are_parity_checked_against_d213(tmp_path, monkeypatch)
     )
     review_signature = (
         "lee-llm-router run --role review --class <review-class> --packet "
-        "<review-packet-path> --author-route <worker-route-id> "
+        "<review-packet-path> --route <review-route-id> "
+        "--author-route <worker-route-id> "
         "--supervisor-route <supervisor-route-id> --owned-paths <owned-path> "
         "[--owned-paths <owned-path> ...] --json"
     )
