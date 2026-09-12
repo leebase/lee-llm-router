@@ -11,7 +11,7 @@
 
 ## Scope
 
-lee-llm-router `7666ff3..0ff6b7f` and ai-workforce-benchmark `62e6494`.
+lee-llm-router `7666ff3..1e8e241` and ai-workforce-benchmark `62e6494`.
 
 ## Judge
 
