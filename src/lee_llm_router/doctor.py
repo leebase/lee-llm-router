@@ -948,6 +948,87 @@ def _run_evidence_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_evidence_ladders(args: argparse.Namespace) -> int:
+    """Run ``evidence ladders --derive``: derive cheapest-first ladders
+    from the attempt ledger, write the result, and diff against both
+    hand-authored ladder sources.
+    """
+    from pathlib import Path
+
+    from lee_llm_router.staffing import (
+        StaffingCatalogError,
+        load_staffing_catalog,
+    )
+    from lee_llm_router.staffing.json_int import dump_json
+    from lee_llm_router.staffing.ladder_derivation import (
+        derive_ladders,
+        diff_against_benchmark,
+        diff_against_crews,
+        render_ladder_diff,
+        write_derived_ladders,
+    )
+
+    def fail(message: str) -> int:
+        print(f"evidence ladders: {message}", file=sys.stderr)
+        return 3
+
+    catalog_dir = (
+        Path(args.catalog_dir)
+        if args.catalog_dir is not None
+        else _default_catalog_dir()
+    )
+
+    # Validate catalog dir early: an invalid --catalog-dir is a caller
+    # error and hard-fails (same pattern as _run_price / _run_route_show
+    # and P5-1's fix).
+    try:
+        load_staffing_catalog(catalog_dir)
+    except StaffingCatalogError as exc:
+        return fail(f"catalog invalid: {exc}")
+    except Exception as exc:
+        return fail(f"catalog invalid: {exc}")
+
+    output_dir = Path(args.output_dir) if args.output_dir is not None else None
+
+    try:
+        derived = derive_ladders()
+    except Exception as exc:
+        message = " ".join(str(exc).split())
+        return fail(message)
+
+    # Write the derived ladders file
+    try:
+        written_path = write_derived_ladders(derived, output_dir=output_dir)
+    except (OSError, UnicodeError) as exc:
+        message = " ".join(str(exc).split())
+        return fail(f"could not write output: {message}")
+
+    # Diff against benchmark and crews
+    try:
+        benchmark_diffs = diff_against_benchmark(derived, catalog_dir=catalog_dir)
+        crews_diffs = diff_against_crews(derived, catalog_dir=catalog_dir)
+    except Exception as exc:
+        message = " ".join(str(exc).split())
+        return fail(f"diff failed: {message}")
+
+    if args.json:
+        # JSON output: include derived ladders and diffs
+        output = {
+            "derived_ladders": derived,
+            "written_to": str(written_path),
+            "benchmark_diffs": benchmark_diffs,
+            "crews_diffs": crews_diffs,
+        }
+        print(dump_json(output))
+    else:
+        # Text output
+        print(f"Evidence ladders derived and written to {written_path}")
+        print()
+        print(render_ladder_diff(benchmark_diffs, crews_diffs))
+
+    return 0
+
+
 def _run_evidence_import(args: argparse.Namespace) -> int:
     """Import benchmark or recent Agent-Orch evidence."""
     from lee_llm_router.staffing.import_evidence import (
@@ -3419,6 +3500,41 @@ def main(argv: list[str] | None = None):
         help="Override source CSV path (must match the sidecar SHA-256)",
     )
     evidence_import_parser.set_defaults(func=_run_evidence_import)
+
+    evidence_ladders_parser = evidence_sub.add_parser(
+        "ladders",
+        help="Derive cheapest-first escalation ladders from the attempt ledger",
+    )
+    evidence_ladders_parser.add_argument(
+        "--derive",
+        action="store_true",
+        required=True,
+        help="Derive ladders, write output, and diff against hand-authored sources",
+    )
+    evidence_ladders_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit structured JSON output instead of plain text",
+    )
+    evidence_ladders_parser.add_argument(
+        "--catalog-dir",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Override catalog directory for route lookups and crews.yaml "
+            "(default: config/staffing)"
+        ),
+    )
+    evidence_ladders_parser.add_argument(
+        "--output-dir",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Output directory for the derived-ladders JSON file "
+            "(default: config/staffing)"
+        ),
+    )
+    evidence_ladders_parser.set_defaults(func=_run_evidence_ladders)
 
     template_parser = subparsers.add_parser(
         "template",
