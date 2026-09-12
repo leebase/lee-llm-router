@@ -603,3 +603,146 @@ the $10 ceiling.
   and top-level doc files, plus untracked `human-direction.md` and mission `direction-ledger.md`/
   `escalation-dispositions.md`/`recovery-inputs/` files) remains exactly as found — untouched,
   unstaged, uncommitted — for whichever lane owns it.
+
+## Group C — live proof, gate, review, close (P4-8, P4-9)
+
+Session: Sonnet 5 headless supervisor, 2026-09-12. Authority: D215 rulings 4-6. Repos touched:
+`auto-orch` (new mission, two commits), `agent-orch` (one commit), `lee-llm-router` (two
+commits). Ceiling $10 metered — actual metered spend this session: $0.03003313 (one
+`pi-deepseek-deepseek-v4-flash-openrouter` dispatch); every other dispatch was prepaid
+subscription (`agy-gemini-3-8-flash-high-gemini-sub` reviews, `codex_cli`/`gpt-5.6-sol` via
+the live governed cycles, `cost.basis: ["unavailable"]` or subscription-value consumption, not
+metered API spend) or supervisor-direct edits with no dispatch cost at all.
+
+### P4-8 — live proof
+
+Created additive mission `auto-orch/missions/staffing-proof` (`routing: crew: auto,
+fallback_crew: gemini-flash-tiered`; `ideation.enabled: false`; `scoring.max_candidates_per_cycle:
+1`; `workspace: /home/lee/projects/lee-llm-router`), avoiding `missions/linux-utilities` and
+`missions/snowflake-accelerator-revival` per instruction (both carry another lane's uncommitted
+WIP, confirmed via `git status --short missions/`). `fallback_crew` was switched from the
+first choice `opencode-go-economy` to `gemini-flash-tiered` after preflight showed the
+`opencode-go` channel at 8% headroom (D216 reserve floor) — cognitive-stage cost stays on the
+healthy (90%+) Gemini subscription instead. The one real backlog item (hand-authored in
+`backlog.md`, directed via `human-direction.md` per the existing D5/Sprint-44 direction-ledger
+mechanism): map `.toml`/`.ini` owned-path extensions to `yaml-config` in `derive_class.py`,
+the exact gap the D218 trial review's own "Future Concerns" section named. `human-direction.md`
+also asked the Author stage to set `escalation: {enabled: true, ladder: [...]}` on the
+implementation step (P4-5's gate item (a) mechanism, exercised live if it fires) — it never
+appeared in any authored playbook this session (the Author LLM did not act on the instruction);
+recorded below, not chased further, since D215 ruling 5(b) itself states an escalation firing
+is evidence if it occurs, not a requirement.
+
+**Platform defects discovered and fixed live** (D209/D87: repair failures and continue):
+
+1. **`escalation:` had no YAML parsing path at all** (agent-orch `playbook.py`). P4-5 built
+   the full `StepDefinition.escalation`/`EscalationIntent` engine mechanism but never wired a
+   playbook loader path for it — an authored `escalation:` block was silently rejected as an
+   unsupported step key (`_PLAYBOOK_STEP_KEYS` never listed it). Packet dispatched
+   (`agy-gemini-3-8-flash-high-gemini-sub` attempt made zero changes; escalated to
+   `pi-deepseek-deepseek-v4-flash-openrouter`, which implemented `_parse_escalation` correctly
+   but silently deleted and fused an unrelated pre-existing test with its own new one —
+   supervisor-fixed directly, restoring the deleted test under its own name). Independent
+   review (`agy`, author route excluded): REVIEW VERDICT ACCEPT, 0 blocking. Committed
+   agent-orch `7296c38`.
+2. **The `auto` crew's own packet placeholder always failed the real router.**
+   `write_backlog_packet`'s fixed `- Owned paths: .` collapses to the empty string under
+   `lee_llm_router.staffing.derive_class._parse_owned_paths`'s own stripping — every real
+   `auto`-crew cycle before this fix silently fell back to `fallback_crew`, never actually
+   exercising the router, since P4-6/P4-7's own commits (Group B, this same day) were staffed
+   directly rather than dispatched through their own new mechanism. Changed the placeholder to
+   `` `unspecified-scope.py` `` (needs a real extension too — the packet's language is derived
+   from it before any `--language` override applies).
+3. **`resolve_role_route`'s harness/model lookup was structurally broken.** It read
+   `catalog explain --json`'s top-level key as `"workers"`/`"eligible"` — the real CLI's key
+   is `"routes"`, and its per-route entries deliberately never include harness/model/effort at
+   all (`_explain_route_json`'s own committed docstring: "the route id is the only route
+   label"). `harness` is now derived from `selected_route`'s own hyphen-prefix naming
+   convention (verified zero mismatches across all 28 rows in
+   `lee-llm-router/config/staffing/routes.yaml`); `model` is resolved via the already-committed
+   `lee-llm-router price --route ID --input 0 --output 0 --json` (P4-1) instead of `catalog
+   explain`. Confirmed live-blocking, not cosmetic: a first attempt at this fix left
+   `model: None`, and the very next live cycle failed with "pricing admission refused ...
+   metered route has no trusted model identity." `effort` still has no CLI disclosure path
+   and stays `None` — recorded as a needs-lee/chief cross-repo architecture question (which
+   repo should own exposing a selected route's dispatch metadata), not decided unilaterally.
+   The `fake_lee_llm_router.py` test fixture had encoded the same wrong shape the buggy code
+   expected (a mocked-seam trap; `test_resolve_role_route_with_real_cli`'s
+   `except RouteUnavailable: pytest.skip(...)` is exactly what let it go undetected) — fixture
+   and test corrected to match reality; the seam test now genuinely passes against the real
+   installed binary. Two independent-review rounds (`agy`, author route excluded — this was
+   supervisor-authored, not worker-dispatched): round 1 caught the deeper `catalog explain`
+   defect a first attempt missed; round 2 (after the `price`-based fix) ACCEPTed with 3
+   hardening findings (fail-closed on no model, payload type guard, real-CLI test model
+   assertion) all applied before commit. Committed auto-orch `d6fcb66`, `68a2297`.
+
+**Live cycles** (`auto-orch run-cycle staffing-proof`, each detached/polled):
+
+- Cycle 1 (`20260912T085809Z`): mandate fell back to `fallback_crew` (defect 2, not yet
+  fixed) — a real, correctly-recorded fail-closed instance of the required "fails closed to
+  the mission's last named crew with a recorded reason if the router is unavailable" behavior,
+  just for an unintended reason. Failed downstream at the template's `step_08_user_smoke_gate`
+  (`smoke_manifest.start_command` interpreter mismatch) — unrelated to routing.
+- Cycle 2 (`20260912T094913Z`): after defects 2+3's first pass, mandate resolved genuinely
+  through the router (`fallback_reason: null`) for the first time — crashed before Execute on
+  an unrelated Author-stage worker timeout (`antigravity_gemini38_flash_high`, 600s), a
+  platform reliability characteristic of the Gemini Flash cognitive-stage worker, not an
+  auto-crew defect.
+- Cycle 3 (`20260912T100049Z`): mandate resolved via router (`source: router_auto`) again;
+  Execute genuinely ran a governed attempt — and failed exactly as defect 3 predicted before
+  it was fully fixed: "pricing admission refused ... metered route has no trusted model
+  identity." This is the evidence that made defect 3's `model` fix non-optional.
+- Cycle 4 (`20260912T102251Z`, after defect 3's full fix): mandate resolved via router,
+  `fallback_reason: null`, real model identities (`gpt-5.6-sol` via `codex_cli`) on all three
+  governed roles. Execute ran the full playbook end to end — 8 real attempts across 7 steps,
+  each with a real `route-selection.json` (`selected_route: codex-gpt-5-6-sol-low-openai-sub`
+  family) and `usage.json` (`cost_usd` populated per attempt, e.g. $3.6550544 /
+  $2.0004984 / $0.4419648 / $0.5664672 / $0.5663392 / $3.0946152 / $3.9828576 / $4.6959808;
+  `cost_usd_marginal: "unavailable"` on every attempt — P4-4's own documented fail-open
+  behavior for this harness/model, not a new gap). No ESCALATE fired (not required). The
+  cycle's own `evaluate` stage still recorded `cycle_outcome: failed`: a later
+  `step_08b_user_simulation_gate` reported the tester's claimed CLI exit codes (0) not matching
+  the orchestrator's independently observed exit codes (1) for several `lee-llm-router`
+  commands — independent review confirmed the actual cause is that gate's verification
+  re-run invoking bare `python3` (no venv/`PYTHONPATH`), not a defect in the delivered diff:
+  the same commands run with the venv's interpreter all exit 0. Recorded as a needs-lee
+  orchestration-tooling gap (playbooks targeting router commands should use `.venv/bin/python`
+  or the installed `lee-llm-router` entry point), not fixed here (out of this proof's scope).
+
+**Backlog item landed despite the cycle-level "failed" outcome:** the actual diff produced by
+cycle 4's governed run (`lee-llm-router-agent-orch-runs/ba56e712bfe2`) — `.toml`/`.ini` ->
+`yaml-config` in `_EXTENSION_LANGUAGES`, six new tests — was independently verified by the
+supervisor (targeted oracle 28/28, full router suite 1717 passed/1 skipped, Black/Ruff clean)
+and independently reviewed (`agy`, author route `codex-gpt-5-6-sol-low-openai-sub` excluded):
+REVIEW VERDICT ACCEPT, 0 contract-blocking, root cause of the gate discrepancy confirmed as
+above. Committed `1d9055e` (also folds in Group B's previously-uncommitted execution-log/
+needs-lee entries, found sitting unstaged in this repo's working tree since that session).
+
+**Gate (b) evidence, in the sprint's own terms:** one live governed Auto-Orch cycle under an
+`auto` crew on a real small backlog item — satisfied by cycle 4. Every attempt priced at list
+(and marginal where the router can resolve it; `unavailable` fail-open elsewhere, as designed)
+— satisfied. The block in the playbook mandate, written and cached to
+`cycle-reports/<cycle_id>/routing/auto-crew-mandate.json` every cycle — satisfied. Escalation
+if it occurs: did not occur this session; not required. All rows in the ledger: the governed
+run's own `route-selection.json`/`usage.json` per attempt stand as the ledger evidence (the
+router's own `attempts.jsonl` only records `lee-llm-router run`/`staff`/`price` dispatches,
+not agent-orch's own worker adapter calls, which is what actually executes a governed step —
+`auto_crew`'s `staff`/`price` subprocess calls are read-only class/pricing queries, not attempt
+dispatches, so they are not separately ledgered rows).
+
+**Recorded, not resolved this session (needs-lee/chief):**
+- Cross-repo architecture question: which repo should own exposing a router-selected route's
+  dispatch metadata (harness/model/effort) for a caller like `auto-orch` that must actually
+  invoke it — a new `lee-llm-router` CLI capability, or `auto-orch` reading `routes.yaml`
+  directly as shared config data. The route-id-prefix (`harness`) and `price` (`model`)
+  workarounds in this session's fix are real and verified working, not placeholders, but
+  `effort` has no resolution path today.
+- The trusted playbook template's "user simulation"/"user smoke" gate convention invokes
+  verification commands via bare `python3`, which cannot see a target repo's venv/editable
+  install — a real, reproducible false-negative source for any target repo (like
+  `lee-llm-router`) that isn't installed into system site-packages.
+- `staffing-proof`'s own `human-direction.md` asked the Author stage to enable
+  `escalation:` on the implementation step; it never did across four cycles. Not investigated
+  further (out of this proof's bounded scope; escalation firing was evidence-if-it-occurs, not
+  required) — worth a look if a future session wants to actually observe ESCALATE fire through
+  the authoring pipeline rather than only through P4-5's own hand-built `StepDefinition` test.

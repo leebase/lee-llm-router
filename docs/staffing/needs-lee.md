@@ -647,3 +647,26 @@ Also recorded by this session, not Group A2's to fix: the P4-6/P4-7 blocker abov
 open, and three pre-existing, unrelated uncommitted working-tree changes (`context.md`,
 `result-review.md`, `docs/crew-resolver/execution-log.md` — Crew Resolver Sprint 6 status
 notes) were present at session start and deliberately left untouched.
+
+## Phase 4 Group C (P4-8 live proof, 2026-09-12): two cross-repo needs-lee/chief items
+
+Full detail in `phase4-execution-log.md`'s "Group C" section. Summary:
+
+1. **Route dispatch metadata ownership.** A caller like `auto-orch` that must actually invoke
+   a router-selected route needs its harness/model/effort. `lee-llm-router catalog explain
+   --json` deliberately never discloses them. This session's fix derives `harness` from the
+   route_id's own naming convention and `model` via `price --route ID --json` — both real and
+   verified working — but `effort` has no resolution path today, and neither workaround is a
+   substitute for a real decision on which repo should own this and how. Not decided
+   unilaterally by a bounded proof session.
+2. **Trusted playbook template's user-simulation/smoke gate invokes bare `python3`.** Any
+   target repo not installed into system site-packages (i.e. anything using a `.venv`, which
+   is most of this estate) will see false-negative gate failures independent of the actual
+   code's correctness — confirmed live, root-caused by independent review. Playbooks
+   targeting router-style CLI commands should invoke `.venv/bin/python` or an installed CLI
+   entry point instead.
+
+Neither blocked Phase 4's gate (b): a live cycle proved the `auto` crew's actual mechanism
+(router-resolved mandate, real governed attempts, real pricing) works once the mid-session
+fixes above landed; the backlog item itself was landed and independently reviewed despite the
+cycle's own reported `failed` outcome (caused by item 2, not by the delivered diff).
