@@ -746,3 +746,48 @@ dispatches, so they are not separately ledgered rows).
   further (out of this proof's bounded scope; escalation firing was evidence-if-it-occurs, not
   required) — worth a look if a future session wants to actually observe ESCALATE fire through
   the authoring pipeline rather than only through P4-5's own hand-built `StepDefinition` test.
+
+### P4-9 — gate (a)-(e)
+
+Gate items (a)-(c) observed as above (this section's own "P4-8" narrative for (a)/(b); suite
+counts: router 1717/1/0, agent-orch 1940/9/3-pre-existing, auto-orch 1514/2/1-pre-existing).
+
+**Independent gate review, round 1** (`codex-gpt-6-astra-low-openai-sub`, read-only, 1200s
+ceiling, detached+polled): **REJECT**, 4 contract-blocking findings, all reproduced by the
+supervisor before fixing:
+1. `agent-orch/semantic.py`'s `build_judge_packet` never instructed a real judge to include
+   `rejection_kind` on a false verdict, though `SEMANTIC_VERDICT_SCHEMA`'s `if`/`then` requires
+   it — every test's fake judge adapter supplied the field directly, masking that a real judge
+   dispatch would fail schema validation on any genuine rejection.
+2. `auto-orch/auto_crew.py`'s `derive_task_type` (P4-7) read `class_derivation.class_key`, a
+   key path the real router CLI never populates (the real payload carries `class_key` at the
+   top level, or nested at `class_derivation.class.class_key`) — confirmed live, it always
+   returned `None` in production; masked by the packet's own fake-CLI test encoding the same
+   wrong shape.
+3. `agent-orch/engine.py`'s escalation eligibility check had no `attempt_number < last_attempt`
+   gate — a `capability_rejected` verdict on a step's own final allowed attempt recorded
+   `policy_decision: "ESCALATE"` and a `RUNNING`/next-attempt-number persisted state the
+   enclosing `for attempt_number in range(first_attempt, last_attempt + 1)` loop then never
+   actually dispatches. The existing gate test (`max_attempts=2`) never exercised this
+   boundary.
+4. `_snapshot_step_payload` (`engine.py`) had no branch for `step.escalation` at all — a sealed
+   playbook's escalation configuration silently became `None` on reload/resume, since `resume`
+   always executes the sealed snapshot, not the live source playbook.
+
+Remediated: `agent-orch` `88ce8ac` (findings 1, 3, 4 — new tests
+`test_judge_packet_instructs_rejection_kind_on_a_false_verdict`,
+`test_escalate_on_final_attempt_halts_instead_of_a_phantom_transition`,
+`test_playbook_snapshot_round_trips_step_escalation`); `auto-orch` `e345126` (finding 2 — new
+test `test_derive_task_type_with_real_cli`, no catch-and-skip once the binary is confirmed
+present, same discipline as P4-8's real-CLI test fix). All three were confirmed live/reproduced
+directly (not accepted on the reviewer's word) before fixing. Full suites re-confirmed green
+at the counts above.
+
+**Independent gate review, round 2** (same route): **ACCEPT**, 0 contract-blocking, 0 new
+regressions; suite counts matched exactly (agent-orch's own sandbox reported 104 failures in
+round 1 and again in round 2 — same failure set both times, ~96 of them Chromium-sandbox/
+socket/read-only-fixture noise specific to that reviewer's environment, explicitly reconciled
+against the supervisor's own 3-failure count rather than treated as a contradiction). One
+trivial hardening note (a stale docstring key-path reference) fixed as `9b8e8dd`.
+
+Closing report: `chief-of-staff/tmp/staffing-p4/closing-report-c.md`. Chief seals D217.

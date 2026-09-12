@@ -670,3 +670,10 @@ Neither blocked Phase 4's gate (b): a live cycle proved the `auto` crew's actual
 (router-resolved mandate, real governed attempts, real pricing) works once the mid-session
 fixes above landed; the backlog item itself was landed and independently reviewed despite the
 cycle's own reported `failed` outcome (caused by item 2, not by the delivered diff).
+
+**Addendum (P4-9 gate, 2026-09-12):** a third item from the same live proof — the
+`staffing-proof` mission's `human-direction.md` asked the Author stage to enable
+`escalation:` on the implementation step; it never did across four cycles. Not investigated
+further (escalation firing was evidence-if-it-occurs for gate (b), not a requirement) — worth
+a look if a future session wants to observe ESCALATE fire through the real authoring pipeline
+rather than only through P4-5's own hand-built `StepDefinition` test.
