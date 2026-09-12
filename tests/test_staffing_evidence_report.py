@@ -456,8 +456,191 @@ def test_reviewer_fallback_detected(tmp_path, monkeypatch) -> None:
     )
     classes = report["classes"]
     row = next(c for c in classes if c["route_id"] == "route-d")
-    assert row["reviewer_fallbacks"] == 1
-    assert len(row["reviewer_fallback_details"]) == 1
+    rf = row["reviewer_fallbacks"]
+    assert rf["count"] == 0
+    assert rf["undecidable"] == 1
+    assert rf["unavailable_reason"] == (
+        "selection.excluded records independence exclusions without explain order; "
+        "fallback cannot be read from the record"
+    )
+
+
+_FALLBACK_REASON = (
+    "selection.excluded records independence exclusions without explain order; "
+    "fallback cannot be read from the record"
+)
+
+
+@pytest.mark.parametrize(
+    ("case_id", "selection", "no_selection", "expected_rf"),
+    [
+        (
+            "explicit-ind",
+            {
+                "basis": "explicit",
+                "reason": "explicit --route chosen",
+                "explain_ref": "ref",
+                "excluded": [{"route_id": "author", "reason": "independence"}],
+            },
+            False,
+            {"count": 0, "undecidable": 0, "unavailable_reason": None},
+        ),
+        (
+            "explain-clean",
+            {
+                "basis": "explain_cheapest_eligible",
+                "reason": "cheapest",
+                "explain_ref": "ref",
+                "excluded": [{"route_id": "other", "reason": "never_automatic"}],
+            },
+            False,
+            {"count": 0, "undecidable": 0, "unavailable_reason": None},
+        ),
+        (
+            "explain-ind",
+            {
+                "basis": "explain_cheapest_eligible",
+                "reason": "fallback",
+                "explain_ref": "ref",
+                "excluded": [{"route_id": "author", "reason": "independence"}],
+            },
+            False,
+            {"count": 0, "undecidable": 1, "unavailable_reason": _FALLBACK_REASON},
+        ),
+        (
+            "no-sel",
+            None,
+            True,
+            {"count": 0, "undecidable": 1, "unavailable_reason": _FALLBACK_REASON},
+        ),
+    ],
+)
+def test_reviewer_fallback_truth_rules(
+    monkeypatch, case_id, selection, no_selection, expected_rf
+) -> None:
+    """Evaluate reviewer fallback truth rules across basis and exclusion states."""
+    rec = _record(
+        route_id=f"route-{case_id}",
+        class_key="review/judge/none/xs/markdown",
+        role="review",
+        selection=selection,
+    )
+    if no_selection:
+        rec.pop("selection", None)
+    monkeypatch.setattr(
+        "lee_llm_router.staffing.evidence_report.read_attempts",
+        lambda p: [rec],
+    )
+    report = build_evidence_report("2026-09", catalog_dir=str(REPO_CONFIG_DIR))
+    row = next(c for c in report["classes"] if c["route_id"] == f"route-{case_id}")
+    assert row["reviewer_fallbacks"] == expected_rf
+
+
+def test_render_evidence_report_reviewer_fallbacks_both_states() -> None:
+    """Renderer outputs 'reviewer_fallbacks: 0' when 0/0, and formatted
+    string otherwise.
+    """
+    reason = (
+        "selection.excluded records independence exclusions without explain order; "
+        "fallback cannot be read from the record"
+    )
+    report_clean = {
+        "report_for": "2026-09",
+        "classes": [
+            {
+                "route_id": "route-1",
+                "class_key": "review/judge/none/xs/markdown",
+                "attempts": 1,
+                "verified_pass": 1,
+                "pass_rate": 1.0,
+                "comparison_eligible": False,
+                "cost_per_verified_success": {"usd_list": 0.05, "usd_marginal": 0.02},
+                "tokens_per_verified_success": {},
+                "escalations": 0,
+                "escalation_details": [],
+                "reviewer_fallbacks": {
+                    "count": 0,
+                    "undecidable": 0,
+                    "unavailable_reason": None,
+                },
+            }
+        ],
+        "channels": [],
+        "route_changes": [],
+    }
+    text_clean = render_evidence_report(report_clean)
+    assert "  reviewer_fallbacks: 0" in text_clean
+    assert "undecidable" not in text_clean
+
+    report_undecidable = {
+        "report_for": "2026-09",
+        "classes": [
+            {
+                "route_id": "route-2",
+                "class_key": "review/judge/none/xs/markdown",
+                "attempts": 1,
+                "verified_pass": 1,
+                "pass_rate": 1.0,
+                "comparison_eligible": False,
+                "cost_per_verified_success": {"usd_list": 0.05, "usd_marginal": 0.02},
+                "tokens_per_verified_success": {},
+                "escalations": 0,
+                "escalation_details": [],
+                "reviewer_fallbacks": {
+                    "count": 0,
+                    "undecidable": 1,
+                    "unavailable_reason": reason,
+                },
+            }
+        ],
+        "channels": [],
+        "route_changes": [],
+    }
+    text_undecidable = render_evidence_report(report_undecidable)
+    assert f"  reviewer_fallbacks: 0 (+1 undecidable: {reason})" in text_undecidable
+
+
+def test_reviewer_fallbacks_json_shape(tmp_path, monkeypatch) -> None:
+    """The JSON output presents reviewer_fallbacks as an object with
+    count, undecidable, unavailable_reason.
+    """
+    from lee_llm_router.staffing.json_int import dump_json
+    from lee_llm_router.staffing.ledger import (
+        ATTEMPTS_FILE_ENV_VAR,
+        append_attempt,
+    )
+
+    ledger = tmp_path / "ledger.jsonl"
+    monkeypatch.setenv(ATTEMPTS_FILE_ENV_VAR, str(ledger))
+    ledger.write_text("", encoding="utf-8")
+
+    append_attempt(
+        _record(
+            route_id="route-json",
+            class_key="review/judge/none/xs/markdown",
+            role="review",
+            selection={
+                "basis": "explain_cheapest_eligible",
+                "reason": "fallback",
+                "explain_ref": "ref",
+                "excluded": [{"route_id": "author", "reason": "independence"}],
+            },
+        ),
+        path=ledger,
+    )
+
+    report = build_evidence_report("2026-09", catalog_dir=str(REPO_CONFIG_DIR))
+    raw_json = dump_json(report)
+    parsed = json.loads(raw_json)
+    row = next(c for c in parsed["classes"] if c["route_id"] == "route-json")
+    assert isinstance(row["reviewer_fallbacks"], dict)
+    rf = row["reviewer_fallbacks"]
+    assert set(rf.keys()) == {"count", "undecidable", "unavailable_reason"}
+    assert isinstance(rf["count"], int)
+    assert isinstance(rf["undecidable"], int)
+    assert isinstance(rf["unavailable_reason"], str)
+    assert rf["count"] == 0
+    assert rf["undecidable"] == 1
 
 
 # ---------------------------------------------------------------------------

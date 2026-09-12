@@ -425,6 +425,11 @@ def _count_escalations(
 _REVIEWER_ROLES: frozenset[str] = frozenset({"review", "judge"})
 """Roles where independence/applicability exclusions can trigger a fallback."""
 
+_REVIEWER_FALLBACK_UNAVAILABLE_REASON: str = (
+    "selection.excluded records independence exclusions without explain order; "
+    "fallback cannot be read from the record"
+)
+
 
 def _is_reviewer_role(record: Mapping[str, Any]) -> bool:
     """True when the record's class_record.role or class_role is review/judge."""
@@ -436,68 +441,71 @@ def _is_reviewer_role(record: Mapping[str, Any]) -> bool:
     role = record.get("class_role")
     if isinstance(role, str) and role in _REVIEWER_ROLES:
         return True
+    ck = _class_key(record)
+    if isinstance(ck, str) and ck.split("/", 1)[0] in _REVIEWER_ROLES:
+        return True
     return False
 
 
 def _reviewer_fallbacks(
     members: list[Mapping[str, Any]],
-) -> list[dict[str, Any]]:
-    """Identify reviewer-fallback records in the group.
+) -> dict[str, Any]:
+    """Identify reviewer-fallback counts in the group truthfully.
 
-    A reviewer fallback is a review/judge attempt whose
-    ``selection.reason`` or ``selection.excluded`` shows that the
-    independence exclusion could not be satisfied and the router fell back
-    to a different route.  Reads ``selection.basis`` / ``selection.reason``
-    as recorded — never re-runs eligibility.
+    For each review/judge-role record:
+    - ``basis == "explicit"``: not a fallback (the caller chose the route;
+      exclusions are enforcement). Certain.
+    - ``basis == "explain_cheapest_eligible"``: if ``selection.excluded`` has
+      no independence entry, not a fallback (certain). If it has an
+      independence entry, fallback status is undecidable from the record
+      because ``selection.excluded`` records route ids and reasons without
+      order or marginal price, and re-running eligibility is forbidden.
+    - any other basis, or no ``selection``: undecidable.
 
-    Returns a list of fallback descriptions.  When the selection data does
-    not carry enough information to determine a fallback truthfully, reports
-    the column as ``unavailable`` with the reason.
+    Returns:
+        ``{"count": <int>, "undecidable": <int>, "unavailable_reason": <str or None>}``
+        where ``unavailable_reason`` is set when ``undecidable > 0``, else None.
     """
-    fallbacks: list[dict[str, Any]] = []
+    count = 0
+    undecidable = 0
     for record in members:
         if not _is_reviewer_role(record):
             continue
         selection = record.get("selection")
         if not isinstance(selection, Mapping):
+            undecidable += 1
             continue
-        excluded = selection.get("excluded")
-        reason = selection.get("reason")
+
         basis = selection.get("basis")
+        if basis == "explicit":
+            continue
+        if basis == "explain_cheapest_eligible":
+            excluded = selection.get("excluded")
+            has_independence = False
+            if isinstance(excluded, list):
+                for exclusion in excluded:
+                    if isinstance(exclusion, Mapping):
+                        excl_reason = exclusion.get("reason", "")
+                        if (
+                            isinstance(excl_reason, str)
+                            and "independence" in excl_reason.lower()
+                        ):
+                            has_independence = True
+                            break
+            if has_independence:
+                undecidable += 1
+            continue
 
-        # Check for independence-related exclusion
-        found_fallback = False
-        if isinstance(excluded, list):
-            for exclusion in excluded:
-                if isinstance(exclusion, Mapping):
-                    excl_reason = exclusion.get("reason", "")
-                    if (
-                        isinstance(excl_reason, str)
-                        and "independence" in excl_reason.lower()
-                    ):
-                        found_fallback = True
-                        break
+        undecidable += 1
 
-        if found_fallback:
-            fallbacks.append(
-                {
-                    "attempt_id": record.get("attempt_id"),
-                    "selection_basis": basis,
-                    "selection_reason": reason,
-                    "fallback_evidence": "independence exclusion in selection.excluded",
-                }
-            )
-        elif isinstance(reason, str) and "independence" in reason.lower():
-            fallbacks.append(
-                {
-                    "attempt_id": record.get("attempt_id"),
-                    "selection_basis": basis,
-                    "selection_reason": reason,
-                    "fallback_evidence": "independence exclusion in selection.reason",
-                }
-            )
-
-    return fallbacks
+    unavailable_reason = (
+        _REVIEWER_FALLBACK_UNAVAILABLE_REASON if undecidable > 0 else None
+    )
+    return {
+        "count": count,
+        "undecidable": undecidable,
+        "unavailable_reason": unavailable_reason,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -557,8 +565,7 @@ def _enrich_group(
         "tokens_per_verified_success": tokens,
         "escalations": len(escalations),
         "escalation_details": escalations,
-        "reviewer_fallbacks": len(fallbacks),
-        "reviewer_fallback_details": fallbacks,
+        "reviewer_fallbacks": fallbacks,
     }
 
 
@@ -919,14 +926,23 @@ def render_evidence_report(report: dict[str, Any]) -> str:
                         f"reason={esc.get('escalation_reason') or 'N/A'}"
                     )
 
-            lines.append(f"  reviewer_fallbacks: {group['reviewer_fallbacks']}")
-            if group["reviewer_fallback_details"]:
-                for fb in group["reviewer_fallback_details"]:
-                    lines.append(
-                        f"    -> {fb.get('attempt_id')} "
-                        f"basis={fb.get('selection_basis')} "
-                        f"reason={fb.get('selection_reason') or 'N/A'}"
-                    )
+            rf = group["reviewer_fallbacks"]
+            if isinstance(rf, Mapping):
+                rf_count = rf.get("count", 0)
+                rf_undecidable = rf.get("undecidable", 0)
+                rf_reason = rf.get("unavailable_reason")
+            else:
+                rf_count = int(rf)
+                rf_undecidable = 0
+                rf_reason = None
+
+            if rf_count == 0 and rf_undecidable == 0:
+                lines.append("  reviewer_fallbacks: 0")
+            else:
+                lines.append(
+                    f"  reviewer_fallbacks: {rf_count} "
+                    f"(+{rf_undecidable} undecidable: {rf_reason})"
+                )
             lines.append("")
 
     channels = report.get("channels", [])
