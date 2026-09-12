@@ -514,3 +514,50 @@ Phase 3 item. Carried to Phase 4: reviewers need test-execution tools; judge ver
 be recorded as judge outcomes rather than `unverified`; headless supervisor sessions must run
 router commands in the foreground (fixed in the skill) and are launched via the harness
 command form, never with a command file's contents as the prompt.
+
+## Phase 4 Group A — router and agent-orch (2026-09-12/13)
+
+All six Group A packets committed and independently reviewed; see
+`docs/staffing/phase4-execution-log.md` for the full record. Router: `0d8ca17` (P4-0 contract
+pass + P4-1 `price` command), `20d5176` (P4-2 crew reorder + `crew_ordering_rule`), `19ee902`
+(P4-2b subscription reserve, D216). Agent-orch: `af5dea5` (P4-3 `platform_timeout` +
+`verification_tier`), `39a0457` (P4-4 `cost_usd_marginal`), `7751a07` (P4-5 `ESCALATE`, gate
+item (a)). Owner suites green in both repos (router full suite; agent-orch full suite modulo
+3 pre-existing, unrelated `tests/test_codex_usage.py` failures present on `HEAD` before any
+Phase 4 change — not a regression, not fixed here, out of Group A's scope).
+
+**Blocking for Group B / Group C, or for whoever next touches `agent-orch`:**
+
+- **Pre-existing, unrelated uncommitted WIP in `agent-orch` is stashed, not popped.** Before
+  any Group A dispatch, `git stash push -u -m "pre-existing WIP unrelated to Phase 4
+  staffing, set aside by Sonnet supervisor 2026-09-12"` was run in `agent-orch` to keep
+  someone else's in-progress `engine.py`/`worker.py`/`main.py`/etc. changes (resume-retry
+  feedback, `stdin_text` replay, and other unrelated work — not staffing-related) from
+  bundling into Phase 4 commits. It remains at `stash@{0}` in `agent-orch`. **This session did
+  not pop it and does not know whose work it is or whether it is still wanted.** Popping it
+  now will very likely conflict with this session's own extensive `engine.py`/`worker.py`
+  changes. Whoever owns that WIP needs to `git stash show -p stash@{0}` and manually
+  reconcile it against the new Phase 4 commits — do not `git stash drop` it without checking.
+
+**Not blocking, recorded for a future phase:**
+
+- `lee-llm-router`'s `derive_class.py` (packet-based class derivation) has no `.json`
+  extension entry in its owned-path language table, so `staff --from-packet` refuses any
+  packet whose owned paths include a `.json` file (e.g. a schema file) — hit during P4-2.
+  Worked around by staffing directly with explicit `--role`/`--class` instead of
+  `--from-packet` for that one packet; not fixed, since it's outside Group A's scope.
+- Three of six P4-1 dispatch attempts, and one of two P4-5 dispatch attempts, produced zero
+  incremental progress on unambiguous, narrow implementation asks before a route change
+  unstuck them (`agy-gemini-3-8-flash-high-gemini-sub` and, once,
+  `pi-z-ai-glm-5-3-flash-openrouter`, both on **impl**-role coding dispatches specifically —
+  both routes worked fine for **review**-role dispatches all session). One Claude Sonnet
+  dispatch (escalating past those) failed outright in 6 seconds with empty stream-json,
+  matching the empty-stream defect recorded at the Phase 1 close-out, apparently recurring
+  specifically for a Claude Code dispatch launched from within a Claude Code supervisor
+  session (a nested-harness case). `pi-deepseek-deepseek-v4-flash-openrouter` was the one
+  route that reliably produced real, substantive implementation work all session (used for
+  every impl-role packet after the first). Worth a future look at whether `run`'s impl-role
+  dispatch, or specifically the nested-Claude-Code case, has a systemic defect distinct from
+  ordinary model capability variance — this echoes, but is not identical to, the pre-existing
+  note above about `pi-deepseek-deepseek-v4-flash-openrouter` and tool access in Phase 3
+  review dispatches; the two observations should be reconciled by whoever investigates.
