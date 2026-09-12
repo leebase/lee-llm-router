@@ -458,3 +458,59 @@ control beyond the current serialized-writer assumption.
   exact name/value, not a new policy decision, and is reviewed with P2-1.
 - Replay class keys in `phase2-contracts.md` apply the locked taxonomy to the
   five trace facts. They join evidence only and encode no route choice.
+
+## Resolved by Chief, Phase 3 round 1 (2026-09-11)
+
+See `docs/staffing/chief-answers-p3-1.md`: skill dispatches with the block's chosen route;
+attested passing attempts must verify true; domain tags only from explicit fields or paths;
+A2 repackaged per Rule B; OpenAI channel exhausted until 2026-09-14 20:34 CDT so the build
+and acceptance supervisors run as Sonnet 5 via Claude Code with the gate reviewer falling back
+to Sonnet read-only; second acceptance rerun authorized after the fixes.
+
+## Resolved by Sonnet, Phase 3 close-out (2026-09-11/12)
+
+All three answer-1/2/3 fixes are committed and independently reviewed (see
+`phase3-execution-log.md` "Sonnet close-out" section): `bbcc5da` (route
+dispatch), `fefd714` (subscription verification), `dc6c321` (domain-tag
+over-tagging). A2 repackaging (answer 4) is committed as `297c358`
+(A2a/A2b in `phase3-acceptance-plan.md`). The second independent
+acceptance run (answer 6) is launched, uncoached, per D213 ruling 6; its
+result is recorded in `phase3-execution-log.md` once it completes. No
+blocking item remains open as of this close-out.
+
+## Resolved by Chief, Phase 3 round 2 (2026-09-12)
+
+See `docs/staffing/chief-answers-p3-2.md`: `/supervise` gains the foreground rule (a headless
+session cannot be notified); the headless launch form is recorded; a third uncoached
+acceptance run is authorized after the fix; authoring goes back through `run`.
+
+## Third acceptance run complete — Phase 3 acceptance plan closed (2026-09-12)
+
+The authorized third acceptance run (see `phase3-execution-log.md` "Third
+acceptance run" section) accepted A2a (commit `1aa64cd`) and A2b (commit
+`0f1e5d9`); A1 was already committed (`6631b02`). All three packets in
+`docs/staffing/phase3-acceptance-plan.md` are now committed and
+independently reviewed. Full suite 1660 passed / 1 skipped; Black/Ruff
+clean; `census --json` empty throughout. No blocking item remains open.
+
+One non-blocking observation for a future session: the review route
+`pi-deepseek-deepseek-v4-flash-openrouter` reported no shell/bash tool
+access during both of this run's review dispatches (it fell back to
+grep/static reading and disclosed the gap rather than fabricating oracle
+results), unlike earlier P1–P3 sessions where the same route ran
+`pytest`/`black`/`ruff` directly. Worth checking whether this is a
+transient harness issue before relying on that route's reviews to execute
+oracles unsupervised.
+
+## Phase 3 close (Chief, 2026-09-12)
+
+The Phase 3 blocking entry above is superseded: the third authorized uncoached acceptance run
+(Chief-launched, detached, harness command form) landed A2a `1aa64cd` and A2b `0f1e5d9` with
+A1 `6631b02` standing; four ledger rows with explicit crew-route selection, provider-reported
+usage, oracle verdicts, and recorded reviewer fallbacks. Gate items 1–4 re-run by Chief; the
+gate review (Sonnet 5 read-only, recorded Astra fallback) returned PASS with one non-blocking
+finding (this file's stale entry, now closed) and one self-flagged future concern. No open
+Phase 3 item. Carried to Phase 4: reviewers need test-execution tools; judge verdicts should
+be recorded as judge outcomes rather than `unverified`; headless supervisor sessions must run
+router commands in the foreground (fixed in the skill) and are launched via the harness
+command form, never with a command file's contents as the prompt.
