@@ -8,6 +8,7 @@ Arguments as supplied: `$ARGUMENTS`
 Parsing rule:
 - First token: the plan path.
 - Remainder: `crew NAME` (Form 1) or `auto` (Form 2; default `auto` when absent or empty).
+- OpenCode hands the whole message over as one quoted string: strip one pair of surrounding quotes before tokenizing.
 
 Supervise the execution of one plan through the lee-llm-router staffing
 router. This command has exactly two argument forms, chosen from the

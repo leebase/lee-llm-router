@@ -8,6 +8,7 @@ Arguments as supplied: `$ARGUMENTS`
 Parsing rule:
 - If the argument is `auto` (default when absent or empty), use Form 1.
 - Otherwise, the argument is the crew name `NAME` (Form 2).
+- OpenCode hands the argument over as one quoted string: strip one pair of surrounding quotes first.
 
 This command resolves staffing only. It has exactly two forms, chosen from
 the arguments:

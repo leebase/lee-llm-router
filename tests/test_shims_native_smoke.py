@@ -215,14 +215,7 @@ def test_native_smoke_pi(tmp_path):
 
 
 def test_native_smoke_opencode(tmp_path):
-    """OpenCode non-interactive expansion smoke.
-
-    When invoked non-interactively with `/argecho /tmp/plan-x.md auto`,
-    OpenCode does not intercept the slash command in positional mode (it treats
-    it as a user chat message to the agent). Per D224-1: a harness whose
-    non-interactive mode cannot expand templates is reported as such with the
-    evidence, not asserted around.
-    """
+    """OpenCode non-interactive expansion smoke via `run --command`."""
     temp_home = tmp_path / "home"
     cmd_dir = temp_home / ".config" / "opencode" / "command"
     cmd_dir.mkdir(parents=True)
@@ -244,10 +237,18 @@ def test_native_smoke_opencode(tmp_path):
     env = os.environ.copy()
     env["HOME"] = str(temp_home)
 
+    # OpenCode's non-interactive form for a command file is
+    # `opencode run --command <name> <message>`; the message is the
+    # command's $ARGUMENTS (opencode run --help: "--command  the command to
+    # run, use message for args"). A positional "/argecho ..." message is
+    # plain chat to the agent and does not expand (recorded in
+    # docs/staffing/shims-native-smoke.md).
     cmd = [
         "opencode",
         "run",
-        f"/argecho {EXPECTED_ARG_TOKEN}",
+        "--command",
+        "argecho",
+        EXPECTED_ARG_TOKEN,
     ]
     proc = subprocess.run(
         cmd,
@@ -258,15 +259,16 @@ def test_native_smoke_opencode(tmp_path):
     )
 
     # Check if positional invocation expanded the template
+    # OpenCode substitutes the whole message as one quoted string:
+    # observed reply is ARGS=<"/tmp/plan-x.md auto">. The shim templates'
+    # parsing rule strips that quote pair; the smoke accepts both forms.
     expanded = (
         f"ARGS=<{EXPECTED_ARG_TOKEN}>" in proc.stdout
+        or f'ARGS=<"{EXPECTED_ARG_TOKEN}">' in proc.stdout
         or f"ARGS={EXPECTED_ARG_TOKEN}" in proc.stdout
     )
-    if not expanded:
-        # Per packet instructions: a harness whose non-interactive mode cannot
-        # expand templates is reported as such with the evidence, not asserted around.
-        pytest.skip(
-            "OpenCode non-interactive mode ('opencode run') does not expand "
-            "slash command templates from positional message; "
-            f"exit={proc.returncode}, stdout={proc.stdout.strip()!r}"
-        )
+    assert expanded, (
+        "OpenCode --command did not expand $ARGUMENTS; "
+        f"exit={proc.returncode}, stdout={proc.stdout.strip()!r}, "
+        f"stderr={proc.stderr.strip()[-400:]!r}"
+    )

@@ -199,3 +199,13 @@ missing: /tmp/tmp_home/.pi/agent/prompts/supervise.md
 ```
 After installation into the temp home, `shims diff` exits 0 cleanly with empty output.
 
+
+## 4. Chief's correction (2026-09-12, after review of this report)
+
+OpenCode's non-interactive form for a command file is `opencode run --command <name> <message>`;
+the positional `"/argecho …"` message is plain chat and never expands. Re-run with
+`--command argecho "/tmp/plan-x.md auto"`: exit 0, reply `ARGS=<"/tmp/plan-x.md auto">` —
+expansion works, and OpenCode passes the message as **one quoted string**. Both shim templates
+now tell the model to strip that quote pair before tokenizing (worded without naming a provider
+binary, which the parity guard forbids inside a shim body), and the smoke asserts the quoted
+form instead of skipping. Five of five harnesses expand `$ARGUMENTS` natively.
