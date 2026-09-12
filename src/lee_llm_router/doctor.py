@@ -37,6 +37,8 @@ Commands:
     lee-llm-router template
     lee-llm-router trace --last N
     lee-llm-router evidence rollup
+    lee-llm-router evidence report --month YYYY-MM [--json]
+                          [--catalog-dir PATH] [--availability-file PATH]
     lee-llm-router evidence import (--benchmark PATH [--csv PATH] |
                                     --agent-orch PATH)
     lee-llm-router export-source --dest <path> [--force]
@@ -902,6 +904,47 @@ def _run_evidence_rollup(_args: argparse.Namespace) -> int:
         return 3
 
     print(render_rollup(summary))
+    return 0
+
+
+def _run_evidence_report(args: argparse.Namespace) -> int:
+    """Run ``evidence report``: print per-class/per-route evidence report."""
+    from pathlib import Path
+
+    from lee_llm_router.staffing.evidence_report import (
+        build_evidence_report,
+        render_evidence_report,
+    )
+    from lee_llm_router.staffing.json_int import dump_json
+
+    def fail(message: str) -> int:
+        print(f"evidence report: {message}", file=sys.stderr)
+        return 3
+
+    if args.month is None:
+        return fail("--month is required (YYYY-MM)")
+
+    catalog_dir = (
+        Path(args.catalog_dir)
+        if args.catalog_dir is not None
+        else _default_catalog_dir()
+    )
+    availability_file = args.availability_file
+
+    try:
+        report = build_evidence_report(
+            month=args.month,
+            catalog_dir=catalog_dir,
+            availability_file=availability_file,
+        )
+    except Exception as exc:
+        message = " ".join(str(exc).split())
+        return fail(message)
+
+    if args.json:
+        print(dump_json(report))
+    else:
+        print(render_evidence_report(report))
     return 0
 
 
@@ -3318,6 +3361,34 @@ def main(argv: list[str] | None = None):
         help="Aggregate validated attempt records by route and class",
     )
     evidence_rollup_parser.set_defaults(func=_run_evidence_rollup)
+    evidence_report_parser = evidence_sub.add_parser(
+        "report",
+        help="Per-class/per-route evidence report for one calendar month",
+    )
+    evidence_report_parser.add_argument(
+        "--month",
+        required=True,
+        metavar="YYYY-MM",
+        help="Calendar month to report on (e.g. 2026-09)",
+    )
+    evidence_report_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output stable compact JSON",
+    )
+    evidence_report_parser.add_argument(
+        "--catalog-dir",
+        default=None,
+        metavar="PATH",
+        help="Override catalog directory (default: config/staffing)",
+    )
+    evidence_report_parser.add_argument(
+        "--availability-file",
+        default=None,
+        metavar="PATH",
+        help="Override availability snapshot path",
+    )
+    evidence_report_parser.set_defaults(func=_run_evidence_report)
     evidence_import_parser = evidence_sub.add_parser(
         "import",
         help="Import benchmark or recent Agent-Orch evidence into the attempt ledger",
