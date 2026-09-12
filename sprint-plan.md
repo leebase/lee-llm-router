@@ -10,6 +10,25 @@
 
 ---
 
+## Staffing class derivation: TOML and INI
+
+**Status:** Complete — independent review PASS on 2026-09-12, with zero
+findings.
+
+**Delivered:** `.toml` and `.ini` map to the existing `yaml-config` class;
+homogeneous configuration sets and mixed code/config behavior are covered; the
+closed language taxonomy and domain-tag independence are preserved. Contract
+AC-1 through AC-6 passed.
+
+**Validation:** Agent-Orch's preserved record reports six successful checks:
+test compilation, two focused pytest runs, Black, Ruff, and production/test
+bytecode compilation. Closeout did not rerun those authoritative commands.
+
+**Next:** No repair is pending. Do not start another staffing slice without an
+authorized packet.
+
+---
+
 ## Phase Progress
 
 | Phase | Sprint | Status | Completion |

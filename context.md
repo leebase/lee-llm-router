@@ -8,9 +8,9 @@
 
 | Attribute | Value |
 |-----------|-------|
-| **Phase** | Crew Resolver Sprint 6 — evidence accumulating; engineering health GREEN |
+| **Phase** | Staffing class derivation — `.toml` / `.ini` slice complete and independently reviewed |
 | **Mode** | 2 (Implementation with approval) |
-| **Last Updated** | 2026-09-08 (Lee retained the 14-day requirement; earliest meaningful resumption approximately 2026-09-22) |
+| **Last Updated** | 2026-09-12 |
 
 ### Sprint Status
 | Sprint | Status | Completion |
@@ -22,6 +22,7 @@
 | Sprint 5 - Async, Fallbacks, Extended Telemetry | Done | 100% |
 | Sprint 6 - Vendored Source Snapshot Workflow | Done | 100% |
 | Sprint 7 - Pi Coding Harness Reliability and Harness Validation | Done | 100% |
+| Staffing slice - `.toml` / `.ini` class derivation | Done | 100% |
 | Crew Resolver S1 - Crews as a routing policy (`docs/crew-resolver/sprint-plan.md`) | Done | 100% |
 | Crew Resolver S2 - Availability snapshot and refresh script | Done | 100% |
 | Crew Resolver S3 - resolve CLI, flex, bind, event ledger, dispatch watchdog | Done | 100% |
@@ -33,12 +34,28 @@
 ## What's Happening Now
 
 ### Current Work Stream
+The staffing class-derivation slice for `.toml` and `.ini` is complete. Both
+extensions now resolve to the existing `yaml-config` class, homogeneous config
+sets remain `yaml-config`, and config-plus-code sets resolve to `mixed`. The
+closed eight-value language taxonomy and independent domain-tag behavior remain
+unchanged. Independent review returned **PASS** with zero findings at every
+severity. No repair work remains for this slice; wait for the next authorized
+staffing packet.
+
+The authoritative preserved checks all passed: test-module compilation; two
+focused pytest validations; Black and Ruff on the implementation and tests; and
+bytecode compilation of both files. These are Agent-Orch records and were not
+rerun during closeout.
+
+### Prior Work Stream
 Crew-aware worker resolver lane (D187). Sprint 5 is complete and reviewed: `crews page --out` projects the live crew roster, availability, and optional benchmark evidence into self-contained responsive HTML; missing benchmark and availability inputs degrade safely; present malformed inputs fail closed; and proposals remain advisory and empty until authoritative tier/vendor-independence metadata exists. Luna XHigh via Pi handled three implementation packets and four repair packets. Sonnet 5 High passed on round 4 after three reproduced High findings were repaired; Opus 5 High final gate passed with no findings. 601 tests pass. Publication/navigation/hourly regeneration remain Lee-gated in `docs/crew-resolver/needs-lee.md`. Do not begin Sprint 6 without a new instruction.
 
 Prior stream:
 Sprint 7 is complete. The pi coding harness path now has a repo-local reproduction fixture, stricter CLI harness contract handling, explicit `doctor` validation, regression coverage, and a user-style verification path. No downstream migration work is executed from this repo now; downstream projects are handled separately.
 
 ### Recently Completed
+- Closed the `.toml` / `.ini` staffing class-derivation slice after an independent PASS with zero findings
+- Preserved the existing `yaml-config` taxonomy while covering homogeneous config and mixed code/config inputs
 - Swept the public docs and coder guide so the shipped Sprint 7 pi harness behavior is documented consistently
 - Clarified that `default_role` must reference an existing role and that `model_flag` / `output_flag` can be set to `null` to disable default CLI flags
 - Added a pi-style subprocess harness example plus updated `doctor` behavior notes in `docs/llm-coder-guide.md`
@@ -62,7 +79,7 @@ Sprint 7 is complete. The pi coding harness path now has a repo-local reproducti
   - Test As Lee: `PYTHONPATH=src /Users/lee/projects/lee-llm-router/.venv/bin/python -m lee_llm_router.doctor doctor --config tests/fixtures/llm_test.yaml`
   - Test As Lee: temp pi harness config + `LLMRouter.complete("pi_local", ...)` -> `{"text":"pi json harness: ship sprint 7","provider":"codex_cli","model":"pi-harness-o3"}`
 
-### In Progress
+### Parallel Deferred Work
 - **Crew Resolver Sprint 6 — ⏳ BLOCKED / EVIDENCE ACCUMULATING.** Engineering health: GREEN. Adoption conclusion: NOT YET MEASURABLE. Lee explicitly retained the genuine 14-day daily-use requirement; earliest meaningful resumption is approximately 2026-09-22. Normal use should generate the evidence naturally; do not manufacture `/crew` usage. Sparse natural use is itself adoption evidence. See `docs/crew-resolver/execution-log.md`.
 
 ---

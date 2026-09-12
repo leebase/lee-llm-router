@@ -6,6 +6,31 @@
 
 ---
 
+## 2026-09-12 - Staffing class derivation for TOML and INI complete
+
+**Result:** PASS. `.toml` and `.ini` owned paths derive the existing
+`yaml-config` language class. Mixed configuration formats remain homogeneous,
+configuration plus source code derives `mixed`, domain tags remain independent,
+and the closed eight-value taxonomy is unchanged. The independent review found
+zero Critical, High, Medium, or Low findings.
+
+**Review artifacts:** `code-reviews/review-derive-class-toml-ini.md` and its
+machine-readable `.verdict.json` companion record the clean verdict. The review
+also confirms all six contract acceptance criteria and five live CLI user
+journeys.
+
+**Authoritative preserved validation:** Agent-Orch recorded exit status 0 for
+all six checks: `compileall` on the test module (0.128023s); focused pytest at
+implementation (1.134916s) and repair verification (1.057359s); Black check
+(0.301396s); Ruff check (0.028783s); and `compileall` on production plus tests
+(0.031417s). These preserved checks were summarized during closeout and were not
+rerun by the closeout worker.
+
+**Disposition:** The slice is closed with no follow-up repairs. The next agent
+should wait for an explicitly authorized staffing packet.
+
+---
+
 ## 2026-09-08 - Crew Resolver Sprint 6: blocked at observation-window gate
 
 **Result:** FAIL/BLOCKED without implementation. The committed Sprint 6 contract requires two weeks of daily-use evidence. The live append-only event ledger currently contains only 9 events across two calendar days, including four explicit harness acceptance runs and one disclosed reviewer-contamination run. That is insufficient to report actual interactive adoption share or sustained bind, veto, provider-call, and shim-drift behavior without overstating evidence.
