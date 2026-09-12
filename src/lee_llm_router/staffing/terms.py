@@ -13,7 +13,7 @@ pinned pricing sources named in ``config/staffing/terms.yaml``:
   replacement price, per phase0-contracts.md §Terms and prices.
 * :func:`replacement_token_prices` resolves a model id's replacement
   input/output per-token price from the pinned OpenRouter snapshot
-  (``openrouter-20260909.json``, verified against its adjacent
+  (``openrouter-20260911.json``, verified against its adjacent
   ``.sha256`` sidecar before use) for OpenRouter-listed exact ids, and
   from the agent-orch ``rate_table.yaml`` where the snapshot has no row —
   including the D207 Zen/Go accounting-proxy rows keyed
@@ -70,7 +70,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 
 #: Pinned OpenRouter catalog snapshot (terms.yaml decision_price_ref series).
 DEFAULT_OPENROUTER_SNAPSHOT_PATH = (
-    _REPO_ROOT / "config" / "staffing" / "pricing" / "openrouter-20260909.json"
+    _REPO_ROOT / "config" / "staffing" / "pricing" / "openrouter-20260911.json"
 )
 
 #: agent-orch rate table — the P0-4 fallback where OpenRouter has no row (D207).

@@ -28,7 +28,7 @@ from lee_llm_router.staffing import (
 from lee_llm_router.staffing.catalog import load_staffing_catalog
 
 REPO_CONFIG_DIR = Path(__file__).resolve().parents[1] / "config" / "staffing"
-SNAPSHOT_NAME = "openrouter-20260909.json"
+SNAPSHOT_NAME = "openrouter-20260911.json"
 
 
 @pytest.fixture(scope="module")
@@ -162,17 +162,17 @@ def test_route_price_unknown_route_errors(catalog) -> None:
 def test_pinned_snapshot_sha256_matches_and_prices_resolve() -> None:
     priced, listed = load_openrouter_snapshot()  # committed file + sidecar
     assert "z-ai/glm-5.3-flash" in listed
-    # Verbatim from the pinned snapshot, per token: prompt 0.000000075,
-    # completion 0.00000025.
-    assert priced["z-ai/glm-5.3-flash"] == pytest.approx((7.5e-08, 2.5e-07))
+    # Verbatim from the pinned 2026-09-11 snapshot, per token: prompt
+    # 0.00000015, completion 0.0000005 (D218: doubled since 2026-09-09).
+    assert priced["z-ai/glm-5.3-flash"] == pytest.approx((1.5e-07, 5.0e-07))
 
 
 def test_openrouter_exact_id_resolves_from_snapshot() -> None:
     price = replacement_token_prices("z-ai/glm-5.3-flash", "openrouter")
     assert isinstance(price, ReplacementPrice)
     assert price.source == "openrouter-snapshot:z-ai/glm-5.3-flash"
-    assert price.input_usd_per_token == pytest.approx(7.5e-08)
-    assert price.output_usd_per_token == pytest.approx(2.5e-07)
+    assert price.input_usd_per_token == pytest.approx(1.5e-07)
+    assert price.output_usd_per_token == pytest.approx(5.0e-07)
 
 
 def test_d207_go_proxy_row_resolves_from_rate_table() -> None:

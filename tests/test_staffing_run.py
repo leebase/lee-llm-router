@@ -2888,14 +2888,15 @@ def test_attempt_cost_glm_cache_pricing_regression(catalog_dir) -> None:
 
     catalog = load_staffing_catalog(catalog_dir)
     route = next(r for r in catalog.routes.routes if r.route_id == PI_ROUTE)
-    # z-ai/glm-5.3-flash: prompt=0.000000075, completion=0.00000025, cache=0.000000015
+    # z-ai/glm-5.3-flash (2026-09-11 snapshot, D218): prompt=0.00000015,
+    # completion=0.0000005, cache=0.00000003
     pricing = EligibilityPrice(
         badge="NO DATA",
         multiplier=1.0,
-        replacement_input_usd_per_token=0.000000075,
-        replacement_output_usd_per_token=0.00000025,
-        marginal_input_usd_per_token=0.000000075,
-        marginal_output_usd_per_token=0.00000025,
+        replacement_input_usd_per_token=0.00000015,
+        replacement_output_usd_per_token=0.0000005,
+        marginal_input_usd_per_token=0.00000015,
+        marginal_output_usd_per_token=0.0000005,
         source="openrouter-snapshot:z-ai/glm-5.3-flash",
     )
     outcome = SelectionOutcome(
@@ -2920,9 +2921,10 @@ def test_attempt_cost_glm_cache_pricing_regression(catalog_dir) -> None:
 
     cost, note = _attempt_cost(outcome, recorded_usage)
     assert cost["basis"] == ["list", "marginal"]
-    # Currently was 0.000451825 (omitting cache); must be 0.000533425 including cache
-    assert cost["usd_list"] == pytest.approx(0.000533425)
-    assert cost["usd_marginal"] == pytest.approx(0.000533425)
+    # 2026-09-11 snapshot rates (D218, doubled since 2026-09-09): 0.00106685
+    # including cache (was 0.000533425 under the superseded snapshot).
+    assert cost["usd_list"] == pytest.approx(0.00106685)
+    assert cost["usd_marginal"] == pytest.approx(0.00106685)
     assert "cache" in note
 
 
@@ -3388,8 +3390,9 @@ def test_run_cli_cache_pricing_end_to_end(
     assert code_glm == 0
     payload_glm = _assert_output_matches_single_append(captured_glm, scratch_state)
     assert payload_glm["cost"]["basis"] == ["list", "marginal"]
-    assert payload_glm["cost"]["usd_list"] == pytest.approx(0.000533425)
-    assert payload_glm["cost"]["usd_marginal"] == pytest.approx(0.000533425)
+    # 2026-09-11 snapshot rates (D218, doubled since 2026-09-09).
+    assert payload_glm["cost"]["usd_list"] == pytest.approx(0.00106685)
+    assert payload_glm["cost"]["usd_marginal"] == pytest.approx(0.00106685)
     assert payload_glm["usage"]["cached_input_tokens"] == 5440
     assert payload_glm["usage"]["reasoning_tokens"] == 193
 

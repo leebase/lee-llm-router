@@ -235,3 +235,46 @@ unrelated `agent-orch/tests/test_codex_usage.py` failures (present on `HEAD` bef
   close-out's recorded empty-stream defect, apparently recurring for a Claude Code dispatch
   launched from within a Claude Code supervisor session). Worth a future look at whether
   `run`'s impl-role dispatch or the nested-harness case has a systemic issue.
+
+## D218 DeepSeek V4.1 Flash intake
+
+Refreshed the pinned OpenRouter catalog snapshot per D218 (chief-of-staff/decisions.md
+2026-09-12, "the pricing snapshot must be refreshed on a schedule ... since a 2× price move
+went unnoticed for days") and added `deepseek/deepseek-v4.1-flash` as a sixth Pi/OpenRouter
+route, a candidate metered workhorse not yet in the Pi model store.
+
+- New snapshot `config/staffing/pricing/openrouter-20260911.json` (captured 2026-09-11 from
+  `https://openrouter.ai/api/v1/models`, sha256 sidecar verified) supersedes
+  `openrouter-20260909.json` (kept on disk, no longer referenced). `channels.yaml`,
+  `terms.yaml`, and `terms.py`'s `DEFAULT_OPENROUTER_SNAPSHOT_PATH` all repointed to it.
+- Price deltas versus the 2026-09-09 snapshot, for the two openrouter-channel exact ids
+  already in `routes.yaml`:
+  - `z-ai/glm-5.3-flash`: prompt/completion **doubled**, $0.075/M → $0.15/M prompt,
+    $0.25/M → $0.50/M completion (cache-read $0.015/M → $0.03/M). Matches D218's "GLM 5.3
+    Flash ... doubled."
+  - `deepseek/deepseek-v4-flash`: prompt/completion **dropped**, $0.084/M → $0.06706/M
+    prompt, $0.168/M → $0.13412/M completion (cache-read $0.0168/M → $0.013412/M).
+  - Net effect: DeepSeek V4 Flash is now cheaper than GLM 5.3 Flash on the metered ladder,
+    flipping the cheapest-metered-route selection (`tests/test_staffing_staff.py`'s auto
+    ladder test updated accordingly).
+- New route `pi-deepseek-deepseek-v4-1-flash-openrouter` added to `routes.yaml`, matching the
+  five existing P0-3f Pi/OpenRouter rows field-for-field, including `usage_capture: none` —
+  verified this is the correct, documented value for every Pi row in the file (the worker
+  extracts only the first JSON object from `pi --print --mode text` stdout and never parses
+  token usage), not a divergence to fix.
+- `deepseek/deepseek-v4.1-flash` catalog price (base/off-peak, per the snapshot's UTC
+  time-of-day override structure): $0.15/M prompt, $0.60/M completion, $0.003/M cache-read;
+  two weekday `utc_start`/`utc_end` windows carry a 2× peak override (exact clock-time
+  meaning of those fields is undocumented anywhere in this repo). Added to agent-orch
+  `src/agent_orch/rate_table.yaml` as the base rate only, with a comment noting the peak
+  override exists but is unmodeled (consistent with no other route in either pricing stack
+  modeling time-of-day pricing), citing the new snapshot as basis.
+- Test edits in both repos follow price changes only (updated expected numbers, doubled
+  values, flipped route selection) — no assertion was weakened or removed.
+- `doctor --catalog --crews` clean (28 routes, 7 channels, 9 terms, 17/15 crews; 30/30
+  workers resolved). Focused tests green: `test_staffing_terms.py` (21), `test_staffing_staff.py`
+  (34), `test_staffing_run.py -k "glm_cache_pricing_regression or cache_pricing_end_to_end"`
+  (2); agent-orch `test_rate_table.py` (20, unmodified — no new assertions needed since the
+  new row isn't yet exercised by a rate-table-specific test). Black/Ruff clean on `src/`.
+- `proof_status` for the new route remains unproven until a `run` succeeds and lands in the
+  ledger (D218 ruling 1); trial dispatch is Chief's, not this session's.

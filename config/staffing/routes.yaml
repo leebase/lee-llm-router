@@ -352,6 +352,22 @@ routes:
     usage_capture: none
     status: active
 
+# D218 append (chief-of-staff/decisions.md 2026-09-12): candidate metered
+#   workhorse intake, sixth Pi/OpenRouter row. Unlike the P0-3f five above,
+#   `deepseek/deepseek-v4.1-flash` is not yet listed in the Pi model store
+#   (models-store.json); Pi accepts it as a custom/passthrough OpenRouter
+#   exact id with a warning and still returns usage and cost (observed:
+#   844 tokens, $0.00082). `proof_status` is unproven until a `run`
+#   succeeds and lands in the ledger (D218 ruling 1).
+  - route_id: pi-deepseek-deepseek-v4-1-flash-openrouter
+    model: deepseek/deepseek-v4.1-flash
+    effort: null
+    harness: pi
+    channel: openrouter
+    dispatch_template: "/usr/bin/env PI_STAGE_WORKER_BINARY=/home/lee/.npm-global/bin/pi PI_STAGE_WORKER_PROVIDER=openrouter PI_STAGE_WORKER_MODEL=deepseek/deepseek-v4.1-flash python3 /home/lee/projects/auto-orch/scripts/pi_stage_worker.py {stage} {prompt_path} {response_path}"
+    usage_capture: none
+    status: active
+
   - route_id: pi-deepseek-v4-pro-opencode-go
     model: deepseek-v4-pro
     effort: null

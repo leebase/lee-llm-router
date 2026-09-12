@@ -37,6 +37,7 @@ SOL_HIGH = "codex-gpt-5-6-sol-high-openai-sub"
 FABLE = "claude-claude-fable-5-1-high-anthropic-sub"
 GEMINI_PRO = "agy-gemini-3-1-pro-gemini-sub"
 GLM_OPENROUTER = "pi-z-ai-glm-5-3-flash-openrouter"
+DEEPSEEK_OPENROUTER = "pi-deepseek-deepseek-v4-flash-openrouter"
 MIMO = "opencode-opencode-go-mimo-v2-5-opencode-go"
 
 
@@ -663,14 +664,16 @@ def test_auto_ladder_skips_reserved_channel_to_cheapest_metered(
     catalog, reserved_availability
 ) -> None:
     """With both subscriptions reserved, the cheapest metered route is
-    selected (z-ai glm-5.3-flash on openrouter)."""
+    selected (deepseek/deepseek-v4-flash on openrouter, per the 2026-09-11
+    snapshot, D218: GLM 5.3 Flash's price doubled while DeepSeek V4 Flash's
+    dropped, so DeepSeek V4 Flash is now cheaper than GLM)."""
     result = _auto(catalog, reserved_availability)
     payload = result.payload
     selected = payload["selected_route"]
-    # The cheapest metered route is GLM on openrouter.
+    # The cheapest metered route is DeepSeek V4 Flash on openrouter.
     assert (
-        selected == GLM_OPENROUTER
-    ), f"expected cheapest metered route {GLM_OPENROUTER}, got {selected}"
+        selected == DEEPSEEK_OPENROUTER
+    ), f"expected cheapest metered route {DEEPSEEK_OPENROUTER}, got {selected}"
     for worker in payload["workers"]:
         route_id = worker["route_id"]
         if worker["channel"] in (
@@ -683,8 +686,8 @@ def test_auto_ladder_skips_reserved_channel_to_cheapest_metered(
                 any(r.startswith("reserve:") for r in worker["reasons"])
                 or worker["eligible"] is False
             ), f"subscription route {route_id} should be excluded by reserve"
-    assert selected == GLM_OPENROUTER
-    assert f"- {GLM_OPENROUTER} " in result.text and "eligible" in result.text
+    assert selected == DEEPSEEK_OPENROUTER
+    assert f"- {DEEPSEEK_OPENROUTER} " in result.text and "eligible" in result.text
 
 
 def test_bind_reserved_channel_refuses_non_lee_without_writing(

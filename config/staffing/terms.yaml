@@ -31,8 +31,8 @@
 #     price; decision price uses the marginal multiplier").
 #   - Replacement-price series are the authorized refs only, consistent with
 #     channels.yaml: the pinned OpenRouter catalog snapshot
-#     config/staffing/pricing/openrouter-20260909.json (sha256 sidecar
-#     openrouter-20260909.json.sha256), the pinned OpenCode Zen snapshot
+#     config/staffing/pricing/openrouter-20260911.json (sha256 sidecar
+#     openrouter-20260911.json.sha256), the pinned OpenCode Zen snapshot
 #     config/staffing/pricing/opencode-zen-20260909.mdx (sha256 sidecar
 #     opencode-zen-20260909.mdx.sha256) for opencode-go ids per D207
 #     (decisions.md:5183-5187, Zen is the authorized accounting proxy for
@@ -40,6 +40,17 @@
 #     P0-4 fallback where OpenRouter has no row (D207). The local channel has
 #     no pricing source and cites D156 instead (channels.yaml local
 #     replacement_price_ref).
+#
+# Snapshot refresh (D218, chief-of-staff/decisions.md 2026-09-12, "the pricing snapshot
+# must be refreshed on a schedule ... since a 2× price move went unnoticed for days"):
+# the price series now points at config/staffing/pricing/openrouter-20260911.json (sha256
+# sidecar openrouter-20260911.json.sha256), captured 2026-09-11 from
+# https://openrouter.ai/api/v1/models. Versus the superseded 2026-09-09 pinned snapshot
+# (kept on disk, no longer referenced), for the two openrouter-channel exact ids actually
+# in routes.yaml: z-ai/glm-5.3-flash prompt/completion doubled from $0.075/$0.25 per M to
+# $0.15/$0.50 per M (D218's "GLM 5.3 Flash ... doubled", confirmed); deepseek/deepseek-v4-flash
+# dropped from $0.084/$0.168 per M to $0.06706/$0.13412 per M. Full diff in
+# docs/staffing/phase4-execution-log.md ("D218 DeepSeek V4.1 Flash intake").
 #
 # Badge multipliers are the contract defaults exactly as listed in
 # phase0-contracts.md §Terms and prices and the P0-4 sprint packet
@@ -57,40 +68,40 @@ terms:
     effective_from: "2026-09-09"
     fee_usd_month: 200
     source: "D203 (chief-of-staff/decisions.md:5064, 2026-09-09): 'OpenAI raised to $200/mo'; effective date decisions.md:5063 ('about 2026-09-30' re-tiering, current as of decisions.md 2026-09-09) and channels.yaml openai-sub fee row effective_from 2026-09-09"
-    decision_price_ref: "marginal(badge multiplier × replacement list price) — decision input per phase0-contracts.md §Terms and prices; price series: config/staffing/pricing/openrouter-20260909.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207, decisions.md:5183-5185)"
-    reporting_price_ref: "list-price accounting source per agent-orch convention (agent-orch/src/agent_orch/rate_table.yaml:105-109): config/staffing/pricing/openrouter-20260909.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207)"
+    decision_price_ref: "marginal(badge multiplier × replacement list price) — decision input per phase0-contracts.md §Terms and prices; price series: config/staffing/pricing/openrouter-20260911.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207, decisions.md:5183-5185)"
+    reporting_price_ref: "list-price accounting source per agent-orch convention (agent-orch/src/agent_orch/rate_table.yaml:105-109): config/staffing/pricing/openrouter-20260911.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207)"
 
   - channel_ref: anthropic-sub
     kind: subscription
     effective_from: "2026-09-09"
     fee_usd_month: 100
     source: "D203 (chief-of-staff/decisions.md:5064, 2026-09-09): Anthropic drops 'from the $100/mo tier' — current $100/month; effective date per channels.yaml anthropic-sub first fee row"
-    decision_price_ref: "marginal(badge multiplier × replacement list price) — decision input per phase0-contracts.md §Terms and prices; price series: config/staffing/pricing/openrouter-20260909.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207, decisions.md:5183-5185)"
-    reporting_price_ref: "list-price accounting source per agent-orch convention (agent-orch/src/agent_orch/rate_table.yaml:105-109): config/staffing/pricing/openrouter-20260909.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207)"
+    decision_price_ref: "marginal(badge multiplier × replacement list price) — decision input per phase0-contracts.md §Terms and prices; price series: config/staffing/pricing/openrouter-20260911.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207, decisions.md:5183-5185)"
+    reporting_price_ref: "list-price accounting source per agent-orch convention (agent-orch/src/agent_orch/rate_table.yaml:105-109): config/staffing/pricing/openrouter-20260911.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207)"
 
   - channel_ref: anthropic-sub
     kind: subscription
     effective_from: "2026-09-30"
     fee_usd_month: 20
     source: "D203 (chief-of-staff/decisions.md:5064, 2026-09-09): Anthropic drops 'from the $100/mo tier to $20/mo' at 'about 2026-09-30' (decisions.md:5063); date per channels.yaml anthropic-sub second fee row"
-    decision_price_ref: "marginal(badge multiplier × replacement list price) — decision input per phase0-contracts.md §Terms and prices; price series: config/staffing/pricing/openrouter-20260909.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207, decisions.md:5183-5185)"
-    reporting_price_ref: "list-price accounting source per agent-orch convention (agent-orch/src/agent_orch/rate_table.yaml:105-109): config/staffing/pricing/openrouter-20260909.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207)"
+    decision_price_ref: "marginal(badge multiplier × replacement list price) — decision input per phase0-contracts.md §Terms and prices; price series: config/staffing/pricing/openrouter-20260911.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207, decisions.md:5183-5185)"
+    reporting_price_ref: "list-price accounting source per agent-orch convention (agent-orch/src/agent_orch/rate_table.yaml:105-109): config/staffing/pricing/openrouter-20260911.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207)"
 
   - channel_ref: gemini-sub
     kind: subscription
     effective_from: "2026-09-09"
     fee_usd_month: 100
     source: "D203 (chief-of-staff/decisions.md:5064, 2026-09-09): Gemini drops 'from the $100/mo tier' — current $100/month; effective date per channels.yaml gemini-sub first fee row"
-    decision_price_ref: "marginal(badge multiplier × replacement list price) — decision input per phase0-contracts.md §Terms and prices; price series: config/staffing/pricing/openrouter-20260909.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207, decisions.md:5183-5185)"
-    reporting_price_ref: "list-price accounting source per agent-orch convention (agent-orch/src/agent_orch/rate_table.yaml:105-109): config/staffing/pricing/openrouter-20260909.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207)"
+    decision_price_ref: "marginal(badge multiplier × replacement list price) — decision input per phase0-contracts.md §Terms and prices; price series: config/staffing/pricing/openrouter-20260911.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207, decisions.md:5183-5185)"
+    reporting_price_ref: "list-price accounting source per agent-orch convention (agent-orch/src/agent_orch/rate_table.yaml:105-109): config/staffing/pricing/openrouter-20260911.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207)"
 
   - channel_ref: gemini-sub
     kind: subscription
     effective_from: "2026-09-30"
     fee_usd_month: 20
     source: "D203 (chief-of-staff/decisions.md:5064, 2026-09-09): Gemini drops 'from the $100/mo tier to $20/mo' at 'about 2026-09-30' (decisions.md:5063); date per channels.yaml gemini-sub second fee row"
-    decision_price_ref: "marginal(badge multiplier × replacement list price) — decision input per phase0-contracts.md §Terms and prices; price series: config/staffing/pricing/openrouter-20260909.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207, decisions.md:5183-5185)"
-    reporting_price_ref: "list-price accounting source per agent-orch convention (agent-orch/src/agent_orch/rate_table.yaml:105-109): config/staffing/pricing/openrouter-20260909.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207)"
+    decision_price_ref: "marginal(badge multiplier × replacement list price) — decision input per phase0-contracts.md §Terms and prices; price series: config/staffing/pricing/openrouter-20260911.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207, decisions.md:5183-5185)"
+    reporting_price_ref: "list-price accounting source per agent-orch convention (agent-orch/src/agent_orch/rate_table.yaml:105-109): config/staffing/pricing/openrouter-20260911.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207)"
 
   - channel_ref: opencode-go
     kind: subscription
@@ -105,8 +116,8 @@ terms:
     effective_from: "2026-09-09"
     fee_usd_month: 0
     source: "Metered at list price — no monthly subscription fee (D203, chief-of-staff/decisions.md:5066-5067: 'pay as you go via ... OpenRouter.ai'; phase0-contracts.md §Terms and prices: 'OpenRouter and OpenCode Zen are metered at list price'); the 0 is the structural no-monthly-fee encoding (channels.yaml openrouter fee_usd_month: []), not a quoted number; date per D203 (decisions.md:5038, 2026-09-09)"
-    decision_price_ref: "marginal(badge multiplier × list price) — decision input per phase0-contracts.md §Terms and prices; price series: config/staffing/pricing/openrouter-20260909.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207, decisions.md:5183-5185)"
-    reporting_price_ref: "list-price accounting source per agent-orch convention (agent-orch/src/agent_orch/rate_table.yaml:105-109): config/staffing/pricing/openrouter-20260909.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207)"
+    decision_price_ref: "marginal(badge multiplier × list price) — decision input per phase0-contracts.md §Terms and prices; price series: config/staffing/pricing/openrouter-20260911.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207, decisions.md:5183-5185)"
+    reporting_price_ref: "list-price accounting source per agent-orch convention (agent-orch/src/agent_orch/rate_table.yaml:105-109): config/staffing/pricing/openrouter-20260911.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207)"
 
   - channel_ref: opencode-zen
     kind: metered
