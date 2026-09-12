@@ -59,6 +59,7 @@ from lee_llm_router.staffing.ledger import (
     read_attempts,
     resolve_attempts_path,
     validate_attempt,
+    writer_transaction,
 )
 
 BENCHMARK_SCHEMA_VERSION = "benchmark.staffing-evidence/2"
@@ -673,13 +674,6 @@ def import_benchmark_evidence(
             f"expected {expected_sha256.lower()}, got {actual_sha256}"
         )
 
-    target = resolve_attempts_path(ledger_path)
-    existing = read_attempts(target) if target.is_file() else []
-    known: dict[str, dict[str, Any]] = {
-        record["attempt_id"]: record for record in existing
-    }
-    imported = 0
-    issues: list[ImportIssue] = []
     try:
         text = csv_bytes.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
@@ -708,60 +702,72 @@ def import_benchmark_evidence(
 
     generated_at = str(document["generated_at"])
     sidecar_sha256 = hashlib.sha256(sidecar_bytes).hexdigest()
-    for row_number, row in enumerate(reader, start=2):
-        run_id_value = row.get("run_id")
-        run_id = run_id_value.strip() if isinstance(run_id_value, str) else None
-        try:
-            if not run_id:
-                raise _RowError("run_id is missing or empty")
-            metadata = index.get(run_id)
-            if metadata is None:
-                raise _RowError("run_id is absent from the v6 sidecar")
-            attempt_id = _attempt_id(run_id)
-            correction_of: str | None = None
-            existing_record = known.get(attempt_id)
-            if existing_record is not None:
-                if _legacy_crew_run_run_id(existing_record) != run_id:
-                    issues.append(
-                        ImportIssue(row_number, run_id, "attempt_id already present")
-                    )
-                    continue
-                # Governed reconciliation of a pre-repair legacy crew-run
-                # record: append the truthful raw-shape record under a
-                # deterministic correction id instead of rewriting history.
-                correction_id = _correction_attempt_id(run_id)
-                if correction_id in known:
-                    issues.append(
-                        ImportIssue(row_number, run_id, "correction already present")
-                    )
-                    continue
-                attempt_id = correction_id
-                correction_of = f"{_ATTEMPT_ID_PREFIX}{run_id}"
-            record = _build_record(
-                row,
-                metadata,
-                attempt_id=attempt_id,
-                sidecar_path=sidecar_path,
-                csv_path=resolved_csv,
-                source_ref=source_ref,
-                sidecar_sha256=sidecar_sha256,
-                source_csv_sha256=actual_sha256,
-                generated_at=generated_at,
-                correction_of=correction_of,
-            )
-        except (_RowError, EvidenceImportError, AttemptLedgerError) as exc:
-            issues.append(ImportIssue(row_number, run_id, str(exc)))
-            continue
-        append_attempt(record, target)
-        known[record["attempt_id"]] = record
-        imported += 1
+    target = resolve_attempts_path(ledger_path)
+    with writer_transaction(target):
+        existing = read_attempts(target) if target.is_file() else []
+        known: dict[str, dict[str, Any]] = {
+            record["attempt_id"]: record for record in existing
+        }
+        imported = 0
+        issues: list[ImportIssue] = []
+        for row_number, row in enumerate(reader, start=2):
+            run_id_value = row.get("run_id")
+            run_id = run_id_value.strip() if isinstance(run_id_value, str) else None
+            try:
+                if not run_id:
+                    raise _RowError("run_id is missing or empty")
+                metadata = index.get(run_id)
+                if metadata is None:
+                    raise _RowError("run_id is absent from the v6 sidecar")
+                attempt_id = _attempt_id(run_id)
+                correction_of: str | None = None
+                existing_record = known.get(attempt_id)
+                if existing_record is not None:
+                    if _legacy_crew_run_run_id(existing_record) != run_id:
+                        issues.append(
+                            ImportIssue(
+                                row_number, run_id, "attempt_id already present"
+                            )
+                        )
+                        continue
+                    # Governed reconciliation of a pre-repair legacy crew-run
+                    # record: append the truthful raw-shape record under a
+                    # deterministic correction id instead of rewriting history.
+                    correction_id = _correction_attempt_id(run_id)
+                    if correction_id in known:
+                        issues.append(
+                            ImportIssue(
+                                row_number, run_id, "correction already present"
+                            )
+                        )
+                        continue
+                    attempt_id = correction_id
+                    correction_of = f"{_ATTEMPT_ID_PREFIX}{run_id}"
+                record = _build_record(
+                    row,
+                    metadata,
+                    attempt_id=attempt_id,
+                    sidecar_path=sidecar_path,
+                    csv_path=resolved_csv,
+                    source_ref=source_ref,
+                    sidecar_sha256=sidecar_sha256,
+                    source_csv_sha256=actual_sha256,
+                    generated_at=generated_at,
+                    correction_of=correction_of,
+                )
+            except (_RowError, EvidenceImportError, AttemptLedgerError) as exc:
+                issues.append(ImportIssue(row_number, run_id, str(exc)))
+                continue
+            append_attempt(record, target)
+            known[record["attempt_id"]] = record
+            imported += 1
 
-    return ImportSummary(
-        imported=imported,
-        skipped=len(issues),
-        issues=tuple(issues),
-        ledger_path=target,
-    )
+        return ImportSummary(
+            imported=imported,
+            skipped=len(issues),
+            issues=tuple(issues),
+            ledger_path=target,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1110,111 +1116,122 @@ def import_agent_orch_evidence(
     run_paths = _agent_orch_run_files(source_path)
     cutoff, current = _agent_orch_cutoff(now)
     target = resolve_attempts_path(ledger_path)
-    existing = read_attempts(target) if target.is_file() else []
-    known_ids = {record["attempt_id"] for record in existing}
+    with writer_transaction(target):
+        existing = read_attempts(target) if target.is_file() else []
+        known_ids = {record["attempt_id"] for record in existing}
 
-    imported = 0
-    issues: list[ImportIssue] = []
-    source_ordinal = 0
-    for run_path in run_paths:
-        run_id_value: str | None = None
-        try:
-            run_document = _agent_orch_json_object(run_path, str(run_path))
-            run_id = run_document.get("run_id")
-            if not isinstance(run_id, str) or not run_id:
-                raise _RowError("run.json run_id is missing")
-            run_id_value = run_id
-            timestamp_text = _aware_timestamp(
-                run_document.get("last_updated_at"), f"{run_path} last_updated_at"
-            )
-            timestamp = datetime.fromisoformat(timestamp_text.replace("Z", "+00:00"))
-            timestamp_utc = timestamp.astimezone(timezone.utc)
-            if timestamp_utc < cutoff or timestamp_utc > current:
+        imported = 0
+        issues: list[ImportIssue] = []
+        source_ordinal = 0
+        for run_path in run_paths:
+            run_id_value: str | None = None
+            try:
+                run_document = _agent_orch_json_object(run_path, str(run_path))
+                run_id = run_document.get("run_id")
+                if not isinstance(run_id, str) or not run_id:
+                    raise _RowError("run.json run_id is missing")
+                run_id_value = run_id
+                timestamp_text = _aware_timestamp(
+                    run_document.get("last_updated_at"), f"{run_path} last_updated_at"
+                )
+                timestamp = datetime.fromisoformat(
+                    timestamp_text.replace("Z", "+00:00")
+                )
+                timestamp_utc = timestamp.astimezone(timezone.utc)
+                if timestamp_utc < cutoff or timestamp_utc > current:
+                    continue
+                steps = run_document.get("step_results")
+                if not isinstance(steps, list):
+                    raise _RowError("run.json step_results is not an array")
+            except _RowError as exc:
+                source_ordinal += 1
+                issues.append(ImportIssue(source_ordinal, run_id_value, str(exc)))
                 continue
-            steps = run_document.get("step_results")
-            if not isinstance(steps, list):
-                raise _RowError("run.json step_results is not an array")
-        except _RowError as exc:
-            source_ordinal += 1
-            issues.append(ImportIssue(source_ordinal, run_id_value, str(exc)))
-            continue
 
-        for step in steps:
-            if not isinstance(step, dict):
-                source_ordinal += 1
-                issues.append(
-                    ImportIssue(source_ordinal, run_id, "step result is not an object")
-                )
-                continue
-            step_id = step.get("step_id")
-            attempts = step.get("attempts")
-            if not isinstance(step_id, str) or not step_id:
-                source_ordinal += 1
-                issues.append(ImportIssue(source_ordinal, run_id, "step_id is missing"))
-                continue
-            if not isinstance(attempts, list):
-                source_ordinal += 1
-                issues.append(
-                    ImportIssue(source_ordinal, run_id, "step attempts is not an array")
-                )
-                continue
-            for attempt in attempts:
-                source_ordinal += 1
-                if not isinstance(attempt, dict):
+            for step in steps:
+                if not isinstance(step, dict):
+                    source_ordinal += 1
                     issues.append(
                         ImportIssue(
-                            source_ordinal,
-                            run_id,
-                            "attempt entry is not an object",
+                            source_ordinal, run_id, "step result is not an object"
                         )
                     )
                     continue
-                try:
-                    attempt_dir = _agent_orch_run_dir(attempt.get("run_dir"), run_path)
-                    route_path = attempt_dir / "route-selection.json"
-                    if not route_path.is_file():
-                        raise _RowError("sibling route-selection.json is missing")
-                    route_document = _agent_orch_json_object(
-                        route_path, str(route_path)
+                step_id = step.get("step_id")
+                attempts = step.get("attempts")
+                if not isinstance(step_id, str) or not step_id:
+                    source_ordinal += 1
+                    issues.append(
+                        ImportIssue(source_ordinal, run_id, "step_id is missing")
                     )
-                    usage_path = attempt_dir / "usage.json"
-                    usage_document = (
-                        _agent_orch_json_object(usage_path, str(usage_path))
-                        if usage_path.is_file()
-                        else None
-                    )
-                    record = _agent_orch_attempt_record(
-                        run_document,
-                        run_path,
-                        step,
-                        attempt,
-                        route_path,
-                        usage_path if usage_document is not None else None,
-                        route_document,
-                        usage_document,
-                    )
-                except (_RowError, AttemptLedgerError) as exc:
-                    issues.append(ImportIssue(source_ordinal, run_id, str(exc)))
                     continue
-                if record["attempt_id"] in known_ids:
+                if not isinstance(attempts, list):
+                    source_ordinal += 1
                     issues.append(
                         ImportIssue(
-                            source_ordinal,
-                            run_id,
-                            "attempt_id already present",
+                            source_ordinal, run_id, "step attempts is not an array"
                         )
                     )
                     continue
-                append_attempt(record, target)
-                known_ids.add(record["attempt_id"])
-                imported += 1
+                for attempt in attempts:
+                    source_ordinal += 1
+                    if not isinstance(attempt, dict):
+                        issues.append(
+                            ImportIssue(
+                                source_ordinal,
+                                run_id,
+                                "attempt entry is not an object",
+                            )
+                        )
+                        continue
+                    try:
+                        attempt_dir = _agent_orch_run_dir(
+                            attempt.get("run_dir"), run_path
+                        )
+                        route_path = attempt_dir / "route-selection.json"
+                        if not route_path.is_file():
+                            raise _RowError("sibling route-selection.json is missing")
+                        route_document = _agent_orch_json_object(
+                            route_path, str(route_path)
+                        )
+                        usage_path = attempt_dir / "usage.json"
+                        usage_document = (
+                            _agent_orch_json_object(usage_path, str(usage_path))
+                            if usage_path.is_file()
+                            else None
+                        )
+                        record = _agent_orch_attempt_record(
+                            run_document,
+                            run_path,
+                            step,
+                            attempt,
+                            route_path,
+                            usage_path if usage_document is not None else None,
+                            route_document,
+                            usage_document,
+                        )
+                    except (_RowError, AttemptLedgerError) as exc:
+                        issues.append(ImportIssue(source_ordinal, run_id, str(exc)))
+                        continue
+                    if record["attempt_id"] in known_ids:
+                        issues.append(
+                            ImportIssue(
+                                source_ordinal,
+                                run_id,
+                                "attempt_id already present",
+                            )
+                        )
+                        continue
+                    append_attempt(record, target)
+                    known_ids.add(record["attempt_id"])
+                    imported += 1
 
-    return ImportSummary(
-        imported=imported,
-        skipped=len(issues),
-        issues=tuple(issues),
-        ledger_path=target,
-    )
+        return ImportSummary(
+            imported=imported,
+            skipped=len(issues),
+            issues=tuple(issues),
+            ledger_path=target,
+        )
 
 
 __all__ = [

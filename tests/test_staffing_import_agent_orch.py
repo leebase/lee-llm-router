@@ -1,13 +1,17 @@
 """Focused P1-7 Agent-Orch raw-attempt import tests.
 
 The fixture builder writes only the three authorized source artifacts: a run
-manifest, sibling route-selection.json, and usage.json when present. No
-provider, subprocess, or real prompt is used.
+manifest, sibling route-selection.json, and usage.json when present.  No
+provider or real prompt is used.  One regression starts real OS processes
+(``fork``) that call the real public import function against one shared
+ledger; every other test runs in-process.
 """
 
 from __future__ import annotations
 
 import json
+import multiprocessing as mp
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -480,3 +484,87 @@ def test_agent_orch_cli_rejects_benchmark_csv_override(
 
     assert excinfo.value.code == 3
     assert capsys.readouterr().err == "evidence import: --csv requires --benchmark\n"
+
+
+# ---------------------------------------------------------------------------
+# Multi-process writer-transaction regression (P3)
+# ---------------------------------------------------------------------------
+
+
+def _agent_orch_import_worker(conn, root: str, ledger: str, barrier) -> None:
+    """Child body: one real import_agent_orch_evidence against a shared ledger."""
+    try:
+        barrier.wait(timeout=30)
+        summary = import_agent_orch_evidence(root, ledger_path=ledger, now=NOW)
+        conn.send(
+            ("ok", summary.imported, [issue.reason for issue in summary.issues])
+        )
+    except Exception as exc:  # pragma: no cover - reported to the parent
+        conn.send(("error", repr(exc)))
+    finally:
+        conn.close()
+
+
+def test_concurrent_processes_import_agent_orch_attempts_exactly_once(
+    tmp_path: Path,
+) -> None:
+    """Four OS processes race one real import against one shared ledger.
+
+    This is the production concurrency regression (P3): every child calls the
+    real public ``import_agent_orch_evidence`` — no surrogate reimplements the
+    read-decide-append sequence — released together by a fork barrier so the
+    whole sequences genuinely overlap.  Each import must hold the per-ledger
+    writer transaction across its entire read-decide-append body: the first
+    process's accepted ids are then seen by every later process, so each
+    attempt lands exactly once.  Without that transaction every process reads
+    the still-empty ledger and appends every attempt, so this test turns red.
+    """
+    if sys.platform == "win32":
+        pytest.skip("POSIX fork for multi-process regression")
+    fork_ctx = mp.get_context("fork")
+    root = tmp_path / "conc-agent-orch-runs"
+    run_ids = ["conc-run-a", "conc-run-b", "conc-run-c"]
+    for run_id in run_ids:
+        _add_run(
+            root,
+            run_id=run_id,
+            timestamp="2026-09-10T12:00:00Z",
+            attempts=[{"attempt_number": 1, "usage": _measured_usage()}],
+        )
+    ledger = tmp_path / "shared-agent-orch-attempts.jsonl"
+
+    barrier = fork_ctx.Barrier(4)
+    processes = []
+    receivers = []
+    for _ in range(4):
+        parent_conn, child_conn = fork_ctx.Pipe()
+        proc = fork_ctx.Process(
+            target=_agent_orch_import_worker,
+            args=(child_conn, str(root), str(ledger), barrier),
+        )
+        proc.start()
+        child_conn.close()
+        processes.append(proc)
+        receivers.append(parent_conn)
+    results = [conn.recv() for conn in receivers]
+    for proc in processes:
+        proc.join(timeout=60)
+    for conn in receivers:
+        conn.close()
+    for proc in processes:
+        assert proc.exitcode == 0, results
+
+    statuses = [result[0] for result in results]
+    assert statuses == ["ok"] * 4, results
+    imported = [result[1] for result in results]
+    assert sum(imported) == 3, results
+    assert imported.count(0) == 3, results  # losers see every id already present
+    for result in results:
+        if result[0] == "ok":
+            assert set(result[2]) <= {"attempt_id already present"}, results
+
+    records = read_attempts(ledger)
+    assert {record["agent_orch_attempt"]["run_id"] for record in records} == set(
+        run_ids
+    )
+    assert len(records) == 3

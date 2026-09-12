@@ -3,9 +3,10 @@
 Every staffing attempt (live ``run`` command, benchmark import, agent-orch
 import) is recorded as one compact JSON line in
 ``~/.local/state/lee-llm-router/attempts/<hostname>.jsonl``. Like the events
-ledger the file is append-only and per-host: one writer per machine, never a
-rewrite, never a truncate, never an update, so a Syncthing-replicated state
-directory can carry it between machines without conflict files.
+ledger the file is append-only and per-host, with every writer serialized by
+an exclusive per-ledger ``flock`` — never a rewrite, never a truncate, never
+an update, so a Syncthing-replicated state directory can carry it between
+machines without conflict files.
 
 Every record is validated against the committed Draft 2020-12 attempt-record
 v2 schema (``config/staffing/schema/attempt-record.schema.json``) *before* any
@@ -22,6 +23,15 @@ JSONL line can never contain them), and when ``class_record`` is present its
 class check joins evidence reliably without any class-to-model or
 class-to-route lookup (D206); the canonical rendering mirrors
 ``classes.schema.json`` $defs/classBlock.
+
+Concurrent import writers serialize on an exclusive kernel ``flock`` carried
+by a ``<ledger>.lock`` file next to the ledger: plain :func:`append_attempt`
+holds it for its one record and :func:`writer_transaction` holds it across a
+whole import batch, so concurrent imports against one per-host ledger cannot
+interleave, lose, or duplicate accepted records. The kernel releases a dead
+holder's ``flock`` (a crashed import never wedges the ledger), and lock
+exhaustion raises :class:`AttemptLedgerError` — fail closed, never
+unserialized — after :data:`LOCK_TIMEOUT_SECONDS`.
 
 The line is written with one ``os.write`` on a descriptor opened
 ``O_WRONLY|O_CREAT|O_APPEND`` with mode ``0o600``. A short write raises
@@ -45,12 +55,15 @@ providers: it validates a mapping and appends bytes to a file.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
 import socket
+import threading
+import time
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
 from jsonschema import Draft202012Validator, FormatChecker
 
@@ -60,6 +73,11 @@ from lee_llm_router.staffing.json_int import (
     int_from_decimal,
     int_to_decimal,
 )
+
+try:  # pragma: no cover - exercised trivially on POSIX CI
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover - non-POSIX fallback only
+    _fcntl = None
 
 DEFAULT_ATTEMPTS_DIR = Path("~/.local/state/lee-llm-router/attempts")
 """Directory holding one attempt ledger per host (``~`` expanded at use time)."""
@@ -86,6 +104,13 @@ class AttemptLedgerError(LLMRouterError):
 
 class ShortWriteError(OSError):
     """Raised when the single ``os.write`` did not write the whole line."""
+
+
+LOCK_TIMEOUT_SECONDS = 30.0
+"""Bounded wait for the exclusive per-ledger writer lock before failing."""
+
+_HELD_LOCKS = threading.local()
+"""Per-thread map of writer locks this thread already holds (re-entrancy)."""
 
 
 def load_attempt_record_schema() -> Mapping[str, Any]:
@@ -365,9 +390,15 @@ def append_attempt(record: Mapping[str, Any], path: str | Path | None = None) ->
     """Append one validated attempt record to the ledger as a single line.
 
     The record is validated before anything is created, so an invalid record
-    never leaves a file behind. The line is written with one ``os.write`` on a
-    descriptor opened ``O_WRONLY|O_CREAT|O_APPEND`` with mode ``0o600``; a
-    short write raises :class:`ShortWriteError` and is never retried.
+    never leaves a file behind. The write is serialized against every other
+    writer on the same ledger with the exclusive ``flock`` carried by
+    ``<ledger>.lock``: when called inside this thread's
+    :func:`writer_transaction` the held lock is re-entered (a second flock
+    would deadlock across descriptions), otherwise the lock is taken and
+    released around the single append. The line is written with one
+    ``os.write`` on a descriptor opened ``O_WRONLY|O_CREAT|O_APPEND`` with
+    mode ``0o600``; a short write raises :class:`ShortWriteError` and is
+    never retried.
 
     Args:
         record: The attempt record, normally a v2 dict per the committed
@@ -380,15 +411,37 @@ def append_attempt(record: Mapping[str, Any], path: str | Path | None = None) ->
 
     Raises:
         AttemptLedgerError: If the record is schema-invalid or
-            evidence-truth-invalid, or not JSON-serialisable.
+            evidence-truth-invalid, not JSON-serialisable, or the writer lock
+            cannot be acquired within :data:`LOCK_TIMEOUT_SECONDS`.
         ShortWriteError: If the whole line was not written in one call.
     """
     line = encode_attempt(record)
     target = resolve_attempts_path(path)
-    parent = target.parent
+    lock_key = str(_lock_file_path(target))
+    if lock_key in _held_writer_locks():
+        return _append_line(line, target)
+    fd = _acquire_writer_lock(target)
+    try:
+        return _append_line(line, target)
+    finally:
+        _release_writer_lock(fd)
+
+
+def _lock_file_path(target: Path) -> Path:
+    """Return the exclusive-writer lock path for one ledger file."""
+    return target.with_name(target.name + ".lock")
+
+
+def _ensure_private_parent(parent: Path) -> None:
+    """Create ``parent`` as a ``0o700`` directory when it is missing."""
     if not parent.is_dir():
         parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(parent, 0o700)
+
+
+def _append_line(line: bytes, target: Path) -> Path:
+    """Append one encoded line as a single ``O_APPEND`` ``os.write``."""
+    _ensure_private_parent(target.parent)
     fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
         written = os.write(fd, line)
@@ -399,6 +452,102 @@ def append_attempt(record: Mapping[str, Any], path: str | Path | None = None) ->
             f"short write to {target}: wrote {written} of {len(line)} bytes"
         )
     return target
+
+
+def _held_writer_locks() -> dict[str, int]:
+    """Return this thread's map of held writer locks, creating it lazily."""
+    held = getattr(_HELD_LOCKS, "locks", None)
+    if held is None:
+        held = _HELD_LOCKS.locks = {}
+    return held
+
+
+def _acquire_writer_lock(target: Path) -> int:
+    """Open and exclusively ``flock`` the per-ledger lock file.
+
+    The lock file is never appended to and carries no bytes; it exists only
+    to hold the kernel lock, which the kernel releases when its holder dies.
+    The wait is bounded: exhaustion raises :class:`AttemptLedgerError`
+    (fail closed) instead of writing unserialized.
+
+    Args:
+        target: The ledger file the lock protects.
+
+    Returns:
+        The locked descriptor; release it with :func:`_release_writer_lock`.
+
+    Raises:
+        AttemptLedgerError: If ``fcntl`` is unavailable or the lock cannot
+            be acquired within :data:`LOCK_TIMEOUT_SECONDS`.
+    """
+    if _fcntl is None:  # pragma: no cover - non-POSIX only
+        raise AttemptLedgerError(
+            "attempt-ledger writer serialization requires fcntl (POSIX): " f"{target}"
+        )
+    lock_path = _lock_file_path(target)
+    _ensure_private_parent(target.parent)
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
+    while True:
+        try:
+            _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+            return fd
+        except OSError as exc:
+            if time.monotonic() >= deadline:
+                os.close(fd)
+                raise AttemptLedgerError(
+                    f"attempt-ledger writer lock not acquired within "
+                    f"{LOCK_TIMEOUT_SECONDS:.0f}s: {lock_path}"
+                ) from exc
+            time.sleep(0.01)
+
+
+def _release_writer_lock(fd: int) -> None:
+    """Release and close one writer lock descriptor."""
+    try:
+        _fcntl.flock(fd, _fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+@contextlib.contextmanager
+def writer_transaction(path: str | Path | None = None) -> Iterator[Path]:
+    """Hold the per-ledger writer lock across a batch of appends.
+
+    Import operations that must read-decide-append as one serialized unit run
+    inside this context: concurrent imports against one per-host ledger then
+    cannot interleave, lose, or duplicate accepted records. The lock is an
+    exclusive kernel ``flock`` on ``<ledger>.lock``, released by the kernel
+    even when a holder crashes. :func:`append_attempt` calls on the same
+    ledger from this thread re-enter the held lock instead of deadlocking,
+    and writers outside any transaction take the same lock around a single
+    record, so every writer is serialized while the ledger stays append-only
+    JSONL with validation before every write.
+
+    Args:
+        path: Explicit ledger path; resolved by :func:`resolve_attempts_path`
+            when omitted.
+
+    Yields:
+        The resolved ledger path.
+
+    Raises:
+        AttemptLedgerError: If the lock cannot be acquired within
+            :data:`LOCK_TIMEOUT_SECONDS`, or ``fcntl`` is unavailable.
+    """
+    target = resolve_attempts_path(path)
+    lock_key = str(_lock_file_path(target))
+    held = _held_writer_locks()
+    if lock_key in held:
+        yield target
+        return
+    fd = _acquire_writer_lock(target)
+    held[lock_key] = fd
+    try:
+        yield target
+    finally:
+        held.pop(lock_key, None)
+        _release_writer_lock(fd)
 
 
 def read_attempts(path: str | Path) -> list[dict[str, Any]]:

@@ -1,8 +1,10 @@
 """Focused P1-7 benchmark-v6 evidence import tests.
 
 All state is redirected through the app-specific attempt-ledger environment
-override.  Fixtures are static CSV/JSON only; no subprocess or provider
-boundary exists in this test module.
+override.  Fixtures are static CSV/JSON only; no provider boundary exists in
+this test module.  One regression starts real OS processes (``fork``) that
+call the real public import function against one shared ledger; every other
+test runs in-process.
 
 The import writes only the raw ``benchmarkV6Run`` payload: facts copied from
 the verified v6 sidecar and its SHA-256-pinned source CSV.  The v6 sidecar
@@ -18,6 +20,8 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import multiprocessing as mp
+import sys
 from collections import Counter
 from pathlib import Path
 
@@ -581,3 +585,139 @@ def test_real_mixed_ledger_rollup_reports_93_distinct_source_runs(
         "review/judge/persistence/m/python": 17,
     }
     assert sum(group["attempts"] for group in groups) == 93
+
+
+# ---------------------------------------------------------------------------
+# Multi-process writer-transaction regression (P3)
+# ---------------------------------------------------------------------------
+
+
+def _concurrent_sources(tmp_path: Path, run_ids: list[str]) -> Path:
+    """A v6 sidecar/CSV pair with one valid measured row per run id."""
+    csv_path = tmp_path / "conc-runs.csv"
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "run_id,task_key,model,harness,effort,acceptance,captured_at,"
+        "usage_status,usage_input_tokens,usage_output_tokens,"
+        "usage_cached_input_tokens,usage_reasoning_tokens,usage_total_tokens\n"
+    ]
+    usage = []
+    for number, run_id in enumerate(run_ids):
+        lines.append(
+            f"{run_id},router-change@v1,scratch-worker,opencode,xhigh,"
+            f"accepted,2026-09-09T12:{number:02d}:00Z,known,10,20,0,,30\n"
+        )
+        usage.append(
+            {
+                "run_id": run_id,
+                "usage_input_tokens": 10,
+                "usage_output_tokens": 20,
+                "usage_cached_input_tokens": 0,
+                "usage_reasoning_tokens": None,
+                "usage_total_tokens": 30,
+            }
+        )
+    csv_path.write_text("".join(lines), encoding="utf-8")
+    sidecar = {
+        "schema_version": BENCHMARK_SCHEMA_VERSION,
+        "generated_at": "2026-09-09T15:00:00Z",
+        "source_csv": {
+            "path": str(csv_path),
+            "sha256": hashlib.sha256(csv_path.read_bytes()).hexdigest(),
+        },
+        "rows": [
+            {
+                "task_key": "router-change@v1",
+                "class": {
+                    "class_key": "impl/deterministic/none/m/python",
+                    "role": "impl",
+                    "oracle_type": "deterministic",
+                    "domain_tags": [],
+                    "size_band": "m",
+                    "language": "python",
+                },
+                "worker": {
+                    "model": "scratch-worker",
+                    "model_family": "scratch-family",
+                    "harness": "opencode",
+                    "effort": "xhigh",
+                },
+                "run_ids": list(run_ids),
+                "run_usage": usage,
+            }
+        ],
+    }
+    sidecar_path = tmp_path / "conc-sidecar.json"
+    sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
+    return sidecar_path
+
+
+def _benchmark_import_worker(conn, sidecar: str, ledger: str, barrier) -> None:
+    """Child body: one real import_benchmark_evidence against a shared ledger."""
+    try:
+        barrier.wait(timeout=30)
+        summary = import_benchmark_evidence(sidecar, ledger_path=ledger)
+        conn.send(
+            ("ok", summary.imported, [issue.reason for issue in summary.issues])
+        )
+    except Exception as exc:  # pragma: no cover - reported to the parent
+        conn.send(("error", repr(exc)))
+    finally:
+        conn.close()
+
+
+def test_concurrent_processes_import_benchmark_rows_exactly_once(
+    tmp_path: Path,
+) -> None:
+    """Four OS processes race one real import against one shared ledger.
+
+    This is the production concurrency regression (P3): every child calls the
+    real public ``import_benchmark_evidence`` — no surrogate reimplements the
+    read-decide-append sequence — released together by a fork barrier so the
+    whole sequences genuinely overlap.  Each import must hold the per-ledger
+    writer transaction across its entire read-decide-append body: the first
+    process's accepted ids are then seen by every later process, so each row
+    lands exactly once.  Without that transaction every process reads the
+    still-empty ledger and appends every row, so this test turns red.
+    """
+    if sys.platform == "win32":
+        pytest.skip("POSIX fork for multi-process regression")
+    fork_ctx = mp.get_context("fork")
+    run_ids = [f"conc-run-{index}" for index in range(4)]
+    sidecar = _concurrent_sources(tmp_path, run_ids)
+    ledger = tmp_path / "shared-attempts.jsonl"
+
+    barrier = fork_ctx.Barrier(4)
+    processes = []
+    receivers = []
+    for _ in range(4):
+        parent_conn, child_conn = fork_ctx.Pipe()
+        proc = fork_ctx.Process(
+            target=_benchmark_import_worker,
+            args=(child_conn, str(sidecar), str(ledger), barrier),
+        )
+        proc.start()
+        child_conn.close()
+        processes.append(proc)
+        receivers.append(parent_conn)
+    results = [conn.recv() for conn in receivers]
+    for proc in processes:
+        proc.join(timeout=60)
+    for conn in receivers:
+        conn.close()
+    for proc in processes:
+        assert proc.exitcode == 0, results
+
+    statuses = [result[0] for result in results]
+    assert statuses == ["ok"] * 4, results
+    imported = [result[1] for result in results]
+    assert sum(imported) == 4, results
+    assert imported.count(0) == 3, results  # losers see every id already present
+    for result in results:
+        if result[0] == "ok":
+            assert set(result[2]) <= {"attempt_id already present"}, results
+
+    records = read_attempts(ledger)
+    assert [record["attempt_id"] for record in records] == [
+        f"benchmark:{run_id}" for run_id in run_ids
+    ]
