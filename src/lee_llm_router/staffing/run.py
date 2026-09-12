@@ -766,15 +766,22 @@ def selection_record(outcome: SelectionOutcome) -> dict[str, Any]:
 def _is_role_class_capability_reason(reason: str) -> bool:
     """Whether one explain reason is worker role/class capability policy.
 
-    Exactly the two checks that must never be imposed on an attested
-    supervisor identity (Astra final-review finding 5): the D188
-    ``role_scoped`` denial (reason ``role_scoped: <class> denied for
-    <model>``) and the review/judge author-family ``independence``
-    exclusion. Every other governed reason — status, channel membership,
-    harness lock, ``never_automatic``, availability veto, terms/pricing
-    availability — still refuses an attestation.
+    Exactly the three checks that must never be imposed on an attested
+    supervisor identity: the D188 ``role_scoped`` denial (reason
+    ``role_scoped: <class> denied for <model>``) and the review/judge
+    author-family ``independence`` exclusion (Astra final-review finding 5),
+    plus ``never_automatic`` (D223, Lee 2026-09-12: never-automatic governs
+    *selection* of a worker, not the *identity* of the supervisor attesting a
+    run — Fable/Opus/Luna-Max supervisors were refused as
+    ``supervisor_route_unattested`` throughout Phase 5). Every other governed
+    reason — status, channel membership, harness lock, availability veto,
+    terms/pricing availability — still refuses an attestation.
     """
-    return reason == "independence" or reason.startswith("role_scoped:")
+    return (
+        reason == "independence"
+        or reason == "never_automatic"
+        or reason.startswith("role_scoped:")
+    )
 
 
 def _resolve_supervisor_route(
@@ -795,12 +802,12 @@ def _resolve_supervisor_route(
     * be ``active`` (else refusal);
     * be currently usable as a governed route: every remaining exclusion
       reason from the same explain evaluation still refuses — route status,
-      channel membership, harness lock, ``never_automatic``, availability
-      headroom veto, unavailable dated terms or pricing. The only reasons
-      *not* imposed on the supervisor are the role/class capability checks
-      (``role_scoped`` and the review/judge ``independence`` author-family
-      exclusion): attesting one's identity is not performing the worker's
-      task, and the supervisor is never a review candidate.
+      channel membership, harness lock, availability headroom veto,
+      unavailable dated terms or pricing. The only reasons *not* imposed on
+      the supervisor are the worker-selection policies (``role_scoped``, the
+      review/judge ``independence`` author-family exclusion, and
+      ``never_automatic`` — D223): attesting one's identity is not selecting
+      a worker, and the supervisor is never a review candidate.
 
     Any refusal raises :class:`RunSelectionError` (exit 3) before anything
     is launched.

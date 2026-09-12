@@ -719,10 +719,9 @@ def test_run_unknown_explicit_route_exits_3_and_never_launches(
     ("supervisor_route", "retire_catalog"),
     [
         ("no-such-supervisor-route", False),
-        (FABLE_ROUTE, False),
         (CODEX_ROUTE, True),
     ],
-    ids=["unknown", "ineligible", "inactive"],
+    ids=["unknown", "inactive"],
 )
 def test_run_invalid_supervisor_route_exits_3_before_worker(
     monkeypatch,
@@ -761,13 +760,8 @@ def test_run_invalid_supervisor_route_exits_3_before_worker(
         assert "does not match any route_id" in captured.err
     elif retire_catalog:
         assert "is not active" in captured.err
-    else:
-        # Astra final-review finding 5: the attestation validates the
-        # identity, so role/class capability policy never applies — but
-        # every other governed reason (never_automatic here) still refuses.
-        assert "currently usable route identity" in captured.err
-        assert "never_automatic" in captured.err
-        assert "role_scoped" not in captured.err
+    else:  # pragma: no cover - parametrization covers unknown and inactive
+        raise AssertionError("unexpected parametrization")
 
 
 def test_run_supervisor_attestation_is_identity_not_capability(
@@ -870,6 +864,49 @@ def test_run_supervisor_attestation_still_refuses_nonclass_governed_reasons(
     assert not scratch_state["attempts"].exists()
     assert "currently usable route identity" in captured.err
     assert "channel unknown" in captured.err
+
+
+def test_run_supervisor_attestation_never_automatic_is_identity_exempt(
+    monkeypatch, capsys, catalog_dir, tmp_path, snapshot, packet, scratch_state
+):
+    """D223: never_automatic governs worker selection, not supervisor identity.
+
+    A Fable supervisor attests fine on a healthy anthropic channel; the same
+    identity is still refused when its channel is exhausted, and that refusal
+    names the availability reason, never never_automatic.
+    """
+    launcher = LaunchRecorder()
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        supervisor_route=FABLE_ROUTE,
+        launcher=launcher,
+    )
+    assert code == 0, captured.err
+    assert len(launcher.processes) == 1
+    payload = json.loads(captured.out)
+    assert payload["supervisor_route"]["model"] == "claude-fable-5-1"
+    assert payload["verified_success_reason"] != "supervisor_route_unattested"
+
+    exhausted = _write_snapshot(tmp_path / "exhausted.json", anthropic=("HOT", 0))
+    launcher = LaunchRecorder()
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=exhausted,
+        packet_path=packet,
+        supervisor_route=FABLE_ROUTE,
+        launcher=launcher,
+    )
+    assert code == 3
+    assert launcher.processes == []
+    assert "currently usable route identity" in captured.err
+    assert "channel exhausted" in captured.err
+    assert "never_automatic" not in captured.err
 
 
 # ---------------------------------------------------------------------------
