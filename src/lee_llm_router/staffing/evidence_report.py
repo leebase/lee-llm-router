@@ -518,6 +518,7 @@ def _enrich_group(
     class_key: str | None,
     members: list[Mapping[str, Any]],
     all_records_index: dict[str, Mapping[str, Any]],
+    source_ledger: str = "",
 ) -> dict[str, Any]:
     """Build one enriched evidence-report row for a route/class group.
 
@@ -534,9 +535,20 @@ def _enrich_group(
     escalations = _count_escalations(members, all_records_index)
     fallbacks = _reviewer_fallbacks(members)
 
+    source_attempt_ids = [
+        (
+            r.get("attempt_id")
+            if isinstance(r.get("attempt_id"), str) and r.get("attempt_id")
+            else "<no attempt_id>"
+        )
+        for r in members
+    ]
+
     return {
         "route_id": route_id,
         "class_key": class_key,
+        "source_ledger": source_ledger,
+        "source_attempt_ids": source_attempt_ids,
         "attempts": attempts,
         "verified_pass": verified_pass,
         "pass_rate": round(pass_rate, 4),
@@ -627,7 +639,7 @@ def _default_catalog_dir() -> Path:
 
 def _route_changes(
     enriched: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
+) -> dict[str, list[dict[str, Any]]]:
     """Recommend cheaper routes for comparison-eligible classes.
 
     For any class_key with ``comparison_eligible`` (n >= 5) at more than
@@ -646,8 +658,13 @@ def _route_changes(
             by_class.setdefault(ck, []).append(row)
 
     recommendations: list[dict[str, Any]] = []
-    for class_key, rows in by_class.items():
+    not_recommended: list[dict[str, Any]] = []
+
+    for class_key, rows in sorted(by_class.items()):
         if len(rows) < 2:
+            not_recommended.append(
+                {"class_key": class_key, "reason": "fewer than 2 routes with evidence"}
+            )
             continue
         eligible = [
             r
@@ -656,11 +673,26 @@ def _route_changes(
             and r.get("attempts", 0) >= MINIMUM_SAMPLE_SIZE
         ]
         if len(eligible) < 2:
+            not_recommended.append(
+                {
+                    "class_key": class_key,
+                    "reason": (
+                        f"fewer than 2 comparison-eligible routes "
+                        f"(n>={MINIMUM_SAMPLE_SIZE})"
+                    ),
+                }
+            )
             continue
 
         # Among routes with pass_rate >= 0.8
         viable = [r for r in eligible if r.get("pass_rate", 0.0) >= 0.8]
         if len(viable) < 2:
+            not_recommended.append(
+                {
+                    "class_key": class_key,
+                    "reason": "fewer than 2 routes at pass_rate>=0.8",
+                }
+            )
             continue
 
         # Exclude routes with unavailable cost
@@ -673,11 +705,27 @@ def _route_changes(
                 priced.append(r)
 
         if len(priced) < 2:
+            not_recommended.append(
+                {
+                    "class_key": class_key,
+                    "reason": "fewer than 2 routes with a usable marginal cost",
+                }
+            )
             continue
 
         cheapest = min(
             priced, key=lambda r: r["cost_per_verified_success"]["usd_marginal"]
         )
+        first_route = priced[0]
+        cheapest_cost = cheapest["cost_per_verified_success"]["usd_marginal"]
+        first_cost = first_route["cost_per_verified_success"]["usd_marginal"]
+
+        if first_cost <= cheapest_cost:
+            not_recommended.append(
+                {"class_key": class_key, "reason": "cheapest route already first"}
+            )
+            continue
+
         others = [r for r in priced if r["route_id"] != cheapest["route_id"]]
 
         evidence_parts = []
@@ -696,7 +744,10 @@ def _route_changes(
             }
         )
 
-    return recommendations
+    return {
+        "recommendations": recommendations,
+        "not_recommended": not_recommended,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -763,7 +814,13 @@ def build_evidence_report(
     for route_id, class_key in sorted(grouped, key=_group_sort_key):
         members = grouped[(route_id, class_key)]
         enriched_groups.append(
-            _enrich_group(route_id, class_key, members, all_records_index)
+            _enrich_group(
+                route_id,
+                class_key,
+                members,
+                all_records_index,
+                source_ledger=str(ledger_path_resolved),
+            )
         )
 
     # Channel headroom. An invalid --catalog-dir is a caller/operator error
@@ -777,13 +834,14 @@ def build_evidence_report(
     channels = _channel_headroom_rows(catalog, availability_file)
 
     # Route change recommendations
-    route_changes = _route_changes(enriched_groups)
+    route_changes_result = _route_changes(enriched_groups)
 
     return {
         "report_for": month,
         "classes": enriched_groups,
         "channels": channels,
-        "route_changes": route_changes,
+        "route_changes": route_changes_result["recommendations"],
+        "route_changes_not_recommended": route_changes_result["not_recommended"],
     }
 
 
@@ -808,6 +866,23 @@ def render_evidence_report(report: dict[str, Any]) -> str:
             ck = group["class_key"] or "(none)"
             lines.append(f"  route: {route}")
             lines.append(f"  class: {ck}")
+
+            source_ledger = group.get("source_ledger") or "(none)"
+            attempt_ids = group.get("source_attempt_ids", [])
+            n = len(attempt_ids) if attempt_ids else group.get("attempts", 0)
+            if not attempt_ids:
+                lines.append(f"  source: {n} attempts from {source_ledger}")
+            elif n <= 3:
+                ids_str = ", ".join(attempt_ids)
+                lines.append(f"  source: {n} attempts from {source_ledger} ({ids_str})")
+            else:
+                first_three = ", ".join(attempt_ids[:3])
+                k = n - 3
+                lines.append(
+                    f"  source: {n} attempts from {source_ledger} "
+                    f"({first_three}, +{k} more)"
+                )
+
             lines.append(f"  attempts: {group['attempts']}")
             lines.append(f"  verified_pass: {group['verified_pass']}")
             lines.append(f"  pass_rate: {group['pass_rate']}")
@@ -883,5 +958,15 @@ def render_evidence_report(report: dict[str, Any]) -> str:
             lines.append(f"  recommended: {rc['recommended_route_id']}")
             lines.append(f"  evidence: {rc['evidence']}")
             lines.append("")
+    else:
+        lines.append("Recommended route changes: none")
+        not_rec = report.get("route_changes_not_recommended", [])
+        counts: dict[str, int] = {}
+        for nr in not_rec:
+            reason = nr.get("reason", "")
+            counts[reason] = counts.get(reason, 0) + 1
+        for reason, count in sorted(counts.items(), key=lambda x: (-x[1], x[0])):
+            lines.append(f"  {count} classes: {reason}")
+        lines.append("")
 
     return "\n".join(lines)

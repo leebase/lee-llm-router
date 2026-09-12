@@ -59,6 +59,7 @@ def test_evidence_report_with_empty_ledger_text(capsys) -> None:
     out = outerr.out
     assert "Evidence report" in out
     assert "2030-01" in out
+    assert "Recommended route changes: none" in out
 
 
 def test_evidence_report_with_empty_ledger_json(capsys) -> None:
@@ -82,6 +83,7 @@ def test_evidence_report_with_empty_ledger_json(capsys) -> None:
     assert isinstance(data["classes"], list)
     assert isinstance(data["channels"], list)
     assert isinstance(data["route_changes"], list)
+    assert isinstance(data["route_changes_not_recommended"], list)
 
 
 def test_evidence_report_with_availability_file(capsys, tmp_path) -> None:

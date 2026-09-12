@@ -25,6 +25,7 @@ from lee_llm_router.staffing.evidence_report import (
     build_evidence_report,
     render_evidence_report,
 )
+from lee_llm_router.staffing.rollup import MINIMUM_SAMPLE_SIZE
 
 # Re-use the repo's committed catalog (channels, routes, policy)
 REPO_CONFIG_DIR = Path(__file__).resolve().parents[1] / "config" / "staffing"
@@ -692,3 +693,149 @@ def test_all_seven_channels_reported(tmp_path) -> None:
     for cid in CHANNEL_IDS:
         assert cid in channel_ids, f"Missing channel: {cid}"
     assert len(channels) == len(CHANNEL_IDS)
+
+
+# ---------------------------------------------------------------------------
+# Source rows: source_attempt_ids and source_ledger
+# ---------------------------------------------------------------------------
+
+
+def test_source_rows_and_text_rendering(tmp_path, monkeypatch) -> None:
+    """Source rows carry attempt_ids in ledger order and render source line."""
+    from lee_llm_router.staffing.ledger import (
+        ATTEMPTS_FILE_ENV_VAR,
+        append_attempt,
+        read_attempts,
+    )
+
+    ledger = tmp_path / "ledger.jsonl"
+    monkeypatch.setenv(ATTEMPTS_FILE_ENV_VAR, str(ledger))
+    ledger.write_text("", encoding="utf-8")
+
+    append_attempt(_record(route_id="route-x", attempt_id="aid-1"), path=ledger)
+    append_attempt(_record(route_id="route-x", attempt_id="aid-2"), path=ledger)
+    for i in range(1, 5):
+        append_attempt(
+            _record(route_id="route-y", attempt_id=f"aid-10{i}"), path=ledger
+        )
+
+    rec_no_id = _record(route_id="route-z")
+    rec_no_id.pop("attempt_id", None)
+    real_read = read_attempts(ledger)
+    monkeypatch.setattr(
+        "lee_llm_router.staffing.evidence_report.read_attempts",
+        lambda p: real_read + [rec_no_id],
+    )
+
+    report = build_evidence_report("2026-09", catalog_dir=str(REPO_CONFIG_DIR))
+    by_route = {c["route_id"]: c for c in report["classes"]}
+    assert by_route["route-x"]["source_attempt_ids"] == ["aid-1", "aid-2"]
+    assert by_route["route-y"]["source_attempt_ids"] == [
+        f"aid-10{i}" for i in range(1, 5)
+    ]
+    assert by_route["route-z"]["source_attempt_ids"] == ["<no attempt_id>"]
+    assert by_route["route-x"]["source_ledger"] == str(ledger)
+
+    text = render_evidence_report(report)
+    assert f"  source: 2 attempts from {ledger} (aid-1, aid-2)" in text
+    assert (
+        f"  source: 4 attempts from {ledger} (aid-101, aid-102, aid-103, +1 more)"
+        in text
+    )
+    assert f"  source: 1 attempts from {ledger} (<no attempt_id>)" in text
+
+
+# ---------------------------------------------------------------------------
+# Route change not recommended reason strings
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("routes_data", "expected_reason"),
+    [
+        ([(1, 1.0, 0.05, 0.02)], "fewer than 2 routes with evidence"),
+        (
+            [(5, 1.0, 0.05, 0.02), (4, 1.0, 0.05, 0.02)],
+            f"fewer than 2 comparison-eligible routes (n>={MINIMUM_SAMPLE_SIZE})",
+        ),
+        (
+            [(5, 1.0, 0.05, 0.02), (5, 0.6, 0.05, 0.02)],
+            "fewer than 2 routes at pass_rate>=0.8",
+        ),
+        (
+            [(5, 1.0, 0.05, 0.02), (5, 1.0, None, None)],
+            "fewer than 2 routes with a usable marginal cost",
+        ),
+        (
+            [(5, 1.0, 0.05, 0.02), (5, 1.0, 0.10, 0.05)],
+            "cheapest route already first",
+        ),
+    ],
+)
+def test_route_changes_not_recommended_reasons(
+    tmp_path, monkeypatch, routes_data, expected_reason
+) -> None:
+    """Each not-recommended condition produces the exact required reason string."""
+    from lee_llm_router.staffing.ledger import ATTEMPTS_FILE_ENV_VAR, append_attempt
+
+    ledger = tmp_path / "ledger.jsonl"
+    monkeypatch.setenv(ATTEMPTS_FILE_ENV_VAR, str(ledger))
+    ledger.write_text("", encoding="utf-8")
+
+    CLASS = "impl/deterministic/none/s/python"
+    for idx, (n, pr, clist, cmarg) in enumerate(routes_data, start=1):
+        passes = round(n * pr)
+        for i in range(n):
+            append_attempt(
+                _record(
+                    route_id=f"route-{idx}",
+                    class_key=CLASS,
+                    cost_usd_list=clist,
+                    cost_usd_marginal=cmarg,
+                    verified_success=(i < passes),
+                ),
+                path=ledger,
+            )
+
+    report = build_evidence_report("2026-09", catalog_dir=str(REPO_CONFIG_DIR))
+    assert report["route_changes"] == []
+    match = [
+        nr for nr in report["route_changes_not_recommended"] if nr["class_key"] == CLASS
+    ]
+    assert len(match) == 1
+    assert match[0]["reason"] == expected_reason
+
+
+def test_render_evidence_report_recommended_changes_both_states() -> None:
+    """The Recommended route changes section is always printed in both states."""
+    # State 1: empty recommendations -> prints 'none' with reason counts
+    report_empty = {
+        "report_for": "2026-09",
+        "route_changes": [],
+        "route_changes_not_recommended": [
+            {"class_key": "class-c", "reason": "fewer than 2 routes with evidence"},
+            {"class_key": "class-a", "reason": "fewer than 2 routes with evidence"},
+            {"class_key": "class-b", "reason": "cheapest route already first"},
+        ],
+    }
+    text_empty = render_evidence_report(report_empty)
+    assert "Recommended route changes: none" in text_empty
+    idx_ev = text_empty.index("2 classes: fewer than 2 routes with evidence")
+    idx_ch = text_empty.index("1 classes: cheapest route already first")
+    assert idx_ev < idx_ch
+
+    # State 2: non-empty recommendations -> prints section with recommendation
+    report_nonempty = {
+        "report_for": "2026-09",
+        "route_changes": [
+            {
+                "class_key": "impl/deterministic/none/s/python",
+                "recommended_route_id": "route-cheaper",
+                "evidence": "route-cheaper: n=5, pass_rate=1.0, mean_marginal=0.0200",
+            }
+        ],
+    }
+    text_nonempty = render_evidence_report(report_nonempty)
+    assert "Recommended route changes:" in text_nonempty
+    assert "Recommended route changes: none" not in text_nonempty
+    assert "  recommended: route-cheaper" in text_nonempty
