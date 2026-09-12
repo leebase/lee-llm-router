@@ -2137,6 +2137,93 @@ def _run_price(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# route show (P4-10): disclose one route's full catalog record plus proof
+# ---------------------------------------------------------------------------
+
+
+def _run_route_show(args: argparse.Namespace) -> int:
+    """Run ``route show``: disclose one route's full catalog record.
+
+    Unlike ``catalog explain`` (which deliberately withholds model/effort/
+    harness/status because "the route id is the only route label" for
+    *selection*), this command's whole purpose is disclosure for a caller
+    that must actually dispatch the route (chief-answers-p4-2.md item 1):
+    it prints every field the catalog's ``routes.yaml`` records for the
+    route id, plus its D211 ``proof_status`` from the attempts ledger. It
+    performs no selection, ranking, or eligibility evaluation.
+    """
+    from pathlib import Path
+
+    from lee_llm_router.staffing import StaffingCatalogError, load_staffing_catalog
+    from lee_llm_router.staffing.json_int import dump_json
+    from lee_llm_router.staffing.proof import ProofStatus, proof_status_ledger
+
+    def fail(message: str) -> int:
+        print(f"route show: {message}", file=sys.stderr)
+        return 3
+
+    catalog_dir = (
+        Path(args.catalog_dir)
+        if args.catalog_dir is not None
+        else _default_catalog_dir()
+    )
+    try:
+        catalog = load_staffing_catalog(catalog_dir)
+    except StaffingCatalogError as exc:
+        return fail(f"catalog invalid: {exc}")
+    except Exception as exc:  # no traceback on unexpected catalog problems
+        return fail(f"catalog invalid: {exc}")
+
+    route = next(
+        (r for r in catalog.routes.routes if r.route_id == args.route_id), None
+    )
+    if route is None:
+        return fail(f"unknown route id: {args.route_id!r}")
+
+    try:
+        proof = proof_status_ledger().get(route.route_id, ProofStatus.UNPROVEN)
+    except Exception as exc:  # ledger corruption never blocks disclosure
+        return fail(f"attempts ledger unusable: {exc}")
+    proof_value = proof.value if isinstance(proof, ProofStatus) else str(proof)
+
+    record = {
+        "route_id": route.route_id,
+        "model": route.model,
+        "effort": route.effort,
+        "harness": route.harness,
+        "channel": route.channel,
+        "dispatch_template": route.dispatch_template,
+        "usage_capture": route.usage_capture,
+        "status": route.status,
+        "status_reason": route.status_reason,
+        "proof_status": proof_value,
+    }
+
+    if args.json:
+        print(dump_json(record))
+    else:
+        print(f"route show — {route.route_id}")
+        for key in (
+            "model",
+            "effort",
+            "harness",
+            "channel",
+            "dispatch_template",
+            "usage_capture",
+            "status",
+            "status_reason",
+            "proof_status",
+        ):
+            print(f"{key}: {record[key]}")
+    return 0
+
+
+def _run_route_no_subcommand(_args: argparse.Namespace) -> int:
+    print("route: subcommand required (show)", file=sys.stderr)
+    return 3
+
+
+# ---------------------------------------------------------------------------
 # classify-failure (P3-1): deterministic D213 ruling 3 failure classification
 # ---------------------------------------------------------------------------
 
@@ -2613,6 +2700,39 @@ def main(argv: list[str] | None = None):
         help="Emit a JSON object instead of a plain-text table",
     )
     catalog_explain_parser.set_defaults(func=_run_catalog_explain)
+
+    route_parser = subparsers.add_parser(
+        "route",
+        help="Inspect one route's full catalog record",
+    )
+    route_sub = route_parser.add_subparsers(dest="route_command", metavar="SUBCOMMAND")
+    route_sub.required = False
+    route_parser.set_defaults(func=_run_route_no_subcommand)
+
+    route_show_parser = route_sub.add_parser(
+        "show",
+        help="Disclose one route's model/effort/harness/channel/status/proof_status",
+    )
+    route_show_parser.add_argument(
+        "route_id",
+        metavar="ROUTE_ID",
+        help="Route id to disclose",
+    )
+    route_show_parser.add_argument(
+        "--catalog-dir",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Directory holding the six staffing catalog YAML documents "
+            "(default: the repo config/staffing directory)"
+        ),
+    )
+    route_show_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a JSON object instead of plain text",
+    )
+    route_show_parser.set_defaults(func=_run_route_show)
 
     run_parser = subparsers.add_parser(
         "run",
