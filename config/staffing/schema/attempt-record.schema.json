@@ -41,7 +41,7 @@
     },
     "verified_success": {
       "type": "boolean",
-      "description": "True only for verdict 'pass' with the required route, usage, cost (when usage permits it), oracle, duration, and provenance evidence genuinely present (enforced by the allOf gate below): usage must be authoritative and non-unavailable with a source and the input/output token fields the current P0-4 pricing needs, while genuinely unknown optional cached_input_tokens/reasoning_tokens stay null (authoritative harness output may omit those optional components). total_tokens stays truthful: optional/null unless authoritatively reported or calculated. A source that reports success without complete evidence yields false — missing evidence is never invented to reach true. For record_kind 'agent_orch_attempt' (P1-7b1) verified_success instead means exactly the agent-orch validation gate — worker_exit_code == 0 and validation_passed == true, enforced as a schema equivalence — and the full oracle-evidence gate above is bypassed for that kind only; all other kinds keep the gate unchanged."
+      "description": "True only for verdict 'pass' with the required route, usage, cost (when usage permits it), oracle, duration, and provenance evidence genuinely present (enforced by the allOf gate below): usage must be authoritative and non-unavailable with a source and the input/output token fields the current P0-4 pricing needs, while genuinely unknown optional cached_input_tokens/reasoning_tokens stay null (authoritative harness output may omit those optional components). total_tokens stays truthful: optional/null unless authoritatively reported or calculated. Cost may carry basis ['list', 'marginal'] with both figures, or the sole member ['unavailable'] (Phase 3 P3-7 answer 2): a subscription channel's per-token cost is a list-equivalent estimate, never metered spend, and many subscription-only route models have no committed dated price at all, so its absence never withholds verification on its own; the run command, not this schema, gates that exception to a channels.yaml 'subscription' channel. A source that reports success without complete evidence yields false — missing evidence is never invented to reach true. For record_kind 'agent_orch_attempt' (P1-7b1) verified_success instead means exactly the agent-orch validation gate — worker_exit_code == 0 and validation_passed == true, enforced as a schema equivalence — and the full oracle-evidence gate above is bypassed for that kind only; all other kinds keep the gate unchanged."
     },
     "verified_success_reason": {
       "description": "Exact machine reason verified_success is false (P1-4 ruling 3, docs/staffing/chief-answers-p1-4.md). The run command records it on every false router_run record it builds; a verified_success true record never carries one (forbidden by the first allOf gate below). Conditional presence keeps the committed ledger lines and every shipped import example valid: imports without the field stay valid. The vocabulary is closed, and a false router_run record with a non-null supervisor_route (attested) is required to carry a truthful non-unattested reason (last allOf gate below): supervisor_route_unattested (no attested supervisor route was supplied), worker_dispatch_failed (worker exit nonzero or ceiling timeout), oracle_not_passed (oracle verdict not pass: unverified, nonzero exit, launch failure, or ceiling timeout), evidence_incomplete (a remaining route/usage/cost/duration evidence gate does not hold).",
@@ -279,27 +279,8 @@
             ]
           },
           "cost": {
-            "allOf": [
-              {
-                "$ref": "#/$defs/cost"
-              },
-              {
-                "required": [
-                  "usd_list",
-                  "usd_marginal"
-                ],
-                "properties": {
-                  "usd_list": {
-                    "type": "number",
-                    "minimum": 0
-                  },
-                  "usd_marginal": {
-                    "type": "number",
-                    "minimum": 0
-                  }
-                }
-              }
-            ]
+            "description": "Priced cost (basis ['list', 'marginal']) is required whenever the selected channel is metered spend evidence. A subscription channel's cost is a list-equivalent estimate, never metered spend (usage-truth rule): many subscription-only route models carry no committed dated price at all, so basis ['unavailable'] is also accepted here — the run command (loader work, not this schema) gates that exception to channels whose committed channels.yaml kind is exactly 'subscription', never to a metered or unrecognised channel.",
+            "$ref": "#/$defs/cost"
           },
           "wall_clock_ms": {
             "type": "integer",

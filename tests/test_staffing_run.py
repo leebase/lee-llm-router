@@ -2329,6 +2329,136 @@ def test_run_attested_pass_sets_verified_success_and_records_supervisor_route(
     assert len(launcher.calls) == 2
 
 
+def test_run_subscription_unpriced_model_still_verifies_true(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """P3-7 answer 2: a subscription channel's unpriceable model must not
+    withhold verification from an otherwise complete attested pass.
+
+    ``agy-gemini-3-8-flash-high-gemini-sub`` is a real committed
+    ``gemini-sub`` (subscription) route whose model id is an internal
+    effort-tiered encoding with no row in the pinned OpenRouter snapshot or
+    the agent-orch rate table, so its cost is permanently ``unavailable``
+    ("selected route has no dated price") — this reproduces the acceptance
+    defect where a passing, attested attempt on this route was recorded
+    ``verified_success: false — evidence_incomplete`` purely because a
+    subscription channel's list-equivalent cost could not be computed.
+    """
+    launcher = SequencedLaunchRecorder(
+        [
+            {"chunks": [(AGY_RECEIPT_STDOUT + "\n").encode("utf-8")], "exit_code": 0},
+            {"chunks": [b"oracle passed\n"], "exit_code": 0},
+        ]
+    )
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route="agy-gemini-3-8-flash-high-gemini-sub",
+        supervisor_route=CODEX_ROUTE,
+        launcher=launcher,
+        extra=("--oracle", "oracle --check"),
+    )
+
+    assert code == 0
+    payload = _assert_output_matches_single_append(captured, scratch_state)
+    assert payload["route"]["channel"] == "gemini-sub"
+    assert payload["usage"]["basis"] == "provider_reported"
+    assert payload["cost"] == {"basis": ["unavailable"]}
+    assert payload["verified_success"] is True
+    assert "verified_success_reason" not in payload
+
+
+def test_verified_success_reason_subscription_exempts_unavailable_cost() -> None:
+    """Direct gate test: subscription-channel unavailable cost verifies true."""
+    from lee_llm_router.staffing.run import DispatchOutcome, _verified_success_reason
+
+    dispatch = DispatchOutcome(
+        argv=("agy",),
+        exit_code=0,
+        stdout="",
+        stderr="",
+        duration_seconds=1.0,
+        timed_out=False,
+        usage={},
+    )
+    record = {
+        "supervisor_route": {
+            "model": "gpt-5.6-sol",
+            "effort": "low",
+            "harness": "codex",
+            "channel": "openai-sub",
+        },
+        "route": {
+            "model": "gemini-3.8-flash-high",
+            "effort": "high",
+            "harness": "agy",
+            "channel": "gemini-sub",
+        },
+        "class_record": {"role": "impl"},
+        "oracle_cmd": "pytest -q",
+        "failure_class": None,
+        "wall_clock_ms": 1000,
+    }
+    usage = {"basis": "provider_reported", "input_tokens": 10, "output_tokens": 2}
+    cost = {"basis": ["unavailable"]}
+
+    assert (
+        _verified_success_reason(dispatch, "pass", record, usage, cost, "subscription")
+        is None
+    )
+
+
+@pytest.mark.parametrize("channel_kind", ["metered", "local", None])
+def test_verified_success_reason_non_subscription_still_requires_cost(
+    channel_kind: str | None,
+) -> None:
+    """Only a channel positively known to be 'subscription' is exempt.
+
+    A metered channel's unavailable cost is real missing spend evidence; an
+    unrecognised or ``local`` channel fails closed the same way — never
+    guessed into the exemption.
+    """
+    from lee_llm_router.staffing.run import DispatchOutcome, _verified_success_reason
+
+    dispatch = DispatchOutcome(
+        argv=("pi",),
+        exit_code=0,
+        stdout="",
+        stderr="",
+        duration_seconds=1.0,
+        timed_out=False,
+        usage={},
+    )
+    record = {
+        "supervisor_route": {
+            "model": "gpt-5.6-sol",
+            "effort": "low",
+            "harness": "codex",
+            "channel": "openai-sub",
+        },
+        "route": {
+            "model": "z-ai/glm-5.3-flash",
+            "effort": None,
+            "harness": "pi",
+            "channel": "openrouter",
+        },
+        "class_record": {"role": "impl"},
+        "oracle_cmd": "pytest -q",
+        "failure_class": None,
+        "wall_clock_ms": 1000,
+    }
+    usage = {"basis": "provider_reported", "input_tokens": 10, "output_tokens": 2}
+    cost = {"basis": ["unavailable"]}
+
+    assert (
+        _verified_success_reason(dispatch, "pass", record, usage, cost, channel_kind)
+        == "evidence_incomplete"
+    )
+
+
 def test_run_nonzero_oracle_is_fail_with_captured_evidence(
     monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
 ):

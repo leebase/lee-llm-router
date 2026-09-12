@@ -406,6 +406,12 @@ class SelectionOutcome:
     cache_replacement_usd_per_token: float | None = None
     cache_marginal_usd_per_token: float | None = None
     cache_rates_checked: bool = False
+    channel_kind: str | None = None
+    """The selected route's ``channels.yaml`` ``kind`` (``subscription``,
+    ``metered``, or ``local``), or ``None`` when the channel is not in the
+    committed channel catalog. Fail-closed callers must treat ``None`` like
+    a metered channel: only a channel positively known to be non-metered
+    excuses missing per-token cost evidence."""
 
 
 @dataclass(frozen=True)
@@ -500,6 +506,22 @@ def _normalize_at_date(at_date: date | str) -> date:
             kind="invalid_date",
             cause=exc,
         ) from exc
+
+
+def _channel_kind(catalog: StaffingCatalog, channel_id: str) -> str | None:
+    """Return the committed ``channels.yaml`` ``kind`` for ``channel_id``.
+
+    ``None`` when the channel is absent from the catalog; never guessed
+    from the channel id's spelling.
+    """
+    return next(
+        (
+            channel.kind
+            for channel in catalog.channels.channels
+            if channel.channel_id == channel_id
+        ),
+        None,
+    )
 
 
 def select_route(
@@ -643,6 +665,7 @@ def select_route(
             cache_replacement_usd_per_token=cache_repl,
             cache_marginal_usd_per_token=cache_marg,
             cache_rates_checked=True,
+            channel_kind=_channel_kind(catalog, route.channel),
         )
 
     eligible = sorted(
@@ -675,6 +698,7 @@ def select_route(
         cache_replacement_usd_per_token=cache_repl,
         cache_marginal_usd_per_token=cache_marg,
         cache_rates_checked=True,
+        channel_kind=_channel_kind(catalog, route.channel),
     )
 
 
@@ -1389,7 +1413,9 @@ def build_attempt_record(
     # ``verified_success_reason`` from the closed P1-4 vocabulary names the
     # first blocking gap in the fixed order below; a true record never
     # carries a reason (schema-forbidden).
-    reason = _verified_success_reason(dispatch, verdict, record, usage, cost)
+    reason = _verified_success_reason(
+        dispatch, verdict, record, usage, cost, outcome.channel_kind
+    )
     record["verified_success"] = reason is None
     if reason is not None:
         record["verified_success_reason"] = reason
@@ -1402,6 +1428,7 @@ def _verified_success_reason(
     record: Mapping[str, Any],
     usage: Mapping[str, Any],
     cost: Mapping[str, Any],
+    channel_kind: str | None,
 ) -> str | None:
     """The exact reason ``verified_success`` is false, or ``None`` when true.
 
@@ -1410,6 +1437,16 @@ def _verified_success_reason(
     remaining evidence gate. The first blocking gap in this order names the
     field; later gaps in the same record are never claimed instead, and a
     passing run is never dressed up as a success it cannot evidence.
+
+    Per-token cost evidence (``basis == ["list", "marginal"]``) is required
+    only on a ``metered`` channel, where it is real spend evidence. A
+    ``subscription`` channel's cost is a list-equivalent estimate, never
+    metered spend (usage-truth rule); many subscription-only route models
+    (for example ``agy``/Antigravity model ids) have no committed dated
+    price at all, so demanding one would make a passing, fully attested
+    subscription attempt permanently unverifiable. ``channel_kind`` other
+    than ``"subscription"`` — including ``None``, an unrecognised channel —
+    still requires computed cost evidence (fail closed).
     """
     if record.get("supervisor_route") is None:
         return VERIFIED_SUCCESS_REASON_UNATTESTED
@@ -1417,6 +1454,10 @@ def _verified_success_reason(
         return VERIFIED_SUCCESS_REASON_WORKER_DISPATCH
     if verdict != "pass":
         return VERIFIED_SUCCESS_REASON_ORACLE
+    cost_basis = cost.get("basis")
+    cost_evidence_ok = cost_basis == ["list", "marginal"] or (
+        channel_kind == "subscription" and cost_basis == ["unavailable"]
+    )
     if (
         not record["route"]
         or not record["class_record"]
@@ -1425,7 +1466,7 @@ def _verified_success_reason(
         or usage.get("basis") == "unavailable"
         or not _known_token_count(usage, "input_tokens")
         or not _known_token_count(usage, "output_tokens")
-        or cost.get("basis") != ["list", "marginal"]
+        or not cost_evidence_ok
         or not isinstance(record["wall_clock_ms"], int)
     ):
         return VERIFIED_SUCCESS_REASON_EVIDENCE
