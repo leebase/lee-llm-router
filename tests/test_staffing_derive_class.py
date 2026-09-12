@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
-import pytest
+# Ensure src/ is on sys.path so tests can be imported without package installation.
+_SRC_DIR = Path(__file__).resolve().parents[1] / "src"
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
 
-from lee_llm_router.staffing.derive_class import (
+import pytest  # noqa: E402
+
+from lee_llm_router.staffing.derive_class import (  # noqa: E402
     PacketClassError,
     derive_class,
     parse_packet,
@@ -183,6 +189,132 @@ def test_json_alongside_yaml_stays_yaml_config(tmp_path: Path):
     derived = derive_class(packet, classes_path=CLASSES)
 
     assert derived.language == "yaml-config"
+
+
+def test_toml_owned_path_maps_to_yaml_config(tmp_path: Path):
+    packet = tmp_path / "packet.md"
+    packet.write_text(
+        """\
+- Kind: impl
+- Declared size: 1 file, at most 40 changed lines
+- Owned paths: `pyproject.toml`
+- Requirement: Update packaging metadata.
+""",
+        encoding="utf-8",
+    )
+
+    derived = derive_class(packet, classes_path=CLASSES)
+
+    assert derived.language == "yaml-config"
+
+
+def test_ini_owned_path_maps_to_yaml_config(tmp_path: Path):
+    packet = tmp_path / "packet.md"
+    packet.write_text(
+        """\
+- Kind: impl
+- Declared size: 1 file, at most 40 changed lines
+- Owned paths: `tox.ini`
+- Requirement: Update test runner configuration.
+""",
+        encoding="utf-8",
+    )
+
+    derived = derive_class(packet, classes_path=CLASSES)
+
+    assert derived.language == "yaml-config"
+
+
+def test_toml_alongside_ini_stays_yaml_config(tmp_path: Path):
+    packet = tmp_path / "packet.md"
+    packet.write_text(
+        """\
+- Kind: impl
+- Declared size: 2 files, at most 40 changed lines
+- Owned paths: `pyproject.toml`, `tox.ini`
+- Requirement: Keep packaging and tox configs aligned.
+""",
+        encoding="utf-8",
+    )
+
+    derived = derive_class(packet, classes_path=CLASSES)
+
+    assert derived.language == "yaml-config"
+
+
+def test_multi_config_formats_stay_yaml_config(tmp_path: Path):
+    packet = tmp_path / "packet.md"
+    packet.write_text(
+        """\
+- Kind: impl
+- Declared size: 4 files, at most 80 changed lines
+- Owned paths: `pyproject.toml`, `tox.ini`, `config/llm.yaml`, `config/schema.json`
+- Requirement: Keep all configuration formats aligned.
+""",
+        encoding="utf-8",
+    )
+
+    derived = derive_class(packet, classes_path=CLASSES)
+
+    assert derived.language == "yaml-config"
+
+
+def test_toml_and_ini_alongside_code_resolves_to_mixed(tmp_path: Path):
+    packet_toml = tmp_path / "packet_toml.md"
+    packet_toml.write_text(
+        """\
+- Kind: impl
+- Declared size: 2 files, at most 60 changed lines
+- Owned paths: `pyproject.toml`, `src/plain.py`
+- Requirement: Add dependency and update implementation.
+""",
+        encoding="utf-8",
+    )
+    derived_toml = derive_class(packet_toml, classes_path=CLASSES)
+    assert derived_toml.language == "mixed"
+
+    packet_ini = tmp_path / "packet_ini.md"
+    packet_ini.write_text(
+        """\
+- Kind: impl
+- Declared size: 2 files, at most 60 changed lines
+- Owned paths: `tox.ini`, `scripts/deploy.sh`
+- Requirement: Update test runner and deploy script.
+""",
+        encoding="utf-8",
+    )
+    derived_ini = derive_class(packet_ini, classes_path=CLASSES)
+    assert derived_ini.language == "mixed"
+
+
+def test_toml_ini_domain_tags_remain_independent(tmp_path: Path):
+    packet_domain = tmp_path / "packet_domain.md"
+    packet_domain.write_text(
+        """\
+- Kind: impl
+- Declared size: 1 file, at most 40 changed lines
+- Owned paths: `src/migrations/config.toml`
+- Requirement: Update migration configuration.
+""",
+        encoding="utf-8",
+    )
+    derived_domain = derive_class(packet_domain, classes_path=CLASSES)
+    assert derived_domain.language == "yaml-config"
+    assert derived_domain.domain_tags == ("persistence",)
+
+    packet_plain = tmp_path / "packet_plain.md"
+    packet_plain.write_text(
+        """\
+- Kind: impl
+- Declared size: 1 file, at most 40 changed lines
+- Owned paths: `setup.ini`
+- Requirement: Update setup configuration.
+""",
+        encoding="utf-8",
+    )
+    derived_plain = derive_class(packet_plain, classes_path=CLASSES)
+    assert derived_plain.language == "yaml-config"
+    assert derived_plain.domain_tags == ()
 
 
 def test_explicit_domain_field_overrides_owned_path_matching(tmp_path: Path):

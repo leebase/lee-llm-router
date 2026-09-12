@@ -611,6 +611,13 @@ future Group A/B packet's close-out notes or left as its own standalone commit (
 treated it as standalone, since it was dispatched and reviewed independently of any Phase 4
 packet group).
 
+**Resolved 2026-09-12 (Group B session, auto-orch):** both P4-6 and P4-7 committed
+(`74d6fe3`, `92d3800`); see `docs/staffing/phase4-execution-log.md` "Group B — auto-orch
+(P4-6, P4-7)" for full detail. Not blocking: four independent-review dispatches (two per
+packet) returned no usable verdict, recorded there as a new data point on worker/review
+reliability, not a Phase 4 blocker per this Phase's established Rule D precedent (supervisor's
+own diff read and full-suite run stand as the evidence of record).
+
 ## Phase 4 addition by Chief (2026-09-12): P4-5c persist worker output per attempt
 
 `run` captures the worker's stdout for usage parsing but neither persists nor prints it, so a

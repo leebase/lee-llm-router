@@ -72,6 +72,8 @@ _EXTENSION_LANGUAGES = {
     ".yaml": "yaml-config",
     ".yml": "yaml-config",
     ".json": "yaml-config",
+    ".toml": "yaml-config",
+    ".ini": "yaml-config",
     ".md": "markdown",
     ".markdown": "markdown",
 }

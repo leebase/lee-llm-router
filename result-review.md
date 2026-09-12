@@ -6,6 +6,16 @@
 
 ---
 
+## 2026-09-08 - Crew Resolver Sprint 6: blocked at observation-window gate
+
+**Result:** FAIL/BLOCKED without implementation. The committed Sprint 6 contract requires two weeks of daily-use evidence. The live append-only event ledger currently contains only 9 events across two calendar days, including four explicit harness acceptance runs and one disclosed reviewer-contamination run. That is insufficient to report actual interactive adoption share or sustained bind, veto, provider-call, and shim-drift behavior without overstating evidence.
+
+**Supervisor-observed baseline:** 601 tests passed; Black/Ruff clean; live doctor reported 14 crews and 23/23 workers with 0 warnings; all four installed shims had zero drift. Fifteen fresh-process live-input `resolve` measurements were 45.399/48.044/46.191/45.106/44.235/47.041/44.043/45.430/37.252/44.428/46.431/40.104/39.214/45.260/39.525 ms, median 45.106 ms. This supports retaining the 50 ms target on A8Max provisionally, not claiming a two-week SLO.
+
+**Disposition:** No Luna packet was dispatched because elapsed adoption evidence is not repairable in code. No independent final review or Sprint 6 commit was appropriate. `docs/crew-resolver/needs-lee.md` asks Lee to let the evidence window run (recommended) or explicitly amend the contract. Sprint 7 was not started.
+
+---
+
 ## 2026-09-08 - Crew Resolver Sprint 5: crew page and evidence-safe proposals
 
 **What was built:** `lee-llm-router crews page --out <path>` generates one self-contained responsive HTML page from the authoritative crew roster, the availability snapshot, and the latest optional `benchmark.staffing-evidence/2` sidecar. It shows all crews/stages/workers in declared order, normalized headroom and freshness, benchmark score/cost/run/task evidence, and a run-id appendix. Missing benchmark or availability inputs render explicit unknown/absent states; present malformed inputs exit 3 without a partial page. Proposal selection is deliberately fail-closed: current sources do not prove model-tier and vendor-independence boundaries, so the page says no proposals qualify rather than inventing policy.

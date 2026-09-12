@@ -8,9 +8,9 @@
 
 | Attribute | Value |
 |-----------|-------|
-| **Phase** | Crew Resolver Sprint 5 complete; final gates PASS |
+| **Phase** | Crew Resolver Sprint 6 — evidence accumulating; engineering health GREEN |
 | **Mode** | 2 (Implementation with approval) |
-| **Last Updated** | 2026-09-08 (Crew Resolver Sprint 5 closed, Sonnet round 4 PASS, Opus final gate PASS) |
+| **Last Updated** | 2026-09-08 (Lee retained the 14-day requirement; earliest meaningful resumption approximately 2026-09-22) |
 
 ### Sprint Status
 | Sprint | Status | Completion |
@@ -63,7 +63,7 @@ Sprint 7 is complete. The pi coding harness path now has a repo-local reproducti
   - Test As Lee: temp pi harness config + `LLMRouter.complete("pi_local", ...)` -> `{"text":"pi json harness: ship sprint 7","provider":"codex_cli","model":"pi-harness-o3"}`
 
 ### In Progress
-- None
+- **Crew Resolver Sprint 6 — ⏳ BLOCKED / EVIDENCE ACCUMULATING.** Engineering health: GREEN. Adoption conclusion: NOT YET MEASURABLE. Lee explicitly retained the genuine 14-day daily-use requirement; earliest meaningful resumption is approximately 2026-09-22. Normal use should generate the evidence naturally; do not manufacture `/crew` usage. Sparse natural use is itself adoption evidence. See `docs/crew-resolver/execution-log.md`.
 
 ---
 
@@ -148,5 +148,11 @@ The repository implementation can generate an exact candidate for `~/projects/we
 ### S5-C5 — Performance and compatibility
 
 The existing `resolve` behavior and output remain unchanged, and the median of five cold `resolve` runs against the live inputs stays below 50 ms. `crews page` has no latency gate, but its observed wall time is recorded. The full authoritative suite, Black on `src/`, Ruff on `src/`, and `doctor --crews --availability` must pass after every accepted packet.
+
+## Staffing Migration Phase 0 — completed 2026-09-10
+
+Catalog/data/schema/loader/explain, priced cheap routes, Pi crew dispatch, benchmark class/token evidence, and the attempt-record contract are implemented and committed across four repos. Final gates: router 814 passed + Black/Ruff clean; agent-orch 1872 passed / 9 skipped + 20 rate tests; auto-orch 1465 passed / 2 skipped + additive crew diff + preflights; benchmark 268 passed with only an authorized OpenCode 1.18.30 vs required 1.18.26 pin mismatch, staffing 21/63 and v5/v6 parity 86/4. Final Astra Low gate: PASS with no High or Medium findings.
+
+Next action is Phase 1's first packet — display the effective channel tier in `catalog explain` — but do not begin it. Open follow-ups remain in `docs/staffing/needs-lee.md`; no Phase 0 blocker.
 
 *This file is a living document - update it frequently.*

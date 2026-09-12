@@ -337,3 +337,27 @@ Baseline personally observed before dispatch: `PYTHONPATH=src .venv/bin/python -
 ## Sprint 5 Sonnet review round 3 — FAIL (1 High, 0 Medium, 0 Low)
 - High reproduced and accepted: `crews page` rejects a missing availability file, while established `resolve` and `doctor --availability` semantics treat missing snapshot as all channels unknown. The missing-file condition should permit a manual/fresh-install page with unknown headroom; malformed or unreadable existing inputs remain errors. No test covered missing availability.
 - Root cause: P36 grouped missing and malformed availability under one `snapshot.problem` check. P39 is a narrow Luna repair; no escalation.
+
+## 2026-09-08 — Sprint 6 opened and stopped at the committed evidence gate
+
+Supervisor baseline, personally observed before any worker dispatch:
+- Repository clean at `1c5a77b` (`feat(crew-resolver S5): add crew staffing page`), `main` ahead of `origin/main` by 11 and behind by 0.
+- `PYTHONPATH=src .venv/bin/python -m pytest -q` → `601 passed in 5.00s`.
+- `.venv/bin/black --check src` → 27 files unchanged; `.venv/bin/ruff check src` → all checks passed (one pyproject deprecation warning).
+- `lee-llm-router doctor --crews --availability` → 14 crews, 23/23 workers, 0 role-scoped warnings; live A8Max snapshot age 47 minutes, 12 buckets.
+- Installed shim drift check for all four harnesses → exit 0, no drift.
+- Existing hourly schedule refreshes availability only; no page publication/regeneration was silently added.
+
+Performance re-baseline against live crews and availability inputs, 15 separate subprocess invocations of `resolve openai-economy author --mode flex --no-event --json`: 45.399, 48.044, 46.191, 45.106, 44.235, 47.041, 44.043, 45.430, 37.252, 44.428, 46.431, 40.104, 39.214, 45.260, 39.525 ms. Median 45.106 ms; min 37.252; max 48.044. This supports retaining the current 50 ms target on this host for now, but it is not a two-week stability sample. Each invocation was a fresh process; no provider CLI was called and no event was written (`--no-event`).
+
+Adoption evidence available at open:
+- Live append-only ledger has 9 valid lines spanning only 2026-09-07T19:50:49Z through 2026-09-08T10:30:14Z: four events on 2026-09-07 and five on 2026-09-08.
+- Harness counts: CLI 5, Claude Code 1, Codex 1, OMP 1, OpenCode 1. Modes: flex 5, strict 4. Binds: 0. Recorded chosen headroom states: healthy 9.
+- The four harness-tagged lines are the explicit Sprint 4 live acceptance exercise, not two weeks of ordinary adoption. One CLI line at 2026-09-08T10:30:14Z is already disclosed reviewer contamination. The ledger records successful resolutions, not a denominator of all interactive dispatches, and therefore cannot yet prove resolver share.
+- No event field can prove that a provider CLI was or was not called at decision time; code/tests establish the architectural separation, while sustained operational evidence still requires the committed observation window.
+
+**Disposition: Sprint 6 FAIL/BLOCKED, not an implementation failure.** The authoritative plan requires “Two weeks of daily use.” Only two calendar days exist, so producing the required report or filing an evidence-backed Auto-Orch adoption recommendation now would fabricate adoption evidence. No Luna packet was dispatched because production code, tests, or product documentation cannot repair elapsed-time evidence. No Sprint 6 commit was made and Sprint 7 was not started.
+
+### Lee ruling, 2026-09-08 — retain the observation window
+
+Lee explicitly declined to amend the two-week requirement. Standing status: **Sprint 6 — ⏳ BLOCKED / EVIDENCE ACCUMULATING; engineering health GREEN; adoption conclusion NOT YET MEASURABLE; earliest meaningful resumption approximately 2026-09-22.** Normal workflow should generate evidence without manufactured `/crew` invocations. If natural use remains sparse, that is itself adoption evidence rather than a reason to inflate the sample. No implementation packet is opened merely to create activity.

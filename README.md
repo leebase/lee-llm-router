@@ -154,6 +154,20 @@ lee-llm-router shims diff
 lee-llm-router export-source --dest ../consumer/src/lee_llm_router
 ```
 
+## Configuration Extensions
+
+Work packet class derivation (`derive_class()` and
+`lee-llm-router doctor staff --from-packet`) maps owned-path extensions to the
+canonical eight-value language taxonomy: `python`, `typescript`, `shell`, `c`,
+`sql`, `yaml-config`, `markdown`, and `mixed`.
+
+Configuration and manifest files ending in `.toml` (such as `pyproject.toml`
+or `Cargo.toml`) or `.ini` (such as `tox.ini` or `settings.ini`) map to the
+canonical `yaml-config` language class alongside `.yaml`, `.yml`, and `.json`.
+A packet containing any combination of these configuration formats remains
+`yaml-config`; combining one with source in another language, such as `.py` or
+`.sh`, derives `mixed`.
+
 ## Providers
 
 | Type | Description |
