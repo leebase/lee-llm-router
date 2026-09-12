@@ -1618,7 +1618,11 @@ def _pi_provider_id_for_channel(channel: str) -> str:
     return provider_id
 
 
-def build_dispatch_command(route: StaffingRoute) -> list[str]:
+def build_dispatch_command(
+    route: StaffingRoute,
+    *,
+    timeout_seconds: float | None = None,
+) -> list[str]:
     """Build the route's dispatch argv through its harness provider.
 
     The argv comes from the route harness provider's ``build_command`` —
@@ -1669,7 +1673,21 @@ def build_dispatch_command(route: StaffingRoute) -> list[str]:
     elif harness == "claude":
         config = dict(CLAUDE_GOVERNED_CONFIG)
     elif harness == "agy":
-        config = {"model": route.model, **AGY_GOVERNED_CONFIG}
+        # agy print mode waits 5m0s by default and then returns partial
+        # output with the turn still in progress (observed 2026-09-12, P5-2b
+        # and P5-3: "[agy] print timeout after 5m0s with turn in progress").
+        # Align the harness-side wait with the run ceiling so the watchdog,
+        # not agy's default, bounds the worker.
+        ceiling = (
+            timeout_seconds
+            if timeout_seconds is not None
+            else DEFAULT_MAX_MINUTES * 60.0
+        )
+        config = {
+            "model": route.model,
+            **AGY_GOVERNED_CONFIG,
+            "print_timeout": f"{int(math.ceil(ceiling))}s",
+        }
     elif harness == "opencode":
         config = {"model": route.model, **OPENCODE_GOVERNED_CONFIG}
     elif harness == "omp":
@@ -2443,7 +2461,7 @@ def dispatch_route(
             not exist, or the timeout is not positive.
     """
     harness = route.harness
-    argv = build_dispatch_command(route)
+    argv = build_dispatch_command(route, timeout_seconds=timeout_seconds)
 
     if workdir is not None:
         workdir_path = Path(workdir)

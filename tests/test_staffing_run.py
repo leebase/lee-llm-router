@@ -1563,6 +1563,16 @@ def test_build_dispatch_command_agy_governed_json_flag() -> None:
     # The prompt placeholder stays the final element after the JSON flags.
     assert argv[-2:] == ["-p", "{prompt}"]
     assert argv.index("--output-format") < argv.index("-p")
+    # agy print mode defaults to a 5m0s wait; the governed command must
+    from lee_llm_router.watchdog import DEFAULT_MAX_MINUTES
+
+    # carry the run ceiling so the watchdog bounds the worker, not agy.
+    assert argv[argv.index("--print-timeout") + 1] == (
+        f"{int(DEFAULT_MAX_MINUTES * 60)}s"
+    )
+    assert argv.index("--print-timeout") < argv.index("-p")
+    bounded = build_dispatch_command(route, timeout_seconds=2400)
+    assert bounded[bounded.index("--print-timeout") + 1] == "2400s"
 
 
 def test_build_dispatch_command_opencode_governed_json_flag() -> None:
