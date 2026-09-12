@@ -717,3 +717,102 @@ including all five Phase 4 commits, fails the same 3 tests. **Recorded, not fixe
 another lane's test-fixture debt (the fixtures should use a schema-valid placeholder UUID, or
 the validation's test coverage needs a real-shaped fixture) — out of Phase 4/4.1's scope to
 fix unilaterally; flagged for whichever lane owns `4270736`'s follow-through.
+
+## Phase 5 — findings recorded by Chief (2026-09-12)
+
+- **Fixed in-lane (router `run.py`):** every agy-harness worker was cut off at agy's default
+  `--print-timeout` of 5m0s ("[agy] print timeout after 5m0s with turn in progress; returning
+  partial output"), regardless of `lee-llm-router run --timeout`. Observed on P5-2b and the
+  first P5-3 attempt. `build_dispatch_command` now passes `--print-timeout <run ceiling>s`
+  for agy (the watchdog's `DEFAULT_MAX_MINUTES` when no `--timeout` is given). Test added in
+  `tests/test_staffing_run.py`. This also means every earlier agy attempt in the ledger longer
+  than five minutes of work was a harness cut-off, not a model failure — a caveat on the
+  Gemini rows in the first evidence report.
+- **Needs a ruling, not fixed:** a Fable 5.1 supervisor cannot attest itself.
+  `--supervisor-route claude-claude-fable-5-1-high-anthropic-sub` is refused as
+  `never_automatic` (P1-4 ruling 3 applies the selection policy to the attested identity).
+  Phase 5 attempts supervised directly by the Chief therefore record
+  `verified_success_reason: supervisor_route_unattested` even when the oracle passes, and
+  the rollup counts them as unverified. Options: exempt `never_automatic` from the attestation
+  check (it governs selection, not identity), or accept that Chief-run lanes are unverified
+  by construction. Chief recommends the exemption; it is a contract change, so it is filed
+  here rather than made in-lane.
+
+## Phase 5 — pricing snapshot refresh (P5-4, 2026-09-12)
+
+```
+4bc55d92d30d8eada73c43d73d88a4c2a3b8201e8a750fcc1e7250c71cff0aef  config/staffing/pricing/openrouter-20260912.json
+b89301ba11ce8099c4e03292703ef4d635159e756a9f335cc66cb992afb13827  config/staffing/pricing/openrouter-20260912.json.sha256
+b5b08064e24cd68e28b76c3da7503c7bc361956cdc722bbea4359bc82d033a07  config/staffing/pricing/opencode-zen-20260912.mdx
+6ea1debe19f0f28bdaed614f4bc003de4070ea80ad6ed5f2955cb98952bccf0a  config/staffing/pricing/opencode-zen-20260912.mdx.sha256
+0b0a69e2d87f41caaba972396ca175f76ec02ad21ee5f7ff7fa380394d1e0329  config/staffing/pricing/opencode-zen-20260912.mdx.source
+```
+
+```
+PROPOSED (not applied) — apply through a reviewed commit:
+config/staffing/channels.yaml:
+- # catalog snapshot config/staffing/pricing/openrouter-20260911.json (D176
++ # catalog snapshot config/staffing/pricing/openrouter-20260912.json (D176
+- # config/staffing/pricing/opencode-zen-20260909.mdx (sha256 sidecar
++ # config/staffing/pricing/opencode-zen-20260912.mdx (sha256 sidecar
+-     replacement_price_ref: config/staffing/pricing/openrouter-20260911.json
++     replacement_price_ref: config/staffing/pricing/openrouter-20260912.json
+-     replacement_price_ref: config/staffing/pricing/openrouter-20260911.json
++     replacement_price_ref: config/staffing/pricing/openrouter-20260912.json
+-     replacement_price_ref: config/staffing/pricing/openrouter-20260911.json
++     replacement_price_ref: config/staffing/pricing/openrouter-20260912.json
+-     replacement_price_ref: config/staffing/pricing/opencode-zen-20260909.mdx
++     replacement_price_ref: config/staffing/pricing/opencode-zen-20260912.mdx
+-     replacement_price_ref: config/staffing/pricing/openrouter-20260911.json
++     replacement_price_ref: config/staffing/pricing/openrouter-20260912.json
+-     replacement_price_ref: config/staffing/pricing/opencode-zen-20260909.mdx
++     replacement_price_ref: config/staffing/pricing/opencode-zen-20260912.mdx
+config/staffing/terms.yaml:
+- #     config/staffing/pricing/openrouter-20260911.json (sha256 sidecar
++ #     config/staffing/pricing/openrouter-20260912.json (sha256 sidecar
+- #     config/staffing/pricing/opencode-zen-20260909.mdx (sha256 sidecar
++ #     config/staffing/pricing/opencode-zen-20260912.mdx (sha256 sidecar
+- # the price series now points at config/staffing/pricing/openrouter-20260911.json (sha256
++ # the price series now points at config/staffing/pricing/openrouter-20260912.json (sha256
+- # sidecar openrouter-20260911.json.sha256), captured 2026-09-11 from
++ # sidecar openrouter-20260912.json.sha256), captured 2026-09-11 from
+-     decision_price_ref: "marginal(badge multiplier × replacement list price) — decision input per phase0-contracts.md §Terms and prices; price series: config/staffing/pricing/openrouter-20260911.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207, decisions.md:5183-5185)"
++     decision_price_ref: "marginal(badge multiplier × replacement list price) — decision input per phase0-contracts.md §Terms and prices; price series: config/staffing/pricing/openrouter-20260912.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207, decisions.md:5183-5185)"
+-     reporting_price_ref: "list-price accounting source per agent-orch convention (agent-orch/src/agent_orch/rate_table.yaml:105-109): config/staffing/pricing/openrouter-20260911.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207)"
++     reporting_price_ref: "list-price accounting source per agent-orch convention (agent-orch/src/agent_orch/rate_table.yaml:105-109): config/staffing/pricing/openrouter-20260912.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207)"
+-     decision_price_ref: "marginal(badge multiplier × replacement list price) — decision input per phase0-contracts.md §Terms and prices; price series: config/staffing/pricing/openrouter-20260911.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207, decisions.md:5183-5185)"
++     decision_price_ref: "marginal(badge multiplier × replacement list price) — decision input per phase0-contracts.md §Terms and prices; price series: config/staffing/pricing/openrouter-20260912.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207, decisions.md:5183-5185)"
+-     reporting_price_ref: "list-price accounting source per agent-orch convention (agent-orch/src/agent_orch/rate_table.yaml:105-109): config/staffing/pricing/openrouter-20260911.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207)"
++     reporting_price_ref: "list-price accounting source per agent-orch convention (agent-orch/src/agent_orch/rate_table.yaml:105-109): config/staffing/pricing/openrouter-20260912.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207)"
+-     decision_price_ref: "marginal(badge multiplier × replacement list price) — decision input per phase0-contracts.md §Terms and prices; price series: config/staffing/pricing/openrouter-20260911.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207, decisions.md:5183-5185)"
++     decision_price_ref: "marginal(badge multiplier × replacement list price) — decision input per phase0-contracts.md §Terms and prices; price series: config/staffing/pricing/openrouter-20260912.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207, decisions.md:5183-5185)"
+-     reporting_price_ref: "list-price accounting source per agent-orch convention (agent-orch/src/agent_orch/rate_table.yaml:105-109): config/staffing/pricing/openrouter-20260911.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207)"
++     reporting_price_ref: "list-price accounting source per agent-orch convention (agent-orch/src/agent_orch/rate_table.yaml:105-109): config/staffing/pricing/openrouter-20260912.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207)"
+-     decision_price_ref: "marginal(badge multiplier × replacement list price) — decision input per phase0-contracts.md §Terms and prices; price series: config/staffing/pricing/openrouter-20260911.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207, decisions.md:5183-5185)"
++     decision_price_ref: "marginal(badge multiplier × replacement list price) — decision input per phase0-contracts.md §Terms and prices; price series: config/staffing/pricing/openrouter-20260912.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207, decisions.md:5183-5185)"
+-     reporting_price_ref: "list-price accounting source per agent-orch convention (agent-orch/src/agent_orch/rate_table.yaml:105-109): config/staffing/pricing/openrouter-20260911.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207)"
++     reporting_price_ref: "list-price accounting source per agent-orch convention (agent-orch/src/agent_orch/rate_table.yaml:105-109): config/staffing/pricing/openrouter-20260912.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207)"
+-     decision_price_ref: "marginal(badge multiplier × replacement list price) — decision input per phase0-contracts.md §Terms and prices; price series: config/staffing/pricing/openrouter-20260911.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207, decisions.md:5183-5185)"
++     decision_price_ref: "marginal(badge multiplier × replacement list price) — decision input per phase0-contracts.md §Terms and prices; price series: config/staffing/pricing/openrouter-20260912.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207, decisions.md:5183-5185)"
+-     reporting_price_ref: "list-price accounting source per agent-orch convention (agent-orch/src/agent_orch/rate_table.yaml:105-109): config/staffing/pricing/openrouter-20260911.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207)"
++     reporting_price_ref: "list-price accounting source per agent-orch convention (agent-orch/src/agent_orch/rate_table.yaml:105-109): config/staffing/pricing/openrouter-20260912.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207)"
+-     decision_price_ref: "marginal(badge multiplier × same-catalog accounting-proxy list price) — decision input per phase0-contracts.md §Terms and prices; proxy series: config/staffing/pricing/opencode-zen-20260909.mdx (D207, decisions.md:5183-5187: Zen's published pricing is the authorized accounting proxy for opencode-go/*)"
++     decision_price_ref: "marginal(badge multiplier × same-catalog accounting-proxy list price) — decision input per phase0-contracts.md §Terms and prices; proxy series: config/staffing/pricing/opencode-zen-20260912.mdx (D207, decisions.md:5183-5187: Zen's published pricing is the authorized accounting proxy for opencode-go/*)"
+-     reporting_price_ref: "list-price accounting via the authorized same-catalog proxy per agent-orch convention (agent-orch/src/agent_orch/rate_table.yaml:105-109) and D207 (decisions.md:5183-5187): config/staffing/pricing/opencode-zen-20260909.mdx"
++     reporting_price_ref: "list-price accounting via the authorized same-catalog proxy per agent-orch convention (agent-orch/src/agent_orch/rate_table.yaml:105-109) and D207 (decisions.md:5183-5187): config/staffing/pricing/opencode-zen-20260912.mdx"
+-     decision_price_ref: "marginal(badge multiplier × list price) — decision input per phase0-contracts.md §Terms and prices; price series: config/staffing/pricing/openrouter-20260911.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207, decisions.md:5183-5185)"
++     decision_price_ref: "marginal(badge multiplier × list price) — decision input per phase0-contracts.md §Terms and prices; price series: config/staffing/pricing/openrouter-20260912.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207, decisions.md:5183-5185)"
+-     reporting_price_ref: "list-price accounting source per agent-orch convention (agent-orch/src/agent_orch/rate_table.yaml:105-109): config/staffing/pricing/openrouter-20260911.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207)"
++     reporting_price_ref: "list-price accounting source per agent-orch convention (agent-orch/src/agent_orch/rate_table.yaml:105-109): config/staffing/pricing/openrouter-20260912.json, fallback agent-orch/src/agent_orch/rate_table.yaml where OpenRouter has no row (D207)"
+-     decision_price_ref: "marginal(badge multiplier × list price) — decision input per phase0-contracts.md §Terms and prices; price series: config/staffing/pricing/opencode-zen-20260909.mdx (D207, decisions.md:5183-5187: Zen's published pricing is the authorized source for opencode ids)"
++     decision_price_ref: "marginal(badge multiplier × list price) — decision input per phase0-contracts.md §Terms and prices; price series: config/staffing/pricing/opencode-zen-20260912.mdx (D207, decisions.md:5183-5187: Zen's published pricing is the authorized source for opencode ids)"
+-     reporting_price_ref: "list-price accounting source per agent-orch convention (agent-orch/src/agent_orch/rate_table.yaml:105-109): config/staffing/pricing/opencode-zen-20260909.mdx (D207)"
++     reporting_price_ref: "list-price accounting source per agent-orch convention (agent-orch/src/agent_orch/rate_table.yaml:105-109): config/staffing/pricing/opencode-zen-20260912.mdx (D207)"
+```
+
+```
+PROPOSED CRON (not installed):
+15 06 * * 1 cd /home/lee/projects/lee-llm-router && scripts/refresh_pricing_snapshot.sh >> ~/.local/state/lee-llm-router/pricing-refresh.log 2>&1
+```
+
+Neither the proposed terms repoints nor the proposed cron schedule was applied; repointing the price series remains a reviewed commit.
