@@ -101,14 +101,15 @@ def test_packet_fixtures_derive_conservatively(packet, name, expected):
     assert derived.language == expected["language"]
 
 
-def test_domain_matches_are_literal_packet_text_evidence(packet):
+def test_domain_matches_are_literal_owned_path_evidence(packet):
     derived = derive_class(packet("python_deterministic"), classes_path=CLASSES)
 
     assert derived.domain_matches == ({"keyword": "database", "tag": "persistence"},)
+    assert derived.domain_source == "owned_paths"
     assert "database" not in derived.class_key.split("/")[2]
 
 
-def test_keywords_match_packet_text_and_never_route_metadata(tmp_path: Path):
+def test_keywords_match_owned_paths_never_prose_or_route_metadata(tmp_path: Path):
     packet = tmp_path / "packet.md"
     packet.write_text(
         """\
@@ -122,13 +123,88 @@ def test_keywords_match_packet_text_and_never_route_metadata(tmp_path: Path):
 
     payload = derive_class(packet, classes_path=CLASSES).as_dict()
 
-    assert payload["domain_matches"] == [
-        {"keyword": "migration", "tag": "persistence"},
-        {"keyword": "database", "tag": "persistence"},
-        {"keyword": "browser", "tag": "ui-browser"},
-    ]
-    assert payload["class"]["domain_tags"] == ["persistence", "ui-browser"]
+    # "database", "migration", and "browser" appear only in the Requirement
+    # prose, never in the owned path "src/plain.py" -- D213 P3-7 answer 3
+    # forbids deriving a tag from prose, so no keyword matches here.
+    assert payload["domain_matches"] == []
+    assert payload["domain_source"] == "owned_paths"
+    assert payload["class"]["domain_tags"] == []
     assert not ({"model", "provider", "route", "selected_route"} & payload.keys())
+
+
+def test_keywords_match_owned_path_text(tmp_path: Path):
+    packet = tmp_path / "packet.md"
+    packet.write_text(
+        """\
+- Kind: impl
+- Declared size: 1 file, at most 40 changed lines
+- Owned paths: `src/migrations/manager.py`
+- Requirement: Fix a bug.
+""",
+        encoding="utf-8",
+    )
+
+    payload = derive_class(packet, classes_path=CLASSES).as_dict()
+
+    assert payload["domain_matches"] == [{"keyword": "migration", "tag": "persistence"}]
+    assert payload["domain_source"] == "owned_paths"
+    assert payload["class"]["domain_tags"] == ["persistence"]
+
+
+def test_explicit_domain_field_overrides_owned_path_matching(tmp_path: Path):
+    packet = tmp_path / "packet.md"
+    packet.write_text(
+        """\
+- Kind: impl
+- Declared size: 1 file, at most 40 changed lines
+- Owned paths: `src/migrations/manager.py`
+- Domain: security
+- Requirement: Fix a bug.
+""",
+        encoding="utf-8",
+    )
+
+    derived = derive_class(packet, classes_path=CLASSES)
+
+    assert derived.domain_source == "explicit_domain_field"
+    assert derived.domain_matches == ()
+    assert derived.domain_tags == ("security",)
+
+
+def test_explicit_domain_field_none_records_no_tags(tmp_path: Path):
+    packet = tmp_path / "packet.md"
+    packet.write_text(
+        """\
+- Kind: impl
+- Declared size: 1 file, at most 40 changed lines
+- Owned paths: `src/migrations/manager.py`
+- Domain: none
+- Requirement: Fix a bug.
+""",
+        encoding="utf-8",
+    )
+
+    derived = derive_class(packet, classes_path=CLASSES)
+
+    assert derived.domain_source == "explicit_domain_field"
+    assert derived.domain_tags == ()
+
+
+def test_explicit_domain_field_rejects_unknown_tag(tmp_path: Path):
+    packet = tmp_path / "packet.md"
+    packet.write_text(
+        """\
+- Kind: impl
+- Declared size: 1 file, at most 40 changed lines
+- Owned paths: `src/plain.py`
+- Domain: not-a-real-tag
+- Requirement: Fix a bug.
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(PacketClassError):
+        derive_class(packet, classes_path=CLASSES)
 
 
 def test_oracle_requires_command_name_and_named_reviewer_is_judge(tmp_path: Path):

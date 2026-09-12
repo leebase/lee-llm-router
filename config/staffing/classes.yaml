@@ -50,18 +50,23 @@ canonical_encoding:
     impl/judge/authority+persistence/m/python;
     review/judge/none/xs/markdown.
 
-    Phase 3 P3-3 packet domain-tag keyword table (D213 ruling 2): packet
-    domain tags are derived ONLY by literal matches against the table below
-    -- no other inference is permitted. Grammar: one 'keyword -> tag' entry
-    per line under the 'domain-keyword-table:' marker; 'tag' must be a
-    member of the closed value_sets.domain_tags vocabulary; matching is a
-    case-insensitive literal substring test of the keyword against the
-    packet text. Every matched table entry is recorded as source evidence;
-    a packet with no match carries no tag. This table joins
-    comparable evidence only and names no model, route, provider, or
-    preference (D206). The table is placed in this notes field because the
-    classes schema (additionalProperties: false) permits no additional
-    top-level property; the literal lines below are the authoritative table.
+    Phase 3 P3-3 packet domain-tag keyword table (D213 ruling 2), narrowed by
+    Phase 3 P3-7 answer 3 (chief-answers-p3-1.md): packet domain tags come
+    ONLY from an explicit 'Domain:' packet field, or otherwise ONLY by
+    literal matches against the table below -- no other inference is
+    permitted. Grammar: one 'keyword -> tag' entry per line under the
+    'domain-keyword-table:' marker; 'tag' must be a member of the closed
+    value_sets.domain_tags vocabulary; matching is a case-insensitive
+    literal substring test of the keyword against each of the packet's
+    declared owned paths, never against prose text elsewhere in the packet
+    (a prose mention such as "authoritative" must never contribute the
+    "authority" tag by substring accident). Every matched table entry is
+    recorded as source evidence; a packet with no match and no explicit
+    Domain field carries no tag. This table joins comparable evidence only
+    and names no model, route, provider, or preference (D206). The table is
+    placed in this notes field because the classes schema (additionalProperties:
+    false) permits no additional top-level property; the literal lines below
+    are the authoritative table.
 
     domain-keyword-table:
       migration -> persistence

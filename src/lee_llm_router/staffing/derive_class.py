@@ -4,6 +4,12 @@ The packet shape is the small Markdown contract used by
 ``docs/staffing/phase3-acceptance-plan.md``.  This module deliberately derives
 only class metadata.  It never selects, ranks, or names a route, model, or
 provider (D206).
+
+Domain tags (D213 P3-7 answer 3) come only from an explicit ``Domain:``
+packet field or from the keyword table matched against owned paths — never
+from prose elsewhere in the packet, which previously over-tagged packets on
+incidental substrings (for example "authoritative" contributing the
+"authority" tag to a text-only change).
 """
 
 from __future__ import annotations
@@ -37,9 +43,11 @@ _FIELD_LABELS = {
     "owned paths": "Owned paths",
     "oracle": "Oracle",
     "review": "Review",
+    "domain": "Domain",
 }
 _FIELD_RE = re.compile(
-    r"^\s*(?:-\s+)?(Kind|Declared\s+size|Owned\s+paths|Oracle|Review)" r"\s*:\s*(.*)$",
+    r"^\s*(?:-\s+)?(Kind|Declared\s+size|Owned\s+paths|Oracle|Review|Domain)"
+    r"\s*:\s*(.*)$",
     re.IGNORECASE,
 )
 _ANY_BULLET_FIELD_RE = re.compile(r"^\s*-\s+[^:]+:\s*")
@@ -119,7 +127,7 @@ class ParsedPacket:
     declared_size: dict[str, Any]
     oracle_command: str | None
     reviewer: str | None
-    source_text: str
+    domain_tags_field: tuple[str, ...] | None
 
 
 @dataclass(frozen=True)
@@ -137,6 +145,7 @@ class DerivedClass:
     oracle_command: str | None
     reviewer: str | None
     domain_matches: tuple[dict[str, str], ...]
+    domain_source: str
     overrides: dict[str, Any]
     override_records: tuple[dict[str, Any], ...]
     packet: str | None = None
@@ -175,6 +184,7 @@ class DerivedClass:
             },
             "review": {"reviewer": self.reviewer},
             "domain_matches": [dict(match) for match in self.domain_matches],
+            "domain_source": self.domain_source,
             "class": effective,
             # A simple mapping is convenient for consumers; the records retain
             # both the derived value and the explicit replacement.
@@ -205,7 +215,11 @@ def _clean_inline(value: str) -> str:
 
 
 def _read_packet_fields(text: str) -> dict[str, str]:
-    """Read the five labelled fields from one packet-shaped Markdown file."""
+    """Read the labelled fields from one packet-shaped Markdown file.
+
+    Five fields (Kind, Declared size, Owned paths, Oracle, Review) are the
+    packet shape; Domain is a sixth, optional field (D213 P3-7 answer 3).
+    """
     lines = text.splitlines()
     fields: dict[str, str] = {}
     index = 0
@@ -439,6 +453,29 @@ def _parse_reviewer(raw: str | None) -> str | None:
     return candidate
 
 
+def _parse_domain_field(raw: str | None) -> tuple[str, ...] | None:
+    """Parse an explicit ``Domain:`` packet field, or ``None`` when absent.
+
+    ``None`` means the packet states no explicit domain and the keyword
+    table falls back to owned-path evidence (D213 P3-7 answer 3). An empty
+    tuple is a packet's explicit, recorded declaration of no domain tags
+    (``Domain: none``), which is not the same as an absent field.
+    """
+    if raw is None:
+        return None
+    cleaned = _clean_inline(raw)
+    if not cleaned or cleaned.strip().lower() in {"none", "n/a", "tbd"}:
+        return ()
+    tags = tuple(
+        sorted(
+            {tag.strip().lower() for tag in re.split(r"[+,]", cleaned) if tag.strip()}
+        )
+    )
+    if not tags:
+        raise PacketClassError("Domain field is present but names no tag")
+    return tags
+
+
 def _load_classes(
     classes_path: str | Path,
 ) -> tuple[dict[str, tuple[str, ...]], tuple[tuple[str, str], ...]]:
@@ -588,13 +625,14 @@ def parse_packet(packet_path: str | Path) -> ParsedPacket:
     declared_size = _parse_size(fields.get("declared size"), len(owned_paths))
     oracle_command = _parse_oracle(fields.get("oracle"))
     reviewer = _parse_reviewer(fields.get("review"))
+    domain_tags_field = _parse_domain_field(fields.get("domain"))
     return ParsedPacket(
         kind=kind,
         owned_paths=owned_paths,
         declared_size=declared_size,
         oracle_command=oracle_command,
         reviewer=reviewer,
-        source_text=text,
+        domain_tags_field=domain_tags_field,
     )
 
 
@@ -644,12 +682,21 @@ def derive_class(
     languages = {value for value in language_values if value is not None}
     language = next(iter(languages)) if len(languages) == 1 else "mixed"
 
+    # D213 P3-7 answer 3: domain tags come only from an explicit ``Domain:``
+    # packet field, or else from the keyword table matched against owned
+    # paths — never from free text (a prose mention such as "authoritative"
+    # must never contribute the "authority" tag by substring accident).
     domain_matches: list[dict[str, str]] = []
-    lowered_packet = packet.source_text.lower()
-    for keyword, tag in keyword_table:
-        if keyword in lowered_packet:
-            domain_matches.append({"keyword": keyword, "tag": tag})
-    domain_tags = tuple(sorted({match["tag"] for match in domain_matches}))
+    if packet.domain_tags_field is not None:
+        domain_tags = packet.domain_tags_field
+        domain_source = "explicit_domain_field"
+    else:
+        lowered_paths = " ".join(path.lower() for path in packet.owned_paths)
+        for keyword, tag in keyword_table:
+            if keyword in lowered_paths:
+                domain_matches.append({"keyword": keyword, "tag": tag})
+        domain_tags = tuple(sorted({match["tag"] for match in domain_matches}))
+        domain_source = "owned_paths"
     fields: dict[str, Any] = {
         "role": role,
         "oracle_type": oracle_type,
@@ -691,6 +738,7 @@ def derive_class(
         oracle_command=packet.oracle_command,
         reviewer=packet.reviewer,
         domain_matches=tuple(domain_matches),
+        domain_source=domain_source,
         overrides=recorded,
         override_records=tuple(records),
         packet=str(Path(packet_path).expanduser()),
