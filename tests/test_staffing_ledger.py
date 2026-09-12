@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ast
 import json
+import multiprocessing as mp
 import os
 import socket
 import sys
@@ -359,17 +360,25 @@ def test_module_has_exactly_one_append_only_write_path() -> None:
         and isinstance(node.func.value, ast.Name)
         and node.func.value.id == "os"
     ]
-    assert len(opens) == 1, "exactly one os.open call site"
-    flags = opens[0].args[1]
-    assert isinstance(flags, ast.BinOp) and isinstance(flags.op, ast.BitOr)
-    flag_names = {
-        node.attr
-        for node in ast.walk(flags)
-        if isinstance(node, ast.Attribute)
-        and isinstance(node.value, ast.Name)
-        and node.value.id == "os"
-    }
-    assert flag_names == {"O_WRONLY", "O_CREAT", "O_APPEND"}, flag_names
+    assert len(opens) == 2, "exactly two os.open call sites: ledger + lock"
+    flag_sets = []
+    for call in opens:
+        flags = call.args[1]
+        assert isinstance(flags, ast.BinOp) and isinstance(flags.op, ast.BitOr)
+        flag_sets.append(
+            {
+                node.attr
+                for node in ast.walk(flags)
+                if isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "os"
+            }
+        )
+    assert len(flag_sets) == 2
+    assert {frozenset(s) for s in flag_sets} == {
+        frozenset({"O_RDWR", "O_CREAT"}),  # flock carrier, never written
+        frozenset({"O_WRONLY", "O_CREAT", "O_APPEND"}),  # the ledger append
+    }, flag_sets
 
     writes = [
         node
@@ -412,10 +421,14 @@ def test_module_imports_no_network_subprocess_or_provider_logic() -> None:
     roots = {name.split(".")[0] for name in imported}
     assert roots == {
         "__future__",
+        "contextlib",  # writer_transaction context manager
+        "fcntl",  # exclusive writer flock (guarded ImportError fallback)
         "json",
         "math",
         "os",
         "socket",
+        "threading",
+        "time",
         "pathlib",
         "typing",
         "jsonschema",
@@ -742,3 +755,73 @@ def test_p1_9_legacy_import_and_live_records_round_trip(tmp_path, fixture_name) 
     ledger = tmp_path / "roundtrip.jsonl"
     append_attempt(record, ledger)
     assert read_attempts(ledger) == [record]
+
+
+# ---------------------------------------------------------------------------
+# P3 gate: writer_transaction lock primitive (cross-process exclusion,
+# re-entrancy). Real import-path concurrency regression lives in
+# test_staffing_import_benchmark.py / test_staffing_import_agent_orch.py.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def fork_ctx():
+    if sys.platform == "win32":
+        pytest.skip("POSIX fork for multi-process regression")
+    return mp.get_context("fork")
+
+
+def _try_acquire_child(conn, ledger) -> None:
+    """Child body: on the go signal, try a bounded transaction acquisition."""
+    assert conn.recv() == "go"
+    ledger_module.LOCK_TIMEOUT_SECONDS = 0.2
+    try:
+        with ledger_module.writer_transaction(ledger):
+            conn.send(("acquired", None))
+    except AttemptLedgerError as exc:
+        conn.send(("refused", str(exc)))
+    finally:
+        conn.close()
+
+
+def test_transaction_excludes_other_processes_and_reenters_for_plain_append(
+    fork_ctx, tmp_path, valid_record
+) -> None:
+    """A held transaction excludes other processes; plain appends re-enter.
+
+    While the transaction is open the lock must be visible cross-process (a
+    bounded child acquisition fails closed rather than proceeding
+    unserialized), and a plain append made inside it must re-enter the held
+    lock instead of deadlocking on a second open file description. Once the
+    transaction is released, another process acquires immediately.
+    """
+    ledger = tmp_path / "attempts.jsonl"
+    append_attempt(valid_record, ledger)
+
+    # Forked before the parent acquires the lock, so the child's per-thread
+    # held-lock map is empty and only the kernel flock can exclude it.
+    parent_conn, child_conn = fork_ctx.Pipe()
+    child = fork_ctx.Process(target=_try_acquire_child, args=(child_conn, ledger))
+    child.start()
+    child_conn.close()
+    with ledger_module.writer_transaction(ledger):
+        ledger_module.append_attempt(dict(valid_record, attempt_id="inside-tx"), ledger)
+        parent_conn.send("go")
+        assert parent_conn.recv()[0] == "refused", "lock must exclude other processes"
+    child.join(timeout=30)
+    parent_conn.close()
+    assert child.exitcode == 0
+    assert [r["attempt_id"] for r in read_attempts(ledger)] == [
+        "pi-run-0001",
+        "inside-tx",
+    ]
+
+    parent_conn, child_conn = fork_ctx.Pipe()
+    child = fork_ctx.Process(target=_try_acquire_child, args=(child_conn, ledger))
+    child.start()
+    child_conn.close()
+    parent_conn.send("go")
+    assert parent_conn.recv()[0] == "acquired"
+    child.join(timeout=30)
+    parent_conn.close()
+    assert child.exitcode == 0
