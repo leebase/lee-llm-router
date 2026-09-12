@@ -51,12 +51,12 @@
 #
 # replacement_price_ref is a catalog pointer to the authorized pricing
 # source, never a price value. Primary source is the pinned OpenRouter
-# catalog snapshot config/staffing/pricing/openrouter-20260911.json (D176
+# catalog snapshot config/staffing/pricing/openrouter-20260912.json (D176
 # token-pricing authority; sha256 sidecar alongside), with agent-orch
 # src/agent_orch/rate_table.yaml as the P0-4 fallback where OpenRouter has
 # no row. Per D207/chief-answers-2, the authorized source for opencode-go
 # ids is OpenCode Zen's published per-model pricing, pinned as
-# config/staffing/pricing/opencode-zen-20260909.mdx (sha256 sidecar
+# config/staffing/pricing/opencode-zen-20260912.mdx (sha256 sidecar
 # alongside). No local-model row exists in either source and none is
 # invented here (local tier parked, D156; T4 free/local), so the local
 # channel's replacement_price_ref cites that decision instead of a
@@ -70,7 +70,7 @@ channels:
         value: 200
     windows: [rolling-5h, weekly]
     harness_lock: [codex, omp, pi]
-    replacement_price_ref: config/staffing/pricing/openrouter-20260911.json
+    replacement_price_ref: config/staffing/pricing/openrouter-20260912.json
 
   - channel_id: anthropic-sub
     kind: subscription
@@ -81,7 +81,7 @@ channels:
         value: 20
     windows: [rolling-5h, weekly]
     harness_lock: [claude]
-    replacement_price_ref: config/staffing/pricing/openrouter-20260911.json
+    replacement_price_ref: config/staffing/pricing/openrouter-20260912.json
 
   - channel_id: gemini-sub
     kind: subscription
@@ -92,7 +92,7 @@ channels:
         value: 20
     windows: [rolling-5h, weekly]
     harness_lock: [agy]
-    replacement_price_ref: config/staffing/pricing/openrouter-20260911.json
+    replacement_price_ref: config/staffing/pricing/openrouter-20260912.json
 
   - channel_id: opencode-go
     kind: subscription
@@ -101,21 +101,21 @@ channels:
         value: unknown
     windows: [rolling-5h, weekly, monthly]
     harness_lock: [opencode, omp, pi]
-    replacement_price_ref: config/staffing/pricing/opencode-zen-20260909.mdx
+    replacement_price_ref: config/staffing/pricing/opencode-zen-20260912.mdx
 
   - channel_id: openrouter
     kind: metered
     fee_usd_month: []
     windows: []
     harness_lock: [omp, pi]
-    replacement_price_ref: config/staffing/pricing/openrouter-20260911.json
+    replacement_price_ref: config/staffing/pricing/openrouter-20260912.json
 
   - channel_id: opencode-zen
     kind: metered
     fee_usd_month: []
     windows: []
     harness_lock: []
-    replacement_price_ref: config/staffing/pricing/opencode-zen-20260909.mdx
+    replacement_price_ref: config/staffing/pricing/opencode-zen-20260912.mdx
 
   - channel_id: local
     kind: local
