@@ -278,3 +278,25 @@ route, a candidate metered workhorse not yet in the Pi model store.
   new row isn't yet exercised by a rate-table-specific test). Black/Ruff clean on `src/`.
 - `proof_status` for the new route remains unproven until a `run` succeeds and lands in the
   ledger (D218 ruling 1); trial dispatch is Chief's, not this session's.
+
+## D218 DeepSeek V4.1 Flash intake and first trial (Chief, 2026-09-12)
+
+- Intake committed: router `fee397c` (pricing snapshot `openrouter-20260911.json` + sha256;
+  terms/channels repointed; route `pi-deepseek-deepseek-v4-1-flash-openrouter`; price-driven
+  test updates), agent-orch `870700f` (rate row, base rates, peak/off-peak noted).
+- Trial (Chief-dispatched, detached, through `run`): packet `D218-trial` (`.json` owned-path
+  mapping in `derive_class.py`), attempt `router-run-98e00651d0914f31b533545670665075`,
+  route `pi-deepseek-deepseek-v4-1-flash-openrouter`, selection explicit (D218 workhorse
+  evaluation), provider-reported 209,415 tokens (in 23,182; out 3,961; cached 182,272),
+  $0.006400716 list = marginal, wall 131.8 s, oracle pass (22 passed), `verified_success:
+  true` (supervisor route `claude-claude-sonnet-5-high-anthropic-sub` attested). Confinement:
+  only the two owned files changed. Chief re-ran the oracle.
+- Independent review: two `run --role review` attempts on `agy-gemini-3-8-flash-high-gemini-sub`
+  (`router-run-…c1e78e2b`, 201,407 tokens; `router-run-2b2924366fad4be2a30a090db3c8357b`,
+  224,209 tokens) recorded usage but `run` does not persist worker stdout, so their verdict
+  text was lost (gap filed as P4-5c). The review was then run directly through `agy` with the
+  same packet and route: **REVIEW VERDICT: ACCEPT**, 0 contract-blocking, 0 hardening, 0
+  future; output kept at `docs/staffing/packets/evidence/D218-trial-review-gemini-flash.md`.
+- Committed as `fix(staffing): map .json owned paths to yaml-config in derive_class`.
+- `staff --mode auto` now lists the route as `proven`; it competes on marginal price
+  ($0.15/$0.60 per M) behind prepaid Gemini and behind cheaper metered V4 Flash and GLM.
