@@ -273,14 +273,23 @@ def test_supervise_bodies_are_parity_checked_against_d213(tmp_path, monkeypatch)
 
         compact = " ".join(body.split())
         assert (
-            "Run every router command in the foreground and wait for it to return."
+            "Start `lee-llm-router run …` detached: "
+            '`setsid nohup bash -c "cd <repo> && lee-llm-router run … > <log> 2>&1; echo done=\\$? >> <log>" < /dev/null &`.'
             in compact
         )
         assert (
-            "Never background a `run`, a review, or a rollup; `run` has its own watchdog."
+            "Poll in bounded foreground loops of at most 90 s each: "
+            "`timeout 90 bash -c \"until grep -q '^done=' <log>; do sleep 10; done\"`; "
+            "repeat the poll call until it succeeds; never a single call longer than 90 s; "
+            "never a background tool; never end the turn while the log lacks `done=`."
             in compact
         )
-        assert "Do not end your turn while a dispatched command is running." in compact
+        assert (
+            "Then read the attempt record `run` printed (or `census`/the ledger tail) before deciding."
+            in compact
+        )
+        assert "Same pattern for reviews." in compact
+        assert "Never end your turn while anything you started is running." in compact
         assert (
             "A packet that cannot state its owned-file list in one line is too big."
             in compact
