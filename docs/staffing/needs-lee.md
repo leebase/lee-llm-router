@@ -816,3 +816,15 @@ PROPOSED CRON (not installed):
 ```
 
 Neither the proposed terms repoints nor the proposed cron schedule was applied; repointing the price series remains a reviewed commit.
+
+## Rulings by Lee (2026-09-12, D223) — closes the two Phase 5 items above
+
+- **Fable supervisor attestation: exemption approved and applied.** `never_automatic` is no
+  longer imposed on `--supervisor-route` (it governs worker selection, not supervisor
+  identity); status, channel, harness lock, headroom and terms checks still refuse. Router
+  `run.py` + `tests/test_staffing_run.py`. Chief-run lanes now record verified successes.
+- **Pricing refresh cadence: on demand, no cron.** Lee: "no cadence to model releases and no
+  need to retest what hasn't changed." The proposed weekly cron line is withdrawn; run
+  `scripts/refresh_pricing_snapshot.sh` when a model is released or a price signal appears.
+- **Terms repointed to the 2026-09-12 snapshots** (reviewed diff in `terms.yaml`'s header
+  comment: GLM 5.3 Flash halved back, DeepSeek V4 Flash −1.7%, 445 ids unchanged in count).
