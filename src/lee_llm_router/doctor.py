@@ -2052,6 +2052,91 @@ def _run_staff(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# price (P4-1): list and marginal USD price for route and token counts
+# ---------------------------------------------------------------------------
+
+
+def _run_price(args: argparse.Namespace) -> int:
+    """Run ``price``: compute total list and marginal USD for route and token counts."""
+    from datetime import date
+    from pathlib import Path
+
+    from lee_llm_router.availability import load_availability
+    from lee_llm_router.staffing import StaffingCatalogError, load_staffing_catalog
+    from lee_llm_router.staffing.json_int import dump_json
+    from lee_llm_router.staffing.price import PriceError, compute_price
+
+    def fail(message: str) -> int:
+        print(f"price: {message}", file=sys.stderr)
+        return 3
+
+    if not args.route:
+        return fail("--route is required")
+    for name, val in (("input", args.input), ("output", args.output)):
+        if val is None:
+            return fail(f"--{name} is required")
+
+    counts: dict[str, int] = {}
+    for name, raw in (
+        ("input", args.input),
+        ("output", args.output),
+        ("cached", args.cached or "0"),
+    ):
+        try:
+            n = int(raw)
+        except (ValueError, TypeError):
+            return fail(f"--{name} must be an integer, got {raw!r}")
+        if n < 0:
+            return fail(f"--{name} must be non-negative, got {n}")
+        counts[name] = n
+
+    if args.at is not None:
+        try:
+            at_date = date.fromisoformat(args.at)
+        except ValueError:
+            return fail(f"--at: not an ISO date (YYYY-MM-DD): {args.at!r}")
+    else:
+        at_date = date.today()
+
+    catalog_dir = (
+        Path(args.catalog_dir)
+        if args.catalog_dir is not None
+        else _default_catalog_dir()
+    )
+    try:
+        catalog = load_staffing_catalog(catalog_dir)
+    except StaffingCatalogError as exc:
+        return fail(f"catalog invalid: {exc}")
+    except Exception as exc:
+        return fail(f"catalog invalid: {exc}")
+
+    availability = load_availability(args.availability_file)
+    if args.availability_file is not None and availability.problem is not None:
+        return fail(f"availability snapshot unusable: {availability.problem}")
+
+    try:
+        result = compute_price(
+            route_id=args.route,
+            input_tokens=counts["input"],
+            output_tokens=counts["output"],
+            cached_tokens=counts["cached"],
+            catalog=catalog,
+            availability=availability,
+            at_date=at_date,
+        )
+    except PriceError as exc:
+        return fail(str(exc))
+    except Exception as exc:
+        return fail(f"price computation failed: {exc}")
+
+    if args.json:
+        print(dump_json(result.as_dict()))
+    else:
+        print(result.render_text())
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # classify-failure (P3-1): deterministic D213 ruling 3 failure classification
 # ---------------------------------------------------------------------------
 
@@ -2871,6 +2956,62 @@ def main(argv: list[str] | None = None):
         help="Emit the structured JSON payload instead of the compact block",
     )
     staff_parser.set_defaults(func=_run_staff)
+
+    price_parser = subparsers.add_parser(
+        "price",
+        help="Compute total list and marginal USD price for a route and token counts",
+    )
+    price_parser.add_argument(
+        "--route",
+        required=True,
+        metavar="ROUTE_ID",
+        help="Route id to price",
+    )
+    price_parser.add_argument(
+        "--input",
+        required=True,
+        metavar="N",
+        help="Input token count (non-negative integer)",
+    )
+    price_parser.add_argument(
+        "--output",
+        required=True,
+        metavar="N",
+        help="Output token count (non-negative integer)",
+    )
+    price_parser.add_argument(
+        "--cached",
+        default=None,
+        metavar="N",
+        help="Cached / read input token count (non-negative integer, default 0)",
+    )
+    price_parser.add_argument(
+        "--at",
+        default=None,
+        metavar="DATE",
+        help="ISO date (YYYY-MM-DD) for dated terms (default: today)",
+    )
+    price_parser.add_argument(
+        "--availability-file",
+        metavar="PATH",
+        default=None,
+        help="Path to the availability snapshot (default: per-host default)",
+    )
+    price_parser.add_argument(
+        "--catalog-dir",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Directory holding the six staffing catalog YAML documents "
+            "(default: the repo config/staffing directory)"
+        ),
+    )
+    price_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the structured JSON payload instead of plain text",
+    )
+    price_parser.set_defaults(func=_run_price)
 
     classify_failure_parser = subparsers.add_parser(
         "classify-failure",
