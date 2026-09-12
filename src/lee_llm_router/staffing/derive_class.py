@@ -71,6 +71,7 @@ _EXTENSION_LANGUAGES = {
     ".sql": "sql",
     ".yaml": "yaml-config",
     ".yml": "yaml-config",
+    ".json": "yaml-config",
     ".md": "markdown",
     ".markdown": "markdown",
 }

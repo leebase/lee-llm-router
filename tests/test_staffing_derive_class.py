@@ -151,6 +151,40 @@ def test_keywords_match_owned_path_text(tmp_path: Path):
     assert payload["class"]["domain_tags"] == ["persistence"]
 
 
+def test_json_owned_path_maps_to_yaml_config(tmp_path: Path):
+    packet = tmp_path / "packet.md"
+    packet.write_text(
+        """\
+- Kind: impl
+- Declared size: 1 file, at most 40 changed lines
+- Owned paths: `config/staffing/schema/classes.schema.json`
+- Requirement: Update the schema.
+""",
+        encoding="utf-8",
+    )
+
+    derived = derive_class(packet, classes_path=CLASSES)
+
+    assert derived.language == "yaml-config"
+
+
+def test_json_alongside_yaml_stays_yaml_config(tmp_path: Path):
+    packet = tmp_path / "packet.md"
+    packet.write_text(
+        """\
+- Kind: impl
+- Declared size: 2 files, at most 40 changed lines
+- Owned paths: `config/llm.yaml`, `config/llm.json`
+- Requirement: Keep the two configs aligned.
+""",
+        encoding="utf-8",
+    )
+
+    derived = derive_class(packet, classes_path=CLASSES)
+
+    assert derived.language == "yaml-config"
+
+
 def test_explicit_domain_field_overrides_owned_path_matching(tmp_path: Path):
     packet = tmp_path / "packet.md"
     packet.write_text(
