@@ -273,6 +273,15 @@ def test_supervise_bodies_are_parity_checked_against_d213(tmp_path, monkeypatch)
 
         compact = " ".join(body.split())
         assert (
+            "Run every router command in the foreground and wait for it to return."
+            in compact
+        )
+        assert (
+            "Never background a `run`, a review, or a rollup; `run` has its own watchdog."
+            in compact
+        )
+        assert "Do not end your turn while a dispatched command is running." in compact
+        assert (
             "A packet that cannot state its owned-file list in one line is too big."
             in compact
         )
