@@ -828,3 +828,14 @@ Neither the proposed terms repoints nor the proposed cron schedule was applied; 
   `scripts/refresh_pricing_snapshot.sh` when a model is released or a price signal appears.
 - **Terms repointed to the 2026-09-12 snapshots** (reviewed diff in `terms.yaml`'s header
   comment: GLM 5.3 Flash halved back, DeepSeek V4 Flash −1.7%, 445 ids unchanged in count).
+
+## D224 closure (2026-09-12, Chief) — `/supervise` five-harness parity
+
+Closed at router `d82f239` (review D224-3 ACCEPT). Pi is the fifth managed shim target
+(`~/.pi/agent/prompts/`); both templates bind `$ARGUMENTS` explicitly; Codex's invocation is
+`/prompts:supervise <args>` (recorded in its rendered shim); OpenCode's is
+`opencode run --command supervise "<plan-path> auto"` and it hands the message over as one
+quoted string, which the templates now strip. Native expansion proven 5/5
+(`docs/staffing/shims-native-smoke.md` §5). Real shims installed in all five harnesses;
+`shims diff` clean for `crew` and `supervise`. Known limitation: the OMP smoke uses the real
+HOME for credentials. Not blocking: a sandboxed reviewer cannot run live harness smokes.
