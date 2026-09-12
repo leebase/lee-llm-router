@@ -561,3 +561,82 @@ Phase 4 change — not a regression, not fixed here, out of Group A's scope).
   ordinary model capability variance — this echoes, but is not identical to, the pre-existing
   note above about `pi-deepseek-deepseek-v4-flash-openrouter` and tool access in Phase 3
   review dispatches; the two observations should be reconciled by whoever investigates.
+
+## D218 DeepSeek V4.1 Flash intake — P4-7 cannot be dispatched as specified (2026-09-12)
+
+**Blocking, recorded rather than worked around:** the D218 lane's step 3 instruction was to
+dispatch Phase 4 packet P4-7 as the DeepSeek V4.1 Flash trial. Pre-dispatch inspection shows
+P4-7 is not independently dispatchable yet:
+
+- The sprint plan (`chief-of-staff/docs/staffing-phase4-sprint-plan.md`, Group B) and
+  `docs/staffing/phase4-contracts.md` §4 both place P4-7 ("`task_type` populated from the
+  derived class key on new runs; performance rollup keyed by class") strictly after P4-6
+  (the `auto` crew: `routing.py` resolving stage roles through `staff --mode auto --json`).
+  Confirmed by contracts.md §4 verbatim: "`task_type` does not exist anywhere in
+  `src/auto_orch/`... P4-7 is the owner's call... recorded here, not resolved, since P4-7 is
+  Group B scope" — i.e. there is no "derived class key on new runs" for auto-orch to key a
+  rollup by until P4-6 exists.
+- **P4-6 has not been dispatched by any session**: no `docs/staffing/packets/P4-6*.md`, no
+  P4-6 entry in `phase4-execution-log.md`, no `crew: auto`/`staff --mode auto` reference
+  anywhere in `auto-orch/src/auto_orch/routing.py` (confirmed by grep). The uncommitted WIP
+  present in the `auto-orch` working tree this session (`cycle.py`, `scheduling_policy.py`,
+  mission files) is unrelated linux-utilities recovery work by another lane, not P4-6.
+  agent-orch already has an author-supplied `task_type` field (`ExecutionIntent.task_type`,
+  a static playbook-template placeholder `__TASK_TYPE__`, unconnected to any router class
+  key) — this is a different, pre-existing mechanism, not evidence that any part of P4-7 is
+  done.
+- **P4-6 itself cannot be used for this trial in DeepSeek V4.1 Flash's place**: it is
+  classed `impl/deterministic/authority/m/python`, explicitly "don't-cheap-trial: staff
+  directly at the ladder's first proven eligible rung" (sprint plan; the same class P4-5
+  already exercised this session, staffing directly at the proven
+  `pi-deepseek-deepseek-v4-flash-openrouter` route specifically to honor this rule). Using
+  the new, unproven DeepSeek V4.1 Flash route for P4-6 would be exactly the "bypass an
+  exclusion merely to keep execution moving" D209 forbids.
+
+No in-repo Phase 4 packet is both (a) ready to dispatch today and (b) eligible for an
+unproven-route cheap trial. Rather than inventing a scope expansion into P4-6 (out of this
+bounded lane's D218 authority, and risking collision with whichever lane is assigned Group B)
+or force-dispatching P4-7 against a contract it cannot satisfy, this session substituted a
+different piece of genuinely real, already-recorded, correctly-classed work for the D218
+trial itself: the `derive_class.py` `.json`-extension gap recorded above under "Phase 4
+Group A" ("not fixed here... recorded for a future router packet"). That satisfies D218
+ruling 2's actual requirement (real work, an oracle, independent review, landing in the
+ledger with provider-reported usage) without inventing P4-6/P4-7's missing mechanism. See
+`docs/staffing/phase4-execution-log.md` ("D218 DeepSeek V4.1 Flash intake") for the trial's
+ledger evidence.
+
+**Needs Lee/Chief:** decide who picks up P4-6 (Group B), since P4-7 stays blocked until it
+lands; and whether the derive_class.py fix landed by this trial should be folded into a
+future Group A/B packet's close-out notes or left as its own standalone commit (this session
+treated it as standalone, since it was dispatched and reviewed independently of any Phase 4
+packet group).
+
+## Phase 4 addition by Chief (2026-09-12): P4-5c persist worker output per attempt
+
+`run` captures the worker's stdout for usage parsing but neither persists nor prints it, so a
+judge review's verdict text is lost unless the caller watches the console. Packet P4-5c:
+write worker stdout/stderr to `~/.local/state/lee-llm-router/artifacts/<attempt_id>/` and
+record the path in the attempt's `provenance`; for `--role review`/`judge`, parse a final
+`REVIEW VERDICT: ACCEPT|REJECT` line into `verdict.outcome` as `judge_pass`/`judge_fail`
+(D214 carry-over). Tests. Class `impl/deterministic/none/s/python`.
+
+**Resolved 2026-09-12 (Group A2 session, router only):** implemented as
+`resolve_artifacts_dir`/`_persist_worker_output`/`_parse_judge_verdict` in
+`src/lee_llm_router/staffing/run.py`, additive `judge_pass`/`judge_fail` `canonicalVerdict`
+enum values and `provenance.worker_output_dir` in `attempt-record.schema.json`. The note's
+literal `verdict.outcome` field path does not exist — the real, current field is the flat
+top-level `verdict` string, and the resolution extends that string's value set rather than
+inventing a nested object (recorded as an imprecision in the original note, not a
+requirements change). Live-verified: a real review dispatch's judge verdict now lands as
+`judge_pass` in the ledger and its full stdout is readable at
+`provenance.worker_output_dir`. Two Hardening-only findings recorded in
+`phase4-execution-log.md`'s "Group A2" section (the `rfind`-based matcher's theoretical
+false-match edge case; `run.py` importing a private name from `doctor.py`) — neither
+blocking. Committed `ed71aa7`. Also folded into this same session: `docs/staffing/packets/
+P4-5b.md` (the `/supervise` dispatch pattern for auto-backgrounding harnesses), committed
+`7e1e249` — unrelated to P4-5c except sharing a session.
+
+Also recorded by this session, not Group A2's to fix: the P4-6/P4-7 blocker above is still
+open, and three pre-existing, unrelated uncommitted working-tree changes (`context.md`,
+`result-review.md`, `docs/crew-resolver/execution-log.md` — Crew Resolver Sprint 6 status
+notes) were present at session start and deliberately left untouched.

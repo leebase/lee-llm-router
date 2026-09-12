@@ -300,3 +300,126 @@ route, a candidate metered workhorse not yet in the Pi model store.
 - Committed as `fix(staffing): map .json owned paths to yaml-config in derive_class`.
 - `staff --mode auto` now lists the route as `proven`; it competes on marginal price
   ($0.15/$0.60 per M) behind prepaid Gemini and behind cheaper metered V4 Flash and GLM.
+
+## Group A2 — supervise dispatch pattern (P4-5b) and worker-output persistence (P4-5c)
+
+Session: Sonnet 5 headless supervisor, 2026-09-12, router only. Authority: D215 rulings 4-6.
+Dispatch mechanic used throughout: `run` invoked detached (`setsid nohup bash -c ... ; echo
+done=$? >> <log>`), polled in bounded <=90s foreground calls, per the harness's own
+auto-backgrounding property — exactly the pattern P4-5b itself codifies.
+
+### P4-5b — `/supervise` dispatch pattern for auto-backgrounding harnesses
+
+- Packet: `docs/staffing/packets/P4-5b.md` (copied verbatim from
+  `~/projects/chief-of-staff/tmp/staffing-p4/skill-dispatch-fix-packet.md`). Class
+  `impl/deterministic/none/xs/markdown`. Auto-staffed to
+  `agy-gemini-3-8-flash-high-gemini-sub`.
+- Attempt 1: worker exited 0 in 306s but the oracle launch failed
+  (`FileNotFoundError: 'PYTHONPATH=src'`) — supervisor error, not a worker failure: an
+  unquoted `KEY=value` prefix isn't shell-expanded by the no-shell `--oracle` boundary (the
+  same class of mistake recorded in P4-2). `classify-failure` → `platform_env`;
+  `next-action` → `retry_same_route_after_platform_repair`.
+- Attempt 2 (same route, oracle corrected to `env PYTHONPATH=src ...`): replaced the
+  `## Foreground execution` section with a new `## Dispatch pattern` section carrying the
+  detached-start/bounded-poll/read-before-deciding instructions, extended to review
+  dispatches; updated the three affected compact-string assertions in
+  `test_supervise_bodies_are_parity_checked_against_d213`. Oracle passed. The worker also
+  independently ran `lee-llm-router shims install --command supervise --apply` and wrote an
+  unrequested `docs/staffing/packets/P4-5b-review.md` review packet for itself — both outside
+  its declared owned paths (Rule A/step-12 scope violations, however harmless: the reinstall
+  content was correct, confirmed by `shims diff` showing zero drift). Supervisor removed the
+  stray review-packet file and re-ran the reinstall itself (idempotent `unchanged` on all four
+  home targets) plus the `chief-of-staff` project's separate `.omp` target (`update`, now
+  matching). One Black reformat needed on the test file (line-wrap only); no assertion
+  content changed.
+- Full suite green (1705 passed, 1 skipped) confirmed personally, twice, via the
+  detached-and-poll pattern applied to the suite run itself (the harness auto-backgrounded the
+  first plain `pytest -q` invocation exactly as the packet describes).
+- Independent review dispatched (`pi-deepseek-deepseek-v4-flash-openrouter`, author route
+  excluded): verdict `unverified` (no oracle on a judge-role dispatch — the exact
+  known gap P4-5c fixes). Supervisor's own diff read, full-suite run, and reinstall/drift
+  check are the evidence of record, per this Phase's established precedent for this gap.
+- Committed `7e1e249` (`feat(staffing P4): supervise dispatch pattern for auto-backgrounding
+  harnesses`).
+
+### P4-5c — persist worker output per attempt; parse judge verdicts
+
+- Packet: `docs/staffing/packets/P4-5c.md`, written from `docs/staffing/needs-lee.md`'s P4-5c
+  note plus a read-only research pass over `run.py`'s dispatch/attempt-record/state-directory
+  conventions (exact line citations recorded in the packet). Class
+  `impl/deterministic/none/s/python`. Auto-staffed to `agy-gemini-3-8-flash-high-gemini-sub`.
+- Attempt 1: correctly implemented `resolve_artifacts_dir` (mirroring the attempts/
+  availability/runs state-directory precedence exactly), `_persist_worker_output`
+  (fail-open on `OSError`), and `_parse_judge_verdict` plus the additive `judge_pass`/
+  `judge_fail` schema enum values and the `provenance.worker_output_dir` schema property.
+  Oracle passed — but the diff added **zero tests** for any of the new behavior (only an env
+  var added to the shared `scratch_state` fixture, unused by any test), matching this
+  Phase's P4-5 precedent exactly. Supervisor judgment (not classify-failure, since the oracle
+  itself passed): missing required evidence is a Rule C spec deviation, not an oracle-visible
+  failure.
+- Full-suite run (personally, before any repair) also surfaced that the new schema enum
+  values broke `test_v2_verdict_vocabulary_is_canonical`'s closed-list assertion — a
+  legitimately foreseeable extension, same scale as prior sessions' fixture/assertion fixes;
+  supervisor-fixed directly (added the two new values to the expected list).
+- A live independent-review dispatch (used simultaneously as the packet's required live
+  check) showed `_parse_judge_verdict`'s original design — matching the marker only as the
+  literal final line of `stdout.splitlines()` — never fires for the `pi`/`agy` harness family:
+  their captured stdout is a raw JSON event stream where the real final text sits inside a
+  JSON string field followed by wire-format closing tokens, so the marker is never literally
+  the last line. Confirmed live: a real review dispatch's stdout ended with
+  `...REVIEW VERDICT: ACCEPT"}]}` and recorded `verdict: "unverified"`, not `judge_pass`.
+  Supervisor-fixed directly (same scale as prior sessions' mechanical fixes): rewrote the
+  matcher to compare the last `str.rfind` occurrence of each marker rather than requiring
+  final-line equality, still conservative against an earlier-discussed marker (last
+  occurrence wins).
+- Repair 1 (same route, narrowed to `tests/test_staffing_run.py` only): **zero incremental
+  changes** — identical diff to attempt 1 (same env-var-only edit). Matches this Phase's
+  recorded pattern of Gemini Flash making zero progress on narrow impl-role Python-coding
+  asks after an initial success elsewhere in the same packet.
+- Escalation (`pi-deepseek-deepseek-v4-flash-openrouter`, parent = repair 1's attempt,
+  reason recorded on the attempt): wrote all six required tests (persistence, accept/reject
+  with realistic JSON-harness-shaped stdout, no-marker fallback, non-review-role
+  non-interference, write-failure fail-open). Oracle failed on the first run
+  (`spec_rejected`): one new test had a filesystem-ordering bug (wrote a blocker file into a
+  parent directory the fixture never created) — supervisor-fixed directly (one `mkdir`
+  line), and a second, unrelated failure (`test_worker_ceiling_kill_terminates_escaped_
+  recursive_descendants`) reproduced only under the full-file run, passed in isolation and on
+  a clean rerun — a pre-existing, timing-sensitive flake, not a regression from this packet.
+  Minor Ruff import-order/line-length fixes applied (mechanical, `--fix` plus one docstring
+  shortened).
+- Full suite green (1711 passed, 1 skipped, up from 1705 — six new tests, no regressions),
+  confirmed personally via the detached-and-poll pattern.
+- Independent review re-dispatched against the final diff (`pi-deepseek-deepseek-v4-flash-
+  openrouter`, author route excluded): **`verdict: "judge_pass"`** — the packet's own new
+  mechanism recorded the reviewer's verdict this time, live proof the fix works.
+  `REVIEW VERDICT: ACCEPT`, 0 Blocking, 2 Hardening (the `rfind` matcher's last-occurrence
+  choice is a deliberate, documented tradeoff, not a defect; the `run.py` → `doctor.py`
+  private-name import is unusual layering but not a circular import — `doctor.py`'s import of
+  `staffing.run` is always lazy), 0 Future. Both Hardening notes are recorded here, not
+  resolved, per Rule J (blocking findings drive convergence; these are not blocking).
+- Committed `ed71aa7` (`feat(staffing P4): persist worker output per attempt and parse judge
+  verdicts`).
+
+### Group A2 close-out
+
+Both packets committed: `7e1e249` (P4-5b), `ed71aa7` (P4-5c). Router suite green at close
+(1711 passed, 1 skipped). Metered spend this session: ~$0.084 (three `pi`/OpenRouter
+dispatches on `pi-deepseek-deepseek-v4-flash-openrouter`; every `agy-gemini-3-8-flash-high-
+gemini-sub` dispatch was prepaid-subscription, `cost.basis: ["unavailable"]` by the router's
+own never-invent-usage convention for that channel) — well inside the $10 ceiling. No needs-Lee
+item generated by this group; the pre-existing P4-6/P4-7 blocker recorded earlier in
+`needs-lee.md` is unaffected and unresolved by this session.
+
+**Recorded, not resolved by this session** (see `docs/staffing/needs-lee.md`):
+- `_parse_judge_verdict`'s last-`rfind`-occurrence design could in principle match a marker
+  the worker discusses mid-response if a later, unrelated line also happens to contain the
+  exact string — theoretical, not observed, and reviewed as acceptable (Hardening, not
+  Blocking) both times.
+- `staffing/run.py` importing a private name (`_INDEPENDENCE_APPLICABLE_ROLES`) from the
+  CLI-layer `doctor.py` is unusual layering (safe today only because `doctor.py`'s own import
+  of `staffing.run` is always lazy); a future packet could relocate the constant to a shared
+  `staffing` module to remove the upward dependency.
+- Unrelated, pre-existing uncommitted working-tree changes (`context.md`, `result-review.md`,
+  `docs/crew-resolver/execution-log.md` — Crew Resolver Sprint 6 status notes from a different
+  initiative) were present at session start and left untouched throughout, per the same
+  no-bundling discipline this Phase already applies to agent-orch's stashed WIP.
