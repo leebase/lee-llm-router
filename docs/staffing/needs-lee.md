@@ -677,3 +677,43 @@ cycle's own reported `failed` outcome (caused by item 2, not by the delivered di
 further (escalation firing was evidence-if-it-occurs for gate (b), not a requirement) — worth
 a look if a future session wants to observe ESCALATE fire through the real authoring pipeline
 rather than only through P4-5's own hand-built `StepDefinition` test.
+
+## Phase 4.1 / Group D (2026-09-12): D219's three recorded gaps — closed
+
+D219 (chief-of-staff/decisions.md) recorded three gaps for Group D to close before Phase 5.
+All three are closed this session; full detail in `phase4-execution-log.md`'s "Group D"
+section.
+
+1. **Reviewer independence in governed `auto` crews (D219 finding 1 / D211 ruling 5).**
+   Closed by P4-13: the `auto` crew now passes `--author-route <primary's route>` when
+   resolving `reviewer`/`judge`. Live-proven: cycle `20260912T124316Z`'s mandate resolved
+   `reviewer`/`judge` to `agy-gemini-3-8-flash-high-gemini-sub`, distinct from `primary`'s
+   `codex-gpt-5-6-sol-low-openai-sub`.
+2. **Route dispatch metadata (D219 finding 2).** Closed by P4-10 (router: `route show
+   <route_id> [--json]`) and P4-11 (auto-orch: `resolve_role_route` consumes it, keeping the
+   naming-convention harness only as a fail-closed cross-check). `effort` now has a real
+   resolution path — the specific gap the original P4-8 note (item 1, above) left open.
+3. **Trusted playbook smoke gates invoking bare `python3` (D219 finding 3).** Closed by P4-12,
+   scoped precisely to `user_journeys_execution_verified` (the validator actually implicated
+   in the live P4-8 false-failure): a claimed bare `python`/`python3` command now re-executes
+   against the target workspace's `.venv/bin/python` when present, recorded as
+   `interpreter_path` in the gate evidence. Live-proven: cycle `20260912T124316Z`'s
+   `step_08b_user_simulation_gate` passed genuinely (6/6 verified) for the first time in this
+   proof mission's history. **Recorded, not closed:** the code-review `checks_run_match`
+   cross-validator (`agent-orch/src/agent_orch/validators.py`) has the identical
+   claim-re-execution shape and could hit the same false-negative for a bare-python claim; not
+   observed live, not in this packet's named scope, a candidate for a future packet if it is.
+
+## Phase 4.1 / Group D (2026-09-12): P4-14 — pre-existing `test_codex_usage.py` failures bisected
+
+The three failures D217/D219 called "pre-existing, unrelated" are now precisely bisected via
+`git worktree` per commit (never `git checkout` in the main tree): the first bad commit is
+`agent-orch` `4270736` ("fix: bound worker validation and recover timeout usage",
+2026-09-11) — **not** a Phase 4 commit. It added a strict UUID-format `re.fullmatch` check on
+Codex's `thread.started.thread_id`; the three tests' fixtures use the non-UUID placeholder
+`"thread_id": "t"`, which the new check now rejects. `d166e4d` (P0 baseline) and `e500056`
+(the commit immediately before `4270736`) both pass 15/15; every commit from `4270736` onward,
+including all five Phase 4 commits, fails the same 3 tests. **Recorded, not fixed:** this is
+another lane's test-fixture debt (the fixtures should use a schema-valid placeholder UUID, or
+the validation's test coverage needs a real-shaped fixture) — out of Phase 4/4.1's scope to
+fix unilaterally; flagged for whichever lane owns `4270736`'s follow-through.

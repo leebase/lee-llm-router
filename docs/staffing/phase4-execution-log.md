@@ -791,3 +791,186 @@ against the supervisor's own 3-failure count rather than treated as a contradict
 trivial hardening note (a stale docstring key-path reference) fixed as `9b8e8dd`.
 
 Closing report: `chief-of-staff/tmp/staffing-p4/closing-report-c.md`. Chief seals D217.
+
+## Group D — Phase 4.1 follow-ups before Phase 5 (P4-14, P4-10, P4-11, P4-12, P4-13, live cycle)
+
+Session: Sonnet 5 headless supervisor, 2026-09-12. Authority: `chief-of-staff/decisions.md`
+D219 (Phase 4 ratified with three recorded gaps to close before Phase 5) on the D215/D211/D209
+baseline. Repos touched: `lee-llm-router` (two commits), `auto-orch` (one commit),
+`agent-orch` (one commit). Metered spend: $0 (every dispatch this session was subscription —
+`agy-gemini-3-8-flash-high-gemini-sub` for the two review dispatches and the live cycle's
+reviewer/judge role; `codex-gpt-5-6-sol-low-openai-sub` for the live cycle's primary role,
+both prepaid subscription channels, not metered API). All four packets, in the order run:
+
+### P4-14 (first, agent-orch) — bisect the pre-existing `test_codex_usage.py` failures
+
+Confirmed via `git worktree add --detach` (never `git checkout` in the main tree, per
+instruction) at each of `d166e4d` (P0, pre-Phase-4 baseline), `af5dea5`, `39a0457`, `7751a07`,
+`7296c38`, `88ce8ac` (all five Phase 4 commits) plus the two intermediate non-Phase-4 commits
+`9da2f7a` and `4270736`: `d166e4d` passes `tests/test_codex_usage.py` 15/15; every one of the
+five Phase 4 commits already fails the same 3 tests
+(`test_codex_extracts_successful_terminal_usage`,
+`test_missing_terminal_receipt_remains_unaccounted`, `test_truncated_final_line_fails_closed`).
+Bisecting the two intermediate commits pinpoints the exact introducing commit: `4270736`
+("fix: bound worker validation and recover timeout usage", 2026-09-11, **not** a Phase 4
+commit — no `feat(staffing P4)` prefix) added a strict UUID-format `re.fullmatch` check on
+`thread.started`'s `thread_id` in `worker.py`; the three tests' fixtures use a non-UUID
+placeholder (`"thread_id": "t"`), which the new stricter validation now rejects. `e500056`
+(the commit immediately before it) still passes 15/15. This is more precise than D219's own
+shorthand ("reproduce on the pre-Phase-4 commit `d166e4d` and on every Phase 4 commit") —
+the substance (predates Phase 4, another lane's, not Phase 4's to fix) is confirmed correct;
+the exact introducing commit is `4270736`, not `d166e4d` itself. Recorded, not fixed (another
+lane's test-fixture debt); see `needs-lee.md`. No commit for this packet (nothing to change —
+recording only). Worktrees cleaned up (`git worktree remove --force` x10) after the bisection.
+
+### P4-10 (router) — `route show <route_id> [--json]`
+
+New CLI subcommand (`src/lee_llm_router/doctor.py`) disclosing the catalog's full route
+record: `route_id`, `model`, `effort`, `harness`, `channel`, `dispatch_template`,
+`usage_capture`, `status`, `status_reason`, and the D211 `proof_status` (from
+`proof.proof_status_ledger()`), for one route id — pure disclosure, no selection/ranking
+logic, per `chief-answers-p4-2.md` item 1 ("disclosure of catalog facts, not selection, so it
+does not conflict with `catalog explain`'s 'route id is the only label' rule"). Unknown route
+id fails closed, exit 3. 8 new tests (`tests/test_doctor_route_show.py`), all passing; full
+router suite re-run 1725 passed/1 skipped/0 failed (was 1717/1/0). Black/Ruff clean.
+Supervisor-authored (xs, deterministic, read-only disclosure over already-committed fields);
+independent review folded into the Group D whole-diff review below. Committed `44d7d2b`.
+
+### P4-11 (auto-orch) — `resolve_role_route` consumes `route show`
+
+`resolve_role_route` now resolves harness/model/effort from `lee-llm-router route show <ID>
+--json` instead of the naming-convention-harness-guess-plus-`price`-based-model workaround it
+used through the end of Phase 4. The naming-convention derivation is kept, not discarded — it
+is now a fail-closed cross-check: if `route show`'s disclosed harness disagrees with the
+route id's own hyphen-prefix convention, `resolve_role_route` raises `RouteUnavailable` rather
+than trusting either source alone. `effort` is now genuinely resolved (previously hardcoded
+`None`) — this closes the exact gap `chief-answers-p4-2.md`/needs-lee left open after P4-8.
+Fake-CLI fixture (`tests/fixtures/fake_lee_llm_router.py`) extended with a `route show`
+handler; `test_resolve_role_route_success` and `test_resolve_role_route_unmapped_harness`
+updated for the new seam; the existing real-CLI test
+(`test_resolve_role_route_with_real_cli`, subprocess-seam rule) now genuinely exercises
+`route show` end to end. Committed together with P4-13 (see below) as `8f40e2b`.
+
+### P4-13 (auto-orch) — reviewer/judge independence via `--author-route` (D219 finding 1)
+
+The `auto` crew now resolves `reviewer` and `judge` with `--author-route <primary's route
+id>`, so a governed review is never staffed from the same route or model family as the work
+it reviews (D211 ruling 5). `GOVERNED_ROLE_TO_ROUTER_ROLE`'s iteration order already resolves
+`primary` first, so its route id is always known before `reviewer`/`judge` are resolved. The
+`auto-crew-mandate.json` artifact now records `author_route` and `independence_reason` per
+role. New real-CLI integration test
+(`test_resolve_auto_governed_mandate_reviewer_judge_independent_with_real_cli`) proves the
+real router, given the real catalog's eligible different-family routes, no longer resolves
+all three governed roles to the same route — the exact live defect D219 finding 1 recorded
+(a real proof cycle had resolved primary/reviewer/judge all to
+`codex-gpt-5-6-sol-low-openai-sub`, since `--author-route` was never passed for
+reviewer/judge). Full auto-orch suite re-run: 1515 passed/2 skipped/1 failed (was 1514/2/1;
+the 1 failure is the same pre-existing, unrelated `test_end_to_end_failed_run_increments_and_
+third_fire_halts` from another lane's in-progress WIP, reproduced identically). Black/Ruff
+clean. Committed `8f40e2b` (both P4-11 and P4-13 together — same function, same test file,
+cleanly entangled; commit message names both).
+
+### P4-12 (agent-orch) — user-simulation gate invokes the target's own venv python
+
+`user_journeys_execution_verified` (`validators.py`) re-executes a tester's claimed
+`commands_run` to independently prove the application ran (D219 finding 3 / needs-lee item
+2). Before this packet, a claimed bare `python`/`python3` command was re-executed against
+whatever `python3` resolves to on PATH — invisible to a target repo (like `lee-llm-router`)
+installed only into a `.venv`, producing exactly the false gate failure the P4-8 proof cycle
+hit (`20260912T102251Z`: tester-claimed exit 0 vs. orchestrator-observed exit 1 for several
+`lee-llm-router` commands, root-caused to this gap, not to the delivered diff). New
+`_apply_gate_interpreter`/`_resolve_gate_python_interpreter` helpers: a bare `python`/
+`python3` argv[0] is rewritten to `<workspace>/.venv/bin/python` when that file exists, else
+left as `python3`; the resolved `interpreter_path` is recorded on the per-command gate
+evidence entry. Scoped precisely to this one validator (the smoke-gate worker adapter already
+normalizes to `sys.executable` via a separate, pre-existing mechanism, out of this packet's
+scope; the `checks_run_match` code-review cross-validator has the same re-execution shape but
+is a different, not-explicitly-named gate — left unfixed, a candidate for a future packet if
+the same false-negative is ever observed there).
+
+**Staging note:** this working tree's `validators.py`/`test_validators.py` already carried
+another lane's uncommitted WIP (structured-stdin support for the same validator) before this
+session started. Rather than `git add`ing the whole files (which would have folded that
+unrelated lane's changes into this commit), the P4-12 diff was built as a standalone patch
+against `HEAD` (`git show HEAD:… `+ hand-applied insertions +`git diff --no-index` +
+`git apply --cached`) and staged with `git apply --cached`, leaving the other lane's WIP
+untouched and unstaged in the working tree exactly as found. 5 new tests, all passing; full
+agent-orch suite re-run: 1949 passed/9 skipped/3 failed (was 1940/9/3; the 3 failures are
+P4-14's pre-existing `test_codex_usage.py` regression, reproduced identically, confirmed not
+introduced or touched by this diff). Ruff clean (one pre-existing `I001` import-sort finding
+on the same file predates this session, confirmed via `git stash`; not this packet's to fix).
+Committed `0b2f7d6`.
+
+### Live cycle — final Phase 4.1 evidence
+
+One more `auto-orch run-cycle staffing-proof` (detached/polled, `~24` min wall clock), under
+the P4-11/P4-12/P4-13 fixes above. Mandate (`auto-crew-mandate.json`,
+`cycle-reports/20260912T124316Z/routing/`): `primary` -> `codex-gpt-5-6-sol-low-openai-sub`
+(`codex_cli`/`gpt-5.6-sol`/low), `reviewer` and `judge` -> `agy-gemini-3-8-flash-high-gemini-
+sub` (`antigravity_cli`/`gemini-3.8-flash-high`/high), each with `author_route:
+"codex-gpt-5-6-sol-low-openai-sub"` and an `independence_reason` citing D211 ruling 5 —
+genuinely distinct reviewer/judge routes from primary, live (P4-13 proof). The cycle selected
+the queued repair backlog item ("Repair failed governed run 1a1bf13f013c", a retry of the
+already-shipped `.toml`/`.ini` `derive_class` slice whose prior attempt failed only at
+`step_08b_user_simulation_gate` under the P4-12 defect) and ran it end to end: `run
+003dd9f505b8`, 8 real attempts across 8 steps (`step_01` through `step_10`, no repair cycle
+needed), all real usage evidence (`usage.json` per attempt; `cost_usd_marginal:
+"unavailable"` throughout, P4-4's documented fail-open, unrelated to this group). The gate
+this group exists to fix: `step_08b_user_simulation_gate/attempt-1/validation.json`'s
+`user_journeys_execution_verified` outcome is `passed: true` ("6 verified, 0 skipped"), every
+command entry carrying `"interpreter_path":
+"/home/lee/projects/lee-llm-router/.venv/bin/python"` — the live proof that P4-12's fix
+closes the false-negative gap. Independent review (step_09,
+`agy-gemini-3-8-flash-high-gemini-sub`, author route `codex-gpt-5-6-sol-low-openai-sub`
+excluded): verdict `pass`, 0 findings, 6 checks_run all exit 0. Cycle report
+(`cycle-reports/20260912T124316Z.yaml`): `cycle_outcome: success`, `run_passed: true`, every
+`stage_outcomes` entry `pass` — the first `success` outcome in this proof mission's history
+(every prior cycle in Group C reported `failed`, for reasons this group's packets fix). No
+`src/` changes were needed (the slice was already correct from Group C's `1d9055e`); the
+real, new deliverable of this cycle is the gate mechanism itself working. Closeout docs and
+review/smoke evidence the run produced were reviewed and committed in `lee-llm-router` as
+`097039f` (`WHERE_AM_I.md`, `context.md`, `result-review.md`, `sprint-plan.md`,
+`docs/derive-class-toml-ini-contract.md`, `code-reviews/review-derive-class-toml-ini.md`,
+smoke/user-test evidence; `*.json` accounting artifacts stay untracked per this repo's own
+`.gitignore`). `auto-orch/missions/staffing-proof/` itself remains untracked in this repo (as
+found at session start — not this session's to commit; recorded, not resolved).
+
+### Independent review of the whole Group D diff
+
+Route selection: `codex-gpt-6-astra-low-openai-sub` ("Astra Low") was the D219/Group-C
+precedent reviewer, but this session's standing instruction excludes OpenAI routes until
+2026-09-14 (independent of the router's own live availability, which currently reports
+`openai-sub` healthy) — so per the group's own instruction ("Astra Low if eligible via staff,
+else the explain-chosen different-family route"), the explain-chosen different-family route
+was used instead: `agy-gemini-3-8-flash-high-gemini-sub` (`staff --role review --author-route
+claude-claude-sonnet-5-high-anthropic-sub` resolves exactly this route independently of the
+Anthropic-family supervisor). Dispatched via `lee-llm-router run --role review` (packet
+`docs/staffing/packets/P4-D-review.md`, covering all four commits above). First attempt
+returned no usable verdict (the worker reported only "I have launched ... and am waiting for
+execution to complete" for each full-suite command, never concluding — a new data point on
+worker/review reliability with long-running full-suite commands, matching this Phase's
+established Rule D precedent: not a blocker, supervisor's own diff read and suite runs stand
+as evidence of record). Retried with a time-boxed packet (no full suites, targeted commands
+only, explicit instruction not to defer/wait): **REVIEW VERDICT: ACCEPT**, 0 contract-blocking
+findings, reproducing every claim directly (ran `route show` live, read every diff via `git
+show`, ran the targeted test subsets, opened the live-cycle evidence files itself, reproduced
+the P4-14 bisection at `d166e4d` and `4270736`). Two non-blocking hardening notes: (1)
+`_apply_gate_interpreter` rewrites even an explicit full path like `/usr/bin/python3` to the
+workspace venv, not only a bare `python3` — intentional (the goal is always the target
+workspace's own venv for a python invocation, regardless of how the tester spelled the
+interpreter), not a defect; (2) `author_route` in `auto_crew.py` type-narrows to `None` if
+`primary_result` were falsy, but `primary` resolution failure already raises
+`RouteUnavailable` and aborts earlier, so that branch is unreachable in practice. Neither
+required remediation. Full attempt transcripts:
+`/home/lee/.local/state/lee-llm-router/artifacts/router-run-6fd440ae993d44a8bb39780179035aca`
+(no verdict) and
+`/home/lee/.local/state/lee-llm-router/artifacts/router-run-9e18b76661b540c19147bb197eb1931f`
+(ACCEPT).
+
+### Commits this session
+
+- `lee-llm-router`: `44d7d2b` (P4-10), `097039f` (live-cycle closeout docs).
+- `auto-orch`: `8f40e2b` (P4-11 + P4-13).
+- `agent-orch`: `0b2f7d6` (P4-12).
+
+Closing report: `chief-of-staff/tmp/staffing-p4/closing-report-d.md`.
