@@ -140,6 +140,11 @@ def test_native_smoke_codex(tmp_path):
 
 def test_native_smoke_omp(tmp_path):
     """OMP expands prompt templates non-interactively via -p."""
+    # OMP keeps the real HOME: its credentials live there and it has no
+    # documented data-dir override; only the project (.omp/prompts) is isolated.
+    # Inside a sandboxed reviewer (no network, read-only home) this test cannot
+    # pass and must be judged from the transcript in
+    # docs/staffing/shims-native-smoke.md (D224-2 review).
     temp_proj = tmp_path / "project"
     cmd_dir = temp_proj / ".omp" / "prompts"
     cmd_dir.mkdir(parents=True)
@@ -224,11 +229,14 @@ def test_native_smoke_opencode(tmp_path):
         encoding="utf-8",
     )
 
-    (temp_home / ".local" / "share").mkdir(parents=True)
-    os.symlink(
-        os.path.expanduser("~/.local/share/opencode"),
-        temp_home / ".local" / "share" / "opencode",
-    )
+    # Isolate OpenCode's data dir: link only the credential file into a
+    # fresh temp data dir so logs/db/snapshots are written under tmp_path,
+    # never into the real ~/.local/share/opencode (review finding, D224-2).
+    data_dir = temp_home / ".local" / "share" / "opencode"
+    data_dir.mkdir(parents=True)
+    real_auth = pathlib.Path.home() / ".local" / "share" / "opencode" / "auth.json"
+    if real_auth.exists():
+        os.symlink(real_auth, data_dir / "auth.json")
     real_cfg = pathlib.Path.home() / ".config" / "opencode"
     for f in ["opencode.jsonc", "tui.json"]:
         if (real_cfg / f).exists():

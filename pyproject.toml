@@ -53,6 +53,9 @@ lee_llm_router = ["templates/*.yaml", "templates/shims/*.tmpl"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "native: live harness expansion smoke; runs only with LEE_LLM_ROUTER_NATIVE_SMOKE=1",
+]
 
 [tool.black]
 line-length = 88

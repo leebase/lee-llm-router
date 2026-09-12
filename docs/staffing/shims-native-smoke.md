@@ -209,3 +209,21 @@ expansion works, and OpenCode passes the message as **one quoted string**. Both 
 now tell the model to strip that quote pair before tokenizing (worded without naming a provider
 binary, which the parity guard forbids inside a shim body), and the smoke asserts the quoted
 form instead of skipping. Five of five harnesses expand `$ARGUMENTS` natively.
+
+## 5. Five-of-five transcript (Chief, 2026-09-12, outside any sandbox)
+
+After isolating OpenCode's data dir (only `auth.json` linked; logs/db under tmp) and
+registering the `native` pytest marker:
+
+```
+$ LEE_LLM_ROUTER_NATIVE_SMOKE=1 python3 -m pytest -q tests/test_shims_native_smoke.py -rs
+.....                                                                    [100%]
+5 passed in 58.95s
+```
+
+The D224-2 reviewer (Sol low inside `codex exec -s workspace-write`) could not reproduce
+this: its sandbox has no network and a read-only home, so Claude/Codex timed out, Pi got
+`fetch failed`, OMP hit a read-only SQLite, OpenCode could not open its log. Those are
+sandbox facts, not shim facts; the two isolation defects it found (OpenCode's whole data dir
+symlinked; unregistered marker) are fixed above. OMP still uses the real HOME for its
+credentials — documented in the test.
