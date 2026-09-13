@@ -6,6 +6,50 @@
 
 ---
 
+## 2026-09-13 - `/supervise` acceptance run: unrouted legacy groups split in evidence report
+
+**Result:** PASS. `render_evidence_report` in
+`src/lee_llm_router/staffing/evidence_report.py` now prints routed groups
+(`route_id` not `None`) first under `Classes (N groups):` (N = routed count
+only), then unrouted legacy groups afterwards under a new
+`Unrouted legacy groups (M groups, no router route recorded):` heading, same
+per-group line format. `build_evidence_report`'s JSON `classes` list, order,
+and fields are byte-identical to before — text rendering only. This was the
+first full acceptance run of the `/supervise` command end-to-end (plan
+`plans/supervise-acceptance-2026-09-13.md`), staffed in `auto` mode.
+
+**Attempt chain (per-host ledger, host A8Max):**
+- `router-run-a04b0583a9bb485da6bd9e5990792fac` — impl, route
+  `pi-gpt-5-6-luna-xhigh-openai-sub` (explicit), pytest oracle passed, but
+  supervisor's own `black --check` on both owned files failed
+  (`oracle_failed`, `next-action: supervisor_judgment`).
+- `router-run-015ffe8e8b9346f1b8a0e9f13f3f06fb` — same-route repair, killed at
+  its 8-minute ceiling (`platform_timeout`, not stall/no-progress); left
+  `evidence_report.py` Black-clean before the kill.
+- `router-run-a01ec8f4f0d5444a81141cf75d5dceb3` — escalated one ladder rung to
+  `pi-deepseek-deepseek-v4-flash-openrouter`; oracle still failed
+  (one line in the test file still not Black-clean).
+- `router-run-351ed96d8f014bfa9b6590db31fea72b` — escalated to
+  `pi-z-ai-glm-5-3-flash-openrouter` with an exact-line instruction;
+  `verified_success: true`; supervisor reran `black --check`, `ruff check`,
+  the two-file pytest oracle, and the full suite (`1820 passed, 6 skipped`)
+  directly and confirmed only the two owned files were modified.
+- `router-run-fec130e5cd9c4e94815d492ac4dc9d54` — independent review, route
+  `pi-gpt-5-6-luna-xhigh-openai-sub`, author route
+  `pi-z-ai-glm-5-3-flash-openrouter` excluded for independence; 0 findings,
+  `REVIEW VERDICT: ACCEPT`.
+
+**Disposition:** Change is verified and accepted but left uncommitted in the
+working tree per the acceptance plan's scope (commit is a separate Lee
+decision). No further repair pending. This run demonstrated the full
+`/supervise` loop: staffing derivation, dispatch, one same-route repair, two
+ladder escalations (one from a hard ceiling timeout, one from a persistent
+oracle failure), and independent review — all through
+`lee-llm-router run`/`staff`/`classify-failure`/`next-action`, never a direct
+provider invocation from the supervisor.
+
+---
+
 ## 2026-09-12 - Staffing class derivation for TOML and INI complete
 
 **Result:** PASS. `.toml` and `.ini` owned paths derive the existing

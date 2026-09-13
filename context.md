@@ -8,9 +8,9 @@
 
 | Attribute | Value |
 |-----------|-------|
-| **Phase** | Staffing class derivation — `.toml` / `.ini` slice complete and independently reviewed |
+| **Phase** | `/supervise` acceptance run complete — evidence-report unrouted-legacy-groups split verified and reviewed, uncommitted |
 | **Mode** | 2 (Implementation with approval) |
-| **Last Updated** | 2026-09-12 |
+| **Last Updated** | 2026-09-13 |
 
 ### Sprint Status
 | Sprint | Status | Completion |
@@ -34,20 +34,37 @@
 ## What's Happening Now
 
 ### Current Work Stream
+`/supervise` (plan `plans/supervise-acceptance-2026-09-13.md`) ran its first
+full acceptance case end-to-end: `render_evidence_report` in
+`src/lee_llm_router/staffing/evidence_report.py` now splits routed groups
+(printed first, under `Classes (N groups):`, N = routed count only) from
+unrouted legacy groups (printed after, under a new
+`Unrouted legacy groups (M groups, no router route recorded):` heading);
+`build_evidence_report`'s JSON `classes` output is untouched. One same-route
+repair (killed by its own ceiling) plus two ladder escalations were needed to
+get both owned files Black-clean; the deterministic oracle (pytest + black +
+ruff) and an independent review (0 findings, ACCEPT) both passed under direct
+supervisor re-verification. Full details and every attempt id are in
+`result-review.md` (2026-09-13 entry). The change is verified but left
+**uncommitted** — committing is a separate Lee decision. Working tree also has
+several unrelated untracked scratch/doc files from other in-flight sessions
+(`docs/staffing/chief-answers-*.md`, `docs/staffing/logs/`, `tmp/`,
+`.agent-orch-scratch/`, `.omp/`) that this run did not touch and left alone.
+
+### Prior Work Stream
 The staffing class-derivation slice for `.toml` and `.ini` is complete. Both
 extensions now resolve to the existing `yaml-config` class, homogeneous config
 sets remain `yaml-config`, and config-plus-code sets resolve to `mixed`. The
 closed eight-value language taxonomy and independent domain-tag behavior remain
 unchanged. Independent review returned **PASS** with zero findings at every
-severity. No repair work remains for this slice; wait for the next authorized
-staffing packet.
+severity. No repair work remains for this slice.
 
 The authoritative preserved checks all passed: test-module compilation; two
 focused pytest validations; Black and Ruff on the implementation and tests; and
 bytecode compilation of both files. These are Agent-Orch records and were not
 rerun during closeout.
 
-### Prior Work Stream
+### Prior Work Stream (older)
 Crew-aware worker resolver lane (D187). Sprint 5 is complete and reviewed: `crews page --out` projects the live crew roster, availability, and optional benchmark evidence into self-contained responsive HTML; missing benchmark and availability inputs degrade safely; present malformed inputs fail closed; and proposals remain advisory and empty until authoritative tier/vendor-independence metadata exists. Luna XHigh via Pi handled three implementation packets and four repair packets. Sonnet 5 High passed on round 4 after three reproduced High findings were repaired; Opus 5 High final gate passed with no findings. 601 tests pass. Publication/navigation/hourly regeneration remain Lee-gated in `docs/crew-resolver/needs-lee.md`. Do not begin Sprint 6 without a new instruction.
 
 Prior stream:
