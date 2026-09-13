@@ -1,7 +1,7 @@
 # Packet S3 — independent review of the structural anti-loop change (S1 + S2)
 
 - Kind: `review`; Class: `review/judge/concurrency/m/python`; Owned paths: none (read-only).
-- Scope: lee-llm-router `f5c63b3` (S2, supervise shim + parity tests + doc) and `b7543c9`
+- Scope: lee-llm-router `f5c63b3` (S2), `b7543c9` (S1) and `8efd6fd` (review dispatch bounds, your finding 5).
   (S1, watchdog stall/no-progress kills, run/CLI plumbing, tests). Authority: Lee 2026-09-13
   ("/supervise should make 'activity ≠ progress' structural"; preserve the 79 s kill of a dead
   transport).
