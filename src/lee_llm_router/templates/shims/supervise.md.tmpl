@@ -194,7 +194,11 @@ schema-v2 attempt record to the per-host ledger.
 
     Then dispatch exactly:
 
-        lee-llm-router run --role review --class <review-class> --packet <review-packet-path> --route <review-route-id> --author-route <worker-route-id> --supervisor-route <supervisor-route-id> --owned-paths <owned-path> [--owned-paths <owned-path> ...] --json
+        lee-llm-router run --role review --class <review-class> --packet <review-packet-path> --route <review-route-id> --author-route <worker-route-id> --supervisor-route <supervisor-route-id> --owned-paths <owned-path> [--owned-paths <owned-path> ...] --timeout <review-bound×60> --stall-minutes 10 --progress-minutes 0 --json
+
+   A review is bounded like any worker: the review packet declares its own runtime bound;
+   `--progress-minutes 0` because a reviewer legitimately writes no owned file, so only the
+   stall bound and the ceiling apply to it.
 
     `--route` is exactly the review route found above — the review
     dispatch never re-selects inside a supervised loop either, and follows

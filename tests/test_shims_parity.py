@@ -236,7 +236,8 @@ def test_supervise_bodies_are_parity_checked_against_d213(tmp_path, monkeypatch)
         "<review-packet-path> --route <review-route-id> "
         "--author-route <worker-route-id> "
         "--supervisor-route <supervisor-route-id> --owned-paths <owned-path> "
-        "[--owned-paths <owned-path> ...] --json"
+        "[--owned-paths <owned-path> ...] --timeout <review-bound×60> "
+        "--stall-minutes 10 --progress-minutes 0 --json"
     )
 
     for target in targets:
