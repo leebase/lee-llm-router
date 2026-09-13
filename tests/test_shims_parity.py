@@ -224,7 +224,8 @@ def test_supervise_bodies_are_parity_checked_against_d213(tmp_path, monkeypatch)
         "lee-llm-router run --role <role> --class <class> --packet <packet-path> "
         "--route <chosen-route-id> --supervisor-route <supervisor-route-id> "
         "--owned-paths <owned-path> [--owned-paths <owned-path> ...] "
-        "--class-derivation <derivation-json-path> --oracle <oracle-cmd> --json",
+        "--class-derivation <derivation-json-path> --oracle <oracle-cmd> "
+        "--timeout <bound×60> --stall-minutes 10 --progress-minutes 20 --json",
         "lee-llm-router classify-failure --record <attempt-record-path> --json",
         "lee-llm-router next-action --input <classify-json-path>",
         "lee-llm-router census --json",
@@ -313,6 +314,19 @@ def test_supervise_bodies_are_parity_checked_against_d213(tmp_path, monkeypatch)
             in compact
         )
         assert "The ledger, not its narrative, proves every attempt." in compact
+        assert "--stall-minutes" in body
+        assert "--progress-minutes" in body
+        assert "never re-dispatches the same packet unchanged" in body
+        assert (
+            '"Activity ≠ progress. A hung worker is terminated by the router within its stall bound; a supervisor that waits past the bound is the loop."'
+            in body
+        )
+        assert (
+            "If a poll shows the log without `done=` past the packet's bound plus 5 minutes, "
+            "run `lee-llm-router census --json` and report the live run instead of waiting further "
+            "(the router's own kill will land; the supervisor never kills processes itself)."
+            in compact
+        )
 
 
 def test_shims_rendered_body_offers_run_never_executes(tmp_path, monkeypatch):

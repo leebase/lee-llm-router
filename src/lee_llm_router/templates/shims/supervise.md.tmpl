@@ -23,7 +23,7 @@ bound arguments:
 ## Dispatch pattern
 
 1. Start `lee-llm-router run …` detached: `setsid nohup bash -c "cd <repo> && lee-llm-router run … > <log> 2>&1; echo done=\$? >> <log>" < /dev/null &`.
-2. Poll in bounded foreground loops of at most 90 s each: `timeout 90 bash -c "until grep -q '^done=' <log>; do sleep 10; done"`; repeat the poll call until it succeeds; never a single call longer than 90 s; never a background tool; never end the turn while the log lacks `done=`.
+2. Poll in bounded foreground loops of at most 90 s each: `timeout 90 bash -c "until grep -q '^done=' <log>; do sleep 10; done"`; repeat the poll call until it succeeds; never a single call longer than 90 s; never a background tool; never end the turn while the log lacks `done=`. If a poll shows the log without `done=` past the packet's bound plus 5 minutes, run `lee-llm-router census --json` and report the live run instead of waiting further (the router's own kill will land; the supervisor never kills processes itself).
 3. Then read the attempt record `run` printed (or `census`/the ledger tail) before deciding.
 
 Same pattern for reviews. Never end your turn while anything you started is running.
@@ -57,8 +57,10 @@ schema-v2 attempt record to the per-host ledger.
    forbidden files or resources; expected artifact and where to write it;
    required evidence; stop/escalation condition. Every packet has exact
    owned paths and a finite oracle: a named test/validator command, or a
-   named reviewer, never "it looks right". A packet that cannot state its
-   owned-file list in one line is too big — split it into multiple packets.
+   named reviewer, never "it looks right". Every packet declares a
+   runtime bound in minutes next to its oracle; a packet without one is not
+   dispatchable. A packet that cannot state its owned-file list in one line
+   is too big — split it into multiple packets.
 
 3. **Confirm a clear mutation surface.** Run exactly:
 
@@ -108,7 +110,7 @@ schema-v2 attempt record to the per-host ledger.
 
 6. **Dispatch the packet with the block's chosen route.** Run exactly:
 
-       lee-llm-router run --role <role> --class <class> --packet <packet-path> --route <chosen-route-id> --supervisor-route <supervisor-route-id> --owned-paths <owned-path> [--owned-paths <owned-path> ...] --class-derivation <derivation-json-path> --oracle <oracle-cmd> --json
+       lee-llm-router run --role <role> --class <class> --packet <packet-path> --route <chosen-route-id> --supervisor-route <supervisor-route-id> --owned-paths <owned-path> [--owned-paths <owned-path> ...] --class-derivation <derivation-json-path> --oracle <oracle-cmd> --timeout <bound×60> --stall-minutes 10 --progress-minutes 20 --json
 
    `--route` is exactly step 5's chosen route — never omitted, and never a
    different route than the block chose. `run` never re-selects inside a
@@ -119,8 +121,12 @@ schema-v2 attempt record to the per-host ledger.
    nothing more. `--class-derivation` carries the step-4 evidence. Pass
    `--oracle` with the packet's finite oracle whenever it is a
    deterministic command; for a judge-oracle packet the named reviewer is
-   step 11. Dispatch parallel packets only when their owned paths are
-   disjoint.
+   step 11. The `run` command always carries `--timeout <bound×60>`,
+   `--stall-minutes 10`, `--progress-minutes 20` (or the packet's own
+   smaller values), never omitted: activity is not progress; a worker that
+   streams without touching its owned files is killed by the router, not by
+   the supervisor noticing. Dispatch parallel packets only when their owned
+   paths are disjoint.
 
    If `run` refuses the dispatch on eligibility (exit 3) because the
    chosen route became ineligible between staffing and dispatch, do not
@@ -148,7 +154,13 @@ schema-v2 attempt record to the per-host ledger.
        lee-llm-router next-action --input <classify-json-path>
 
    `spec_rejected` and `capability_rejected` enter only through an explicit
-   `--judgment` after your review; never infer them from prose.
+   `--judgment` after your review; never infer them from prose. A
+   `platform_timeout` whose provenance note says `stall` or `no_progress`
+   is a *hung or looping worker*, not slowness: the supervisor
+   never re-dispatches the same packet unchanged. Step 9's single repair for
+   this case is one of: halve the packet, or tighten the owned paths/oracle,
+   or pass a smaller `--timeout`; then dispatch once; if it times out
+   again for any kind, escalate up the ladder immediately.
 
 9. **Repair once, then escalate.** Remediation follows `next-action`: one
    same-route capability repair precedes escalation. If that repair fails,
@@ -253,6 +265,7 @@ quoted exactly, not paraphrased, and labeled with its rule.
 - **Rule I — Read-only research parallelises well; its conclusions still need judgment.** "Fan-out is cheap and effective for *finding* things and unreliable for *classifying* them."
 - **Rule J — Review until convergence; "more findings" is not a stopping condition.** "The supervisor stops as genuinely blocked only if the same release blocker survives two consecutive evidence-backed remediation attempts without material progress."
 - **Rule K — A failed cheap-worker execution is not a failed architecture.** "Worker capability, implementation quality, and architecture validity are three separate hypotheses."
+- "Activity ≠ progress. A hung worker is terminated by the router within its stall bound; a supervisor that waits past the bound is the loop."
 
 This command supervises through the router only. It never dispatches a
 provider directly, never reports usage the ledger did not record, and ends
