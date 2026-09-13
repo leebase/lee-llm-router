@@ -875,9 +875,20 @@ def render_evidence_report(report: dict[str, Any]) -> str:
     if not classes:
         lines.append("(no attempts recorded for this month)")
     else:
-        lines.append(f"Classes ({len(classes)} groups):")
+        routed_classes = [
+            group for group in classes if group.get("route_id") is not None
+        ]
+        unrouted_classes = [group for group in classes if group.get("route_id") is None]
+        lines.append(f"Classes ({len(routed_classes)} groups):")
         lines.append("")
-        for group in classes:
+        for group_index, group in enumerate(routed_classes + unrouted_classes):
+            if group_index == len(routed_classes) and unrouted_classes:
+                lines.append(
+                    "Unrouted legacy groups "
+                    f"({len(unrouted_classes)} groups, no router route recorded):"
+                )
+                lines.append("")
+
             route = group["route_id"] or "(none)"
             ck = group["class_key"] or "(none)"
             lines.append(f"  route: {route}")

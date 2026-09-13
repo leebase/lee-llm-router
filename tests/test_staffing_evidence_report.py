@@ -812,6 +812,102 @@ def test_render_evidence_report_text() -> None:
     assert "openai-sub" in text
 
 
+def _render_group_for_test(
+    route_id: str | None, class_key: str, attempt_id: str
+) -> dict:
+    """Build the minimum complete group accepted by the text renderer."""
+    return {
+        "route_id": route_id,
+        "class_key": class_key,
+        "source_ledger": "test-ledger.jsonl",
+        "source_attempt_ids": [attempt_id],
+        "attempts": 1,
+        "verified_pass": 1,
+        "pass_rate": 1.0,
+        "comparison_eligible": False,
+        "cost_per_verified_success": {"usd_list": 0.1, "usd_marginal": 0.05},
+        "tokens_per_verified_success": {},
+        "escalations": 0,
+        "escalation_details": [],
+        "reviewer_fallbacks": 0,
+    }
+
+
+def test_render_evidence_report_separates_unrouted_legacy_groups() -> None:
+    """Routed groups render first while preserving each group's line format."""
+    legacy = _render_group_for_test(None, "legacy-class", "legacy-1")
+    routed = _render_group_for_test("route-a", "routed-class", "routed-1")
+    text = render_evidence_report(
+        {"report_for": "2026-09", "classes": [legacy, routed], "route_changes": []}
+    )
+
+    classes_heading = text.index("Classes (1 groups):")
+    routed_group = text.index("  route: route-a")
+    legacy_heading = text.index(
+        "Unrouted legacy groups (1 groups, no router route recorded):"
+    )
+    legacy_group = text.index("  route: (none)")
+    assert classes_heading < routed_group < legacy_heading < legacy_group
+    assert (
+        "  class: routed-class\n"
+        "  source: 1 attempts from test-ledger.jsonl (routed-1)" in text
+    )
+    assert (
+        "  class: legacy-class\n"
+        "  source: 1 attempts from test-ledger.jsonl (legacy-1)" in text
+    )
+
+
+def test_render_evidence_report_omits_empty_unrouted_legacy_section() -> None:
+    """Reports without legacy groups do not print the legacy heading."""
+    routed = _render_group_for_test("route-a", "routed-class", "routed-1")
+    text = render_evidence_report(
+        {"report_for": "2026-09", "classes": [routed], "route_changes": []}
+    )
+
+    assert "Classes (1 groups):" in text
+    assert "Unrouted legacy groups" not in text
+
+
+def test_build_evidence_report_classes_json_is_unchanged_for_legacy_groups(
+    monkeypatch,
+) -> None:
+    """The dict path keeps its existing order and group fields."""
+    routed = _record(
+        route_id="route-json", class_key="routed-json", attempt_id="routed-json-1"
+    )
+    legacy = _record(route_id=None, class_key="legacy-json", attempt_id="legacy-json-1")
+    monkeypatch.setattr(
+        "lee_llm_router.staffing.evidence_report.read_attempts",
+        lambda _path: [routed, legacy],
+    )
+
+    report = build_evidence_report("2026-09", catalog_dir=str(REPO_CONFIG_DIR))
+    classes = report["classes"]
+    assert [(group["route_id"], group["class_key"]) for group in classes] == [
+        (None, "legacy-json"),
+        ("route-json", "routed-json"),
+    ]
+    expected_fields = [
+        "route_id",
+        "class_key",
+        "source_ledger",
+        "source_attempt_ids",
+        "attempts",
+        "verified_pass",
+        "pass_rate",
+        "comparison_eligible",
+        "cost_per_verified_success",
+        "tokens_per_verified_success",
+        "escalations",
+        "escalation_details",
+        "reviewer_fallbacks",
+    ]
+    assert [list(group) for group in classes] == [expected_fields, expected_fields]
+    assert classes[0]["source_attempt_ids"] == ["legacy-json-1"]
+    assert classes[1]["source_attempt_ids"] == ["routed-json-1"]
+
+
 # ---------------------------------------------------------------------------
 # Route change recommendations
 # ---------------------------------------------------------------------------
@@ -1033,7 +1129,8 @@ def test_render_evidence_report_recommended_changes_both_states() -> None:
 
 def test_reviewer_fallbacks_no_selection_reason_is_distinct() -> None:
     """A review record without a selection object is undecidable for its own
-    reason, not the independence-without-order reason (Chief, P5-1c review)."""
+    reason, not the independence-without-order reason (Chief, P5-1c review).
+    """
     from lee_llm_router.staffing.evidence_report import (
         _REVIEWER_FALLBACK_NO_SELECTION_REASON,
         _REVIEWER_FALLBACK_UNAVAILABLE_REASON,
