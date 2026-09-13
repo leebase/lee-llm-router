@@ -4274,6 +4274,92 @@ def test_run_deregisters_on_ceiling_timeout(
     assert result.live == ()
 
 
+@pytest.mark.parametrize(
+    "extra_args,chunks,timeout,expected_note",
+    [
+        (["--stall-minutes", "0.02"], (), 600, "stall"),
+        (["--progress-minutes", "0.03"], [b"chunk\n"] * 50, 600, "no_progress"),
+        (["--stall-action", "warn", "--stall-minutes", "0.02"], (), 5, "ceiling"),
+    ],
+)
+def test_run_deregisters_on_stall_or_no_progress_kill(
+    monkeypatch,
+    capsys,
+    catalog_dir,
+    snapshot,
+    packet,
+    scratch_state,
+    tmp_path,
+    extra_args,
+    chunks,
+    timeout,
+    expected_note,
+):
+    _wire_fake_identity(monkeypatch)
+    owned_file = tmp_path / "target.py"
+    owned_file.write_text("# initial\n")
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        timeout=timeout,
+        owned_paths=[str(owned_file)],
+        extra=extra_args,
+        launcher=LaunchRecorder(chunks=chunks, never_exits=True),
+        clock=AdvancingClock(step=0.5),
+    )
+    assert code == 124
+    payload = _assert_output_matches_single_append(captured, scratch_state)
+    assert payload["failure_class"] == "platform_timeout"
+    notes = payload["provenance"]["notes"]
+    assert any(f"dispatch kill: {expected_note}" in n for n in notes)
+    assert census_registry(registry_dir=scratch_state["registry"]).live == ()
+
+
+def test_run_survives_progress_clock_when_touching_owned_files(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state, tmp_path
+):
+    _wire_fake_identity(monkeypatch)
+    owned_file = tmp_path / "target.py"
+
+    class ProgressLauncher(LaunchRecorder):
+        ticks = 0
+
+        def __call__(self, argv: list[str], **kwargs: Any) -> FakeProcess:
+            proc = super().__call__(argv, **kwargs)
+
+            def poll() -> int | None:
+                self.ticks += 1
+                owned_file.write_text(f"# tick {self.ticks}\n")
+                return 0 if self.ticks >= 4 else None
+
+            proc.poll = poll  # type: ignore[assignment]
+            return proc
+
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        timeout=600,
+        owned_paths=[str(owned_file)],
+        extra=["--progress-minutes", "0.03"],
+        launcher=ProgressLauncher(chunks=[b"out\n"] * 3),
+        clock=AdvancingClock(step=0.5),
+    )
+    assert code == 0
+    payload = _assert_output_matches_single_append(captured, scratch_state)
+    assert payload["failure_class"] is None
+    notes = payload["provenance"]["notes"]
+    assert not any("dispatch kill:" in n for n in notes)
+    assert census_registry(registry_dir=scratch_state["registry"]).live == ()
+
+
 def test_run_deregisters_on_popener_exception(
     monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
 ):

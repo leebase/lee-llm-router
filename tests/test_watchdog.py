@@ -7,6 +7,8 @@ No test sleeps for real, so the whole file must run in well under a second.
 
 from __future__ import annotations
 
+import pytest
+
 from lee_llm_router.watchdog import (
     ActivitySignature,
     StallReport,
@@ -95,6 +97,16 @@ def test_scan_watch_dirs_two_files_sorted_and_detects_change(tmp_path):
     second = scan_watch_dirs([tmp_path])
     assert second != first
     assert len(second) == 2
+
+
+def test_scan_watch_dirs_single_file_detects_change(tmp_path):
+    target = tmp_path / "single.txt"
+    target.write_text("v1")
+    first = scan_watch_dirs([target])
+    target.write_text("v2 - updated content")
+    second = scan_watch_dirs([target])
+    assert len(first) == len(second) == 1 and first != second
+    assert first[0][0] == "single.txt"
 
 
 # ---------------------------------------------------------------------------
@@ -285,3 +297,131 @@ def test_run_supervised_stalls_then_recovers_and_exits_cleanly():
     assert result.exit_code == 0
     assert sunk == [b"data"]
     assert result.output_bytes_total == len(b"data")
+
+
+# ---------------------------------------------------------------------------
+# Packet S1: stall_action, progress_seconds, kill_reason
+# ---------------------------------------------------------------------------
+
+
+def test_stall_watchdog_invalid_stall_action():
+    with pytest.raises(ValueError, match="stall_action must be 'warn' or 'kill'"):
+        StallWatchdog(
+            stall_seconds=5.0,
+            max_seconds=10.0,
+            clock=FakeClock(0.0),
+            stall_action="invalid",
+        )
+
+
+def test_stall_action_kill_kills_and_fires_on_stall():
+    reports: list[StallReport] = []
+    clock = FakeClock(0.0)
+    wd = StallWatchdog(
+        stall_seconds=5.0,
+        max_seconds=100.0,
+        clock=clock,
+        stall_action="kill",
+        on_stall=reports.append,
+    )
+    assert wd.observe(output_bytes_total=0) is Verdict.CONTINUE
+    clock.advance(5.0)
+    assert wd.observe(output_bytes_total=0) is Verdict.KILLED
+    assert wd.kill_reason == "stall" and wd.stalled and len(reports) == 1
+
+
+def test_output_only_activity_with_stale_watch_dir_kills_at_progress_seconds(tmp_path):
+    (tmp_path / "seed.txt").write_text("initial")
+    clock = FakeClock(0.0)
+    wd = StallWatchdog(
+        stall_seconds=100.0,
+        max_seconds=1000.0,
+        clock=clock,
+        watch_dirs=[tmp_path],
+        progress_seconds=5.0,
+    )
+    assert wd.observe(output_bytes_total=0) is Verdict.CONTINUE
+    clock.advance(5.0)
+    assert wd.observe(output_bytes_total=60) is Verdict.KILLED
+    assert wd.kill_reason == "no_progress" and not wd.stalled
+
+
+def test_watch_dir_touch_resets_progress_clock(tmp_path):
+    target = tmp_path / "work.txt"
+    target.write_text("first")
+    clock = FakeClock(0.0)
+    wd = StallWatchdog(
+        stall_seconds=100.0,
+        max_seconds=1000.0,
+        clock=clock,
+        watch_dirs=[tmp_path],
+        progress_seconds=5.0,
+    )
+    assert wd.observe(output_bytes_total=0) is Verdict.CONTINUE
+    clock.advance(4.0)
+    target.write_text("modified")
+    assert wd.observe(output_bytes_total=10) is Verdict.CONTINUE
+    clock.advance(5.0)
+    assert wd.observe(output_bytes_total=20) is Verdict.KILLED
+    assert wd.kill_reason == "no_progress"
+
+
+def test_stall_action_warn_never_kills_on_stall():
+    clock = FakeClock(0.0)
+    wd = StallWatchdog(
+        stall_seconds=5.0, max_seconds=100.0, clock=clock, stall_action="warn"
+    )
+    assert wd.observe(output_bytes_total=0) is Verdict.CONTINUE
+    clock.advance(5.0)
+    assert wd.observe(output_bytes_total=0) is Verdict.STALLED
+    assert wd.kill_reason is None
+
+
+def test_progress_clock_inactive_without_watch_dirs():
+    clock = FakeClock(0.0)
+    wd = StallWatchdog(
+        stall_seconds=100.0,
+        max_seconds=1000.0,
+        clock=clock,
+        watch_dirs=[],
+        progress_seconds=5.0,
+    )
+    assert wd.observe(output_bytes_total=0) is Verdict.CONTINUE
+    clock.advance(20.0)
+    assert wd.observe(output_bytes_total=10) is Verdict.CONTINUE
+    assert wd.kill_reason is None
+
+
+@pytest.mark.parametrize(
+    "wd_kwargs,expected_reason,chunk",
+    [
+        ({"stall_seconds": 3.0, "stall_action": "kill"}, "stall", b""),
+        ({"stall_seconds": 100.0, "progress_seconds": 2.0}, "no_progress", b"data\n"),
+        ({"stall_seconds": 100.0, "max_seconds": 2.0}, "ceiling", b"data\n"),
+    ],
+)
+def test_run_supervised_kill_reasons(tmp_path, wd_kwargs, expected_reason, chunk):
+    (tmp_path / "a.txt").write_text("1")
+    clock = FakeClock(0.0)
+    kwargs = {"max_seconds": 1000.0, "clock": clock, "watch_dirs": [tmp_path]}
+    kwargs.update(wd_kwargs)
+    wd = StallWatchdog(**kwargs)
+    popen = FakePopen(exit_code=None, wait_result=-9)
+    res = run_supervised(
+        popen, wd, poll_seconds=1.0, sleep=clock.advance, read_chunk=lambda: chunk
+    )
+    assert res.killed is True and res.kill_reason == expected_reason
+    assert res.exit_code == -9 and popen.killed is True
+
+
+def test_run_supervised_clean_exit_kill_reason_none():
+    clock = FakeClock(0.0)
+    wd = StallWatchdog(stall_seconds=100.0, max_seconds=1000.0, clock=clock)
+    res = run_supervised(
+        FakePopen(exit_code=0),
+        wd,
+        poll_seconds=1.0,
+        sleep=clock.advance,
+        read_chunk=lambda: b"",
+    )
+    assert res.killed is False and res.kill_reason is None and res.exit_code == 0

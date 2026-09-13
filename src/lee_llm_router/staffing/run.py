@@ -462,13 +462,15 @@ class DispatchOutcome:
     """One completed subprocess dispatch of the selected route.
 
     ``argv`` is the final child argv (prompt substituted, no placeholder
-    left); ``exit_code`` is the child's exit code, or ``124`` on a ceiling
-    timeout (``timed_out`` True); ``stdout``/``stderr`` are the captured
-    streams decoded with ``errors="replace"``; ``usage`` is the schema-valid
-    attempt-record v2 usage mapping from the accepted harness capture
-    function; ``usage_models`` is the sorted distinct Claude ``modelUsage``
-    model ids when the receipt is a Claude result event with ``modelUsage``
-    evidence (billing-relevance evidence for cost; ``None`` otherwise).
+    left); ``exit_code`` is the child's exit code, or ``124`` on a ceiling,
+    stall, or no-progress timeout (``timed_out`` True); ``stdout``/``stderr``
+    are the captured streams decoded with ``errors="replace"``; ``usage`` is
+    the schema-valid attempt-record v2 usage mapping from the accepted harness
+    capture function; ``usage_models`` is the sorted distinct Claude
+    ``modelUsage`` model ids when the receipt is a Claude result event with
+    ``modelUsage`` evidence (billing-relevance evidence for cost; ``None``
+    otherwise); ``kill_reason`` is ``"ceiling"``, ``"stall"``, or
+    ``"no_progress"`` when killed, or ``None`` on normal completion.
     """
 
     argv: tuple[str, ...]
@@ -479,6 +481,10 @@ class DispatchOutcome:
     timed_out: bool
     usage: dict[str, Any]
     usage_models: tuple[str, ...] | None = None
+    kill_reason: str | None = None
+    stall_minutes: float | None = None
+    progress_minutes: float | None = None
+    max_minutes: float | None = None
 
 
 @dataclass(frozen=True)
@@ -1462,6 +1468,28 @@ def build_attempt_record(
         f"oracle verdict: {verdict}; command={'present' if oracle_cmd else 'none'}",
         f"cost: {cost_note}; dated terms at {at_date.isoformat()}",
     ]
+    if dispatch.timed_out:
+        kr = dispatch.kill_reason or "ceiling"
+        n = _format_minutes(dispatch.duration_seconds)
+        s = _format_minutes(
+            dispatch.stall_minutes
+            if dispatch.stall_minutes is not None
+            else DEFAULT_STALL_MINUTES
+        )
+        p = (
+            _format_minutes(dispatch.progress_minutes)
+            if dispatch.progress_minutes is not None
+            else "none"
+        )
+        c = _format_minutes(
+            dispatch.max_minutes
+            if dispatch.max_minutes is not None
+            else DEFAULT_MAX_MINUTES
+        )
+        notes.append(
+            f"dispatch kill: {kr} after {n} s "
+            f"(stall {s} min, progress {p} min, ceiling {c} min)"
+        )
     if oracle is not None:
         notes.append(
             "oracle evidence: "
@@ -2195,12 +2223,25 @@ class _ProcessGroupProxy:
                 return
 
 
+class SupervisedDispatchExitCode(int):
+    """An int exit code that preserves the watchdog kill reason when killed."""
+
+    kill_reason: str | None
+
+    def __new__(cls, value: int, kill_reason: str | None = None):
+        obj = super().__new__(cls, value)
+        obj.kill_reason = kill_reason
+        return obj
+
+
 def run_supervised_dispatch(
     resolution: Resolution,
     prompt: str,
     *,
     stall_minutes: float = DEFAULT_STALL_MINUTES,
     max_minutes: float = DEFAULT_MAX_MINUTES,
+    progress_minutes: float | None = 20.0,
+    stall_action: str = "kill",
     watch_dirs: Sequence[Path | str] = (),
     popen: Callable[..., Any] = subprocess.Popen,
     clock: Callable[[], float] = time.monotonic,
@@ -2225,6 +2266,8 @@ def run_supervised_dispatch(
         prompt: Prompt string to deliver.
         stall_minutes: Minutes of joint silence before flagging a stall.
         max_minutes: Wall-clock ceiling in minutes before killing the child.
+        progress_minutes: Minutes without watch-dir change before killing.
+        stall_action: Action on stall ("kill" or "warn").
         watch_dirs: Directories to monitor for file activity.
         popen: Process spawner callable (injected for tests).
         clock: Monotonic clock callable (injected for tests).
@@ -2382,6 +2425,11 @@ def run_supervised_dispatch(
     watch_paths = [Path(p) for p in watch_dirs]
     stall_seconds = float(stall_minutes) * 60.0
     max_seconds = float(max_minutes) * 60.0
+    progress_seconds = (
+        float(progress_minutes) * 60.0
+        if progress_minutes is not None and progress_minutes > 0
+        else None
+    )
 
     watchdog = StallWatchdog(
         stall_seconds=stall_seconds,
@@ -2389,6 +2437,8 @@ def run_supervised_dispatch(
         clock=clock,
         watch_dirs=watch_paths,
         on_stall=on_stall,
+        stall_action=stall_action,
+        progress_seconds=progress_seconds,
     )
 
     try:
@@ -2409,14 +2459,20 @@ def run_supervised_dispatch(
             stdin_thread.join(timeout=1.0)
 
     if result.killed:
-        max_str = _format_minutes(max_minutes)
-        target_err.write(f"dispatch: killed after {max_str} min ceiling\n")
+        p_str = _format_minutes(progress_minutes) if progress_minutes else "none"
+        msg = {
+            "stall": f"{_format_minutes(stall_minutes)} min stall",
+            "no_progress": f"{p_str} min no progress",
+        }.get(result.kill_reason or "", f"{_format_minutes(max_minutes)} min ceiling")
+        target_err.write(f"dispatch: killed after {msg}\n")
         target_err.flush()
-        return 124
+        return SupervisedDispatchExitCode(
+            _TIMEOUT_EXIT_CODE, kill_reason=result.kill_reason
+        )
 
     if result.exit_code is not None:
-        return result.exit_code
-    return 0
+        return SupervisedDispatchExitCode(result.exit_code, kill_reason=None)
+    return SupervisedDispatchExitCode(0, kill_reason=None)
 
 
 def dispatch_route(
@@ -2426,6 +2482,9 @@ def dispatch_route(
     workdir: str | Path | None = None,
     timeout_seconds: float | None = DEFAULT_RUN_TIMEOUT_SECONDS,
     stall_minutes: float = DEFAULT_STALL_MINUTES,
+    progress_minutes: float | None = 20.0,
+    stall_action: str = "kill",
+    watch_dirs: Sequence[Path | str] = (),
     popen: Callable[..., Any] | None = None,
     clock: Callable[[], float] | None = None,
     sleep: Callable[[float], None] | None = None,
@@ -2447,8 +2506,10 @@ def dispatch_route(
         workdir: Optional child working directory; must exist.
         timeout_seconds: Wall-clock ceiling in seconds; ``None`` uses the
             boundary default (:data:`DEFAULT_MAX_MINUTES` minutes).
-        stall_minutes: Silence minutes before a stall is flagged (a stall
-            never kills; only the ceiling does).
+        stall_minutes: Silence minutes before a stall is flagged.
+        progress_minutes: Minutes without watch-dir change before kill.
+        stall_action: Action on stall ("kill" or "warn").
+        watch_dirs: Directories to monitor for file activity.
         popen: Injected process spawner (tests).
         clock: Injected monotonic clock (tests).
         sleep: Injected sleep callable (tests).
@@ -2516,6 +2577,9 @@ def dispatch_route(
         prompt,
         stall_minutes=stall_minutes,
         max_minutes=max_minutes,
+        progress_minutes=progress_minutes,
+        stall_action=stall_action,
+        watch_dirs=watch_dirs,
         popen=popen_fn,
         clock=clock_fn,
         sleep=sleep_fn,
@@ -2525,6 +2589,10 @@ def dispatch_route(
         stderr=stderr,
     )
     duration = clock_fn() - started
+
+    kill_reason = getattr(exit_code, "kill_reason", None)
+    if kill_reason is None and exit_code == _TIMEOUT_EXIT_CODE:
+        kill_reason = "ceiling"
 
     stdout_text = bytes(stdout_buf).decode("utf-8", errors="replace")
     # Usage parsing and Claude aggregate-model extraction are one capture
@@ -2543,13 +2611,17 @@ def dispatch_route(
         usage_models = None
     return DispatchOutcome(
         argv=tuple(argv),
-        exit_code=exit_code,
+        exit_code=int(exit_code),
         stdout=stdout_text,
         stderr=bytes(stderr_buf).decode("utf-8", errors="replace"),
         duration_seconds=duration,
         timed_out=(exit_code == _TIMEOUT_EXIT_CODE),
         usage=usage,
         usage_models=usage_models,
+        kill_reason=kill_reason,
+        stall_minutes=stall_minutes,
+        progress_minutes=progress_minutes,
+        max_minutes=max_minutes,
     )
 
 

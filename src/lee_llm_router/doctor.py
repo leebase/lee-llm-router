@@ -1803,11 +1803,16 @@ def _run_run(args: argparse.Namespace) -> int:
     def _execute_registered() -> int:
         """Dispatch, record, and print — every exit deregisters the run."""
         try:
+            raw_prog = getattr(args, "progress_minutes", 20.0)
             dispatch = dispatch_route(
                 outcome.route,
                 prompt,
                 workdir=args.workdir,
                 timeout_seconds=args.timeout,
+                stall_minutes=getattr(args, "stall_minutes", 10.0),
+                progress_minutes=raw_prog if raw_prog and raw_prog > 0 else None,
+                stall_action=getattr(args, "stall_action", "kill"),
+                watch_dirs=owned_paths,
             )
         except LLMRouterError as exc:
             return fail(f"dispatch failed: {exc}", as_json=as_json)
@@ -2995,6 +3000,32 @@ def main(argv: list[str] | None = None):
             "Wall-clock ceiling in seconds (default: the dispatch "
             "boundary's standard ceiling)"
         ),
+    )
+    run_parser.add_argument(
+        "--stall-minutes",
+        type=float,
+        default=10.0,
+        metavar="N",
+        help=(
+            "Minutes of joint silence (no output and no file changes) "
+            "before stall action (default: 10)"
+        ),
+    )
+    run_parser.add_argument(
+        "--progress-minutes",
+        type=float,
+        default=20.0,
+        metavar="N",
+        help=(
+            "Minutes without owned-path file activity before kill "
+            "regardless of output; 0 disables (default: 20)"
+        ),
+    )
+    run_parser.add_argument(
+        "--stall-action",
+        choices=["kill", "warn"],
+        default="kill",
+        help="Action on worker stall: kill child process or warn only (default: kill)",
     )
     run_parser.add_argument(
         "--at",

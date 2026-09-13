@@ -8,10 +8,15 @@ signal changing counts as activity — a tool that writes files quietly but
 emits no output is not stalled, and a tool that streams output while never
 touching its watch directories is not stalled either.
 
-A stall is a slow, correctable signal (it fires ``on_stall`` once so the
-caller can, say, notify Lee) and never kills the process on its own. Only the
-absolute wall-clock ceiling (``max_seconds``) kills, and the ceiling always
-wins over a stall verdict.
+A stall is flagged when joint silence (no output and no file changes) persists
+for ``stall_seconds``. With ``stall_action="kill"``, a stall kills the process
+on its first stalled tick (after firing ``on_stall`` once); with
+``stall_action="warn"``, a stall warns but never kills on its own. When
+``progress_seconds`` is configured, failure to modify files in watch directories
+for that duration kills the process for lack of progress, regardless of output
+activity. With no watch directories configured, the progress clock is inactive
+(nothing to measure). The absolute wall-clock ceiling (``max_seconds``) always
+kills, and the ceiling always wins over stall and no-progress verdicts.
 
 Nothing here touches a real subprocess or the wall clock: :class:`StallWatchdog`
 takes an injected ``clock`` callable and :func:`run_supervised` takes an
@@ -80,6 +85,7 @@ class SupervisedResult:
     stalled: bool
     elapsed_seconds: float
     output_bytes_total: int
+    kill_reason: str | None = None
 
 
 def scan_watch_dirs(paths: Sequence[Path]) -> tuple:
@@ -97,6 +103,13 @@ def scan_watch_dirs(paths: Sequence[Path]) -> tuple:
     for base in paths:
         try:
             base_path = Path(base)
+            if base_path.is_file():
+                try:
+                    stat = base_path.stat()
+                    entries.append((base_path.name, stat.st_size, stat.st_mtime_ns))
+                except OSError:
+                    pass
+                continue
             if not base_path.is_dir():
                 continue
             for root, _dirs, files in os.walk(base_path):
@@ -126,19 +139,34 @@ class StallWatchdog:
         clock: Callable[[], float],
         watch_dirs: Sequence[Path] = (),
         on_stall: Callable[[StallReport], None] | None = None,
+        stall_action: str = "warn",
+        progress_seconds: float | None = None,
     ) -> None:
+        if stall_action not in ("warn", "kill"):
+            raise ValueError(
+                f"stall_action must be 'warn' or 'kill', got {stall_action!r}"
+            )
         self._stall_seconds = stall_seconds
         self._max_seconds = max_seconds
         self._clock = clock
         self._watch_dirs = tuple(watch_dirs)
         self._on_stall = on_stall
+        self._stall_action = stall_action
+        self._progress_seconds = (
+            float(progress_seconds)
+            if progress_seconds is not None and progress_seconds > 0
+            else None
+        )
 
         now = self._clock()
         self._started_at = now
         self._last_activity_at = now
+        self._last_progress_at = now
+        self._last_watch_signature: tuple | None = None
         self._last_signature: ActivitySignature | None = None
         self._stalled = False
         self._stall_reported = False
+        self._kill_reason: str | None = None
 
     @property
     def started_at(self) -> float:
@@ -147,6 +175,10 @@ class StallWatchdog:
     @property
     def last_activity_at(self) -> float:
         return self._last_activity_at
+
+    @property
+    def kill_reason(self) -> str | None:
+        return self._kill_reason
 
     @property
     def stalled(self) -> bool:
@@ -177,7 +209,16 @@ class StallWatchdog:
             if silent_for >= self._stall_seconds:
                 self._stalled = True
 
+        watch_changed = (
+            self._last_watch_signature is None
+            or watch_signature != self._last_watch_signature
+        )
+        self._last_watch_signature = watch_signature
+        if watch_changed:
+            self._last_progress_at = now
+
         if now - self._started_at >= self._max_seconds:
+            self._kill_reason = "ceiling"
             return Verdict.KILLED
 
         if self._stalled:
@@ -192,9 +233,19 @@ class StallWatchdog:
                             watch_dirs=self._watch_dirs,
                         )
                     )
-            return Verdict.STALLED
+            if self._stall_action == "kill":
+                self._kill_reason = "stall"
+                return Verdict.KILLED
 
-        return Verdict.CONTINUE
+        if (
+            self._progress_seconds is not None
+            and self._watch_dirs
+            and (now - self._last_progress_at >= self._progress_seconds)
+        ):
+            self._kill_reason = "no_progress"
+            return Verdict.KILLED
+
+        return Verdict.STALLED if self._stalled else Verdict.CONTINUE
 
 
 def run_supervised(
@@ -206,17 +257,19 @@ def run_supervised(
     read_chunk: Callable[[], bytes | None],
     sink: Callable[[bytes], None] = lambda _chunk: None,
 ) -> SupervisedResult:
-    """Drive one child process to completion or the watchdog's ceiling.
+    """Drive one child process to completion or a watchdog kill.
 
     Polls ``popen_like`` on a ``poll_seconds`` cadence (via the injected
     ``sleep``), draining whatever ``read_chunk`` returns on each pass into
     ``sink`` and into the cumulative byte count fed to ``watchdog.observe``.
-    On :data:`Verdict.KILLED` the process is killed and waited on; a stall
+    On :data:`Verdict.KILLED` (ceiling, stall-kill, or no-progress) the
+    process is killed and waited on; under ``stall_action="warn"`` a stall
     never kills. Returns once the process has exited or been killed.
     """
     output_bytes_total = 0
     ever_stalled = False
     killed = False
+    kill_reason: str | None = None
     exit_code: int | None = None
 
     while True:
@@ -231,6 +284,7 @@ def run_supervised(
 
         if verdict is Verdict.KILLED:
             killed = True
+            kill_reason = watchdog.kill_reason
             popen_like.kill()
             exit_code = popen_like.wait(poll_seconds)
             break
@@ -254,4 +308,5 @@ def run_supervised(
         stalled=ever_stalled,
         elapsed_seconds=elapsed_seconds,
         output_bytes_total=output_bytes_total,
+        kill_reason=kill_reason,
     )
