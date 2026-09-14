@@ -18,3 +18,11 @@ Observation (2026-09-12): Pi transport hang took 30 min before, 79 s with the ce
 
 ## One-Repair Rule
 A `stall` or `no_progress` timeout is a hung worker, not slowness: never re-dispatch unchanged. Repair once (halve packet, tighten owned paths/oracle, or lower `--timeout`); if it times out again, escalate immediately.
+
+## Router-enforced (2026-09-14, S5b)
+`lee-llm-router run` refuses an unchanged re-dispatch: same packet sha on the same route whose
+latest attempt was killed for `stall` or `no_progress` exits 3 (`kind: unchanged_redispatch`)
+before registration or launch. Ways through: change the packet, pass a strictly smaller
+`--timeout` than the prior ceiling, or `--parent <attempt> --escalation-reason …`. A `ceiling`
+kill or any other failure class does not trigger it. Live proof 2026-09-14: the stall-killed
+hung-worker packet re-dispatched identically → refused naming attempt `router-run-7f2a68e5…`.
