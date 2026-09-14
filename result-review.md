@@ -6,6 +6,95 @@
 
 ---
 
+## 2026-09-14 - Staffing multi-account plan M2: headroom per instance
+
+**Result:** PASS (both halves). Milestone M2 of the chief-of-staff
+`docs/staffing-multi-account-plan.md` ("channel instances — many
+subscriptions per provider, universally"), supervised via `/supervise` in
+`auto` mode. M1 (catalog + schema) was already committed before this session;
+M2 adds the data layer that will let M3 select an instance and M5 report per
+account.
+
+**M2a — `chief-of-staff/scripts/ai-subs.sh` (cross-repo dispatch):** the
+TOML/snapshot rendering path now supports one or more
+`[opencode.instances.<id>]` tables; every `AFTER_REPORT_JSON` `subscriptions`
+entry carries a new `"instance"` field (a real id, the literal
+`"opencode-go"` implicit default for the old flat single-table shape, or
+`null` for every non-OpenCode-Go provider and for the still-unchanged
+live-fetch path). Live per-instance fetching against the real second OpenCode
+Go account was deliberately scoped out — the plan states M2 "touches no
+account," so only the already-existing TOML/snapshot test path became
+instance-aware; live discovery is deferred to M4, which is separately gated
+on Lee's confirmation of OpenCode's terms. New deterministic oracle
+`scripts/ai_subs_instance_check.sh` (fixtures only, no network, no real
+credentials).
+
+**M2b — `lee-llm-router` availability reader:** `Bucket`/`ChannelHeadroom`
+gained an additive `instance: str | None = None` field; a new
+`_instances_from_buckets()` groups buckets by `(channel, effective_instance)`
+(implicit default = the channel id, matching M1's `catalog.py`
+`effective_instances()` convention) and feeds
+`AvailabilitySnapshot.instance_headroom(channel, instance)` and
+`to_dict()["instances"]`. The existing channel-wide `headroom(channel)`
+aggregate — read by every current caller (crews.py, resolver.py, etc.) — is
+provably unchanged: proven byte-identical against the `LIVE_SAMPLE` fixture.
+`scripts/refresh_availability.sh` needed no code change (it already passes
+unknown per-entry JSON keys through unmodified); a new regression test locks
+that contract.
+
+**Attempt chain (per-host ledger, host A8Max):**
+- M2a impl `router-run-6765290c76124befb46784befabc5c85` (agy
+  gemini-3.8-flash-high) — oracle passed on the first dispatch; supervisor
+  re-ran `scripts/ai_subs_instance_check.sh` directly, confirmed exit 0, and
+  read the full diff (only the two owned files, live-fetch branch
+  byte-for-byte unchanged).
+- M2a review `router-run-3a2e81fb4d96482b91fb177b6d197fcb` (pi
+  deepseek-v4-flash, independent of the agy author): **ACCEPT**.
+- M2b impl (original, undivided packet) `router-run-5882ee6d56734a69bdae11e1eea47885`
+  — stalled (10 min of no output/file activity) on agy
+  gemini-3.8-flash-high, killed by the router (`platform_timeout`,
+  provenance `dispatch kill: stall`).
+- Repair: halved into M2b1 (`availability.py` + `test_availability.py`) and
+  M2b2 (`refresh_availability.sh` regression test), both re-dispatched on the
+  same route per doctrine's one-repair rule. Both then hit their ceiling
+  instead of stalling — M2b1 `router-run-d5c1859b26544d9a8e8954ed0b435c4a`
+  (20 min ceiling), M2b2 `router-run-4bc8ce9462194f768649b906d618c904` (15
+  min ceiling) — so both were escalated one ladder rung immediately (a
+  ceiling timeout on an already-repaired attempt escalates rather than
+  repairing again).
+- M2b1 escalation `router-run-ff3ca2dcd4094c71a366d07d28c13efa` and M2b2
+  escalation `router-run-aed23e4764ca42a7a2907cc6c402c16b`, both on
+  `pi-deepseek-deepseek-v4-flash-openrouter`: both `verified_success: true`.
+  Supervisor re-ran `pytest tests/test_availability.py
+  tests/test_refresh_availability.py -q` (167 passed), the full suite (1856
+  passed, 6 skipped, up from the 1820-passed baseline), Black, and Ruff
+  directly, and read every hunk of the diff.
+- M2b review `router-run-778ed468b1ab48058fe667951c9312df` (agy
+  gemini-3.8-flash-high, `pi-deepseek-deepseek-v4-flash-openrouter` excluded
+  for independence): **ACCEPT**, with full reproduction of the oracle,
+  Black/Ruff, and scope checks.
+
+**Disposition:** M2 is verified and accepted in both repos but left
+**uncommitted** (a separate Lee decision, same convention as M1 and the prior
+acceptance run). M3 ("selection" — `staff`/`eligibility.py` choosing an
+instance, excluding one at reserve) is next; M4 (credential staging, the live
+two-account smoke) stays gated on Lee. Full packet/review/class-derivation
+evidence: `docs/staffing/packets/M2a-*.md`, `docs/staffing/packets/M2b*.md`,
+`tmp/staffing-m2/`.
+
+**How to Verify**
+
+```bash
+cd /home/lee/projects/chief-of-staff && ./scripts/ai_subs_instance_check.sh
+cd /home/lee/projects/lee-llm-router
+PYTHONPATH=src .venv/bin/python -m pytest tests/test_availability.py tests/test_refresh_availability.py -q
+PYTHONPATH=src .venv/bin/python -m pytest -q
+.venv/bin/black --check src/lee_llm_router/availability.py tests/test_availability.py tests/test_refresh_availability.py
+.venv/bin/ruff check src/lee_llm_router/availability.py tests/test_availability.py tests/test_refresh_availability.py
+```
+
+---
+
 ## 2026-09-13 - `/supervise` acceptance run: unrouted legacy groups split in evidence report
 
 **Result:** PASS. `render_evidence_report` in

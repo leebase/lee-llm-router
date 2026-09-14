@@ -2,6 +2,22 @@
 
 ---
 
+## Staffing multi-account plan — channel instances
+
+Plan: `/home/lee/projects/chief-of-staff/docs/staffing-multi-account-plan.md`.
+Supervised via `/supervise`. M1 (catalog + schema) committed before this
+session. M2 ("headroom per instance") verified and independently reviewed
+2026-09-14 across both repos (`chief-of-staff/scripts/ai-subs.sh` — M2a;
+`lee-llm-router` `availability.py`/tests — M2b), left uncommitted pending
+Lee. **Next: M3 ("selection")** — `staff`/`eligibility.py` choose the
+instance with the most headroom above the D216 reserve, exclude an instance
+at reserve like an exhausted channel, and try the next instance before the
+next route on the same-role fallback ladder. M4 (credential staging, the
+live two-account smoke) stays gated on Lee's confirmation of OpenCode's
+terms. See `result-review.md` (2026-09-14 entry) for the full attempt chain.
+
+---
+
 > ## Sprint 7 Complete: Pi Coding Harness Reliability and Harness Validation
 >
 > **Status:** Complete - 100% complete.

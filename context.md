@@ -8,9 +8,9 @@
 
 | Attribute | Value |
 |-----------|-------|
-| **Phase** | `/supervise` acceptance run complete — evidence-report unrouted-legacy-groups split verified and reviewed, uncommitted |
+| **Phase** | Staffing multi-account plan (chief-of-staff `docs/staffing-multi-account-plan.md`) — M1 committed; M2 (headroom per instance) verified and reviewed, uncommitted; M3 next |
 | **Mode** | 2 (Implementation with approval) |
-| **Last Updated** | 2026-09-13 |
+| **Last Updated** | 2026-09-14 |
 
 ### Sprint Status
 | Sprint | Status | Completion |
@@ -34,6 +34,56 @@
 ## What's Happening Now
 
 ### Current Work Stream
+Staffing multi-account plan (`/home/lee/projects/chief-of-staff/docs/staffing-multi-account-plan.md`,
+"channel instances — many subscriptions per provider, universally"), supervised
+via `/supervise`. M1 (catalog + schema) was already committed before this
+session. This session ran M2 ("headroom per instance"), split cross-repo:
+
+- **M2a** (`chief-of-staff` repo, `scripts/ai-subs.sh` +
+  `scripts/ai_subs_instance_check.sh`, new): the TOML/snapshot rendering path
+  now supports `[opencode.instances.<id>]` sub-tables, emitting a new
+  `"instance"` JSON field on every `AFTER_REPORT_JSON` `subscriptions` entry
+  (a real id, the literal `"opencode-go"` implicit default, or `null` for
+  every non-OpenCode-Go entry and for the unchanged live-fetch path — live
+  per-instance fetching against the real second account was deliberately left
+  out of scope, deferred to M4, to honor the plan's "M2 touches no account"
+  constraint). Verified: attempt `router-run-6765290c76124befb46784befabc5c85`
+  (agy/gemini-3.8-flash-high), oracle `scripts/ai_subs_instance_check.sh`
+  passed, supervisor re-ran it directly and confirmed exit 0. Independent
+  review `router-run-3a2e81fb4d96482b91fb177b6d197fcb` (pi/deepseek-v4-flash):
+  **ACCEPT**.
+- **M2b** (`lee-llm-router` repo, `src/lee_llm_router/availability.py` +
+  `tests/test_availability.py` + `tests/test_refresh_availability.py`;
+  `scripts/refresh_availability.sh` deliberately left unchanged — confirmed
+  pass-through of unknown JSON keys): `Bucket`/`ChannelHeadroom` gained an
+  additive `instance: str | None = None` field; new
+  `AvailabilitySnapshot.instance_headroom(channel, instance)` and
+  `to_dict()["instances"]` expose per-(channel, instance) headroom via a new
+  `_instances_from_buckets()`; the existing channel-wide `headroom(channel)`
+  aggregate is provably unchanged (byte-identical against the `LIVE_SAMPLE`
+  fixture). The original single M2b packet stalled (10 min silence, killed by
+  the router) on `agy-gemini-3-8-flash-high-gemini-sub`; repaired by halving
+  into M2b1 (availability.py core) + M2b2 (refresh_availability.sh
+  pass-through test), both of which then hit a ceiling timeout on the same
+  repair attempt and were escalated one ladder rung to
+  `pi-deepseek-deepseek-v4-flash-openrouter`, where both passed. Verified:
+  `router-run-ff3ca2dcd4094c71a366d07d28c13efa` (M2b1) and
+  `router-run-aed23e4764ca42a7a2907cc6c402c16b` (M2b2); supervisor re-ran the
+  oracle (`pytest tests/test_availability.py tests/test_refresh_availability.py
+  -q` → 167 passed; full suite → 1856 passed, 6 skipped) and Black/Ruff
+  directly. Independent review `router-run-778ed468b1ab48058fe667951c9312df`
+  (agy/gemini-3.8-flash-high, author excluded for independence): **ACCEPT**.
+
+M2 does not wire the D216 reserve check or route selection to instances —
+that is M3 ("selection"), not yet started. M4 (credential staging, the live
+two-account smoke) remains explicitly gated on Lee's confirmation of
+OpenCode's terms, per the plan. All M2 changes are verified but left
+**uncommitted** in both repos (committing is a separate Lee decision, same
+convention M1 and the prior acceptance run used). Packet, review, and
+class-derivation evidence: `docs/staffing/packets/M2a-*.md`,
+`docs/staffing/packets/M2b*.md`, `tmp/staffing-m2/`.
+
+### Prior Work Stream
 `/supervise` (plan `plans/supervise-acceptance-2026-09-13.md`) ran its first
 full acceptance case end-to-end: `render_evidence_report` in
 `src/lee_llm_router/staffing/evidence_report.py` now splits routed groups
