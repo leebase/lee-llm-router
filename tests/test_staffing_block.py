@@ -26,9 +26,10 @@ def row(
     badge=None,
     eligible=True,
     reasons=(),
+    instance_headrooms=None,
 ):
     """An eligibility row (the accepted EligibilityRow mapping shape)."""
-    return {
+    payload = {
         "route_id": route,
         "model": f"model-for-{route}",
         "channel": channel,
@@ -39,6 +40,9 @@ def row(
         "availability_headroom": headroom,
         "pricing": None,
     }
+    if instance_headrooms is not None:
+        payload["instance_headrooms"] = list(instance_headrooms)
+    return payload
 
 
 def ladder_available(argmin="r1", escalation=("r1", "r2"), routes=("r1", "r2")):
@@ -619,7 +623,10 @@ def test_json_carries_exactly_the_text_facts():
     payload = render_json(block)
     text = render_text(block)
 
-    assert list(payload.keys()) == list(STAFFING_BLOCK_JSON_KEYS)
+    keys = list(payload.keys())
+    assert keys == list(STAFFING_BLOCK_JSON_KEYS)
+    route_idx = keys.index("selected_route")
+    assert keys[route_idx + 1] == "selected_instance"
     assert payload["mode"] == MODE_AUTO
     assert payload["authority"] == AUTHORITY_POLICY
     assert payload["role"] == "impl"
@@ -654,6 +661,7 @@ def test_json_carries_exactly_the_text_facts():
     assert payload["supervisor"]["route_id"] == "r2"
     assert [worker["route_id"] for worker in payload["workers"]] == ["r1", "r2"]
     assert payload["selected_route"] == "r1"
+    assert payload["selected_instance"] is None
     assert payload["reason"]["k"] == 3 and payload["reason"]["n"] == 5
     assert payload["expected_cost"]["status"] == "available"
     assert payload["expected_cost"]["usd"] == 0.0123456
@@ -677,3 +685,224 @@ def test_unavailable_json_facts_match_text():
     assert "Expected cost: unavailable (evidence unavailable)" in text
     assert payload["reason"] is None
     assert "Reason: unavailable (no evidence join for r1)" in text
+
+
+# ---------------------------------------------------------------------------
+# Packet M3-2: selected_instance and per-instance headroom
+# ---------------------------------------------------------------------------
+
+
+def test_selected_instance_picks_first_eligible_and_carries_facts_verbatim():
+    """(a) a selected route with two instance rows, one eligible one not
+    (reserve/health excluded) — selected_instance picks the eligible one even
+    when it is not first in supply order, and both instance dicts appear
+    verbatim on the worker's instance_headrooms."""
+    inst_exhausted = {
+        "instance_id": "inst-exhausted",
+        "eligible": False,
+        "reasons": ["reserve: 10% kept in the tank (D216)"],
+        "remaining_fraction": 0.08,
+        "health": "healthy",
+        "badge": "ON TRACK",
+    }
+    inst_headroom = {
+        "instance_id": "inst-headroom",
+        "eligible": True,
+        "reasons": [],
+        "remaining_fraction": 0.85,
+        "health": "healthy",
+        "badge": "ON TRACK",
+    }
+    block = build_auto_block(
+        role="impl",
+        class_key="impl/deterministic/none/s/python",
+        eligibility_rows=[
+            row("r1", instance_headrooms=(inst_exhausted, inst_headroom)),
+        ],
+        ladder_result=ladder_available(argmin="r1", escalation=("r1",)),
+    )
+    assert block.selected_route == "r1"
+    assert block.selected_instance == "inst-headroom"
+    worker = block.workers[0]
+    assert worker.instance_headrooms == (inst_exhausted, inst_headroom)
+    assert worker.as_dict()["instance_headrooms"] == [inst_exhausted, inst_headroom]
+    payload = render_json(block)
+    assert payload["selected_instance"] == "inst-headroom"
+    assert payload["workers"][0]["instance_headrooms"] == [
+        inst_exhausted,
+        inst_headroom,
+    ]
+
+
+def test_selected_instance_with_typed_eligibility_instance():
+    """Typed EligibilityInstance objects are converted to identical JSON-safe dicts."""
+    from lee_llm_router.staffing.eligibility import EligibilityInstance
+
+    inst1 = EligibilityInstance(
+        instance_id="inst-1",
+        eligible=False,
+        reasons=("reserve: 10% kept in the tank (D216)",),
+        remaining_fraction=0.05,
+        health="healthy",
+        badge="ON TRACK",
+    )
+    inst2 = EligibilityInstance(
+        instance_id="inst-2",
+        eligible=True,
+        reasons=(),
+        remaining_fraction=0.90,
+        health="healthy",
+        badge="ON TRACK",
+    )
+    block = build_auto_block(
+        role="impl",
+        class_key="impl/deterministic/none/s/python",
+        eligibility_rows=[
+            row("r1", instance_headrooms=(inst1, inst2)),
+        ],
+        ladder_result=ladder_available(argmin="r1", escalation=("r1",)),
+    )
+    assert block.selected_instance == "inst-2"
+    expected_dict1 = {
+        "instance_id": "inst-1",
+        "eligible": False,
+        "reasons": ["reserve: 10% kept in the tank (D216)"],
+        "remaining_fraction": 0.05,
+        "health": "healthy",
+        "badge": "ON TRACK",
+    }
+    expected_dict2 = {
+        "instance_id": "inst-2",
+        "eligible": True,
+        "reasons": [],
+        "remaining_fraction": 0.90,
+        "health": "healthy",
+        "badge": "ON TRACK",
+    }
+    assert block.workers[0].instance_headrooms == (expected_dict1, expected_dict2)
+
+
+def test_selected_route_with_only_ineligible_instance_yields_none():
+    """(b) a selected route whose only supplied instance is ineligible —
+    selected_instance is None, no exception."""
+    inst_ineligible = {
+        "instance_id": "inst-vetoed",
+        "eligible": False,
+        "reasons": ["headroom exhausted"],
+        "remaining_fraction": 0.0,
+        "health": "exhausted",
+        "badge": "CRITICAL",
+    }
+    block = build_auto_block(
+        role="impl",
+        class_key="impl/deterministic/none/s/python",
+        eligibility_rows=[
+            row("r1", instance_headrooms=(inst_ineligible,)),
+        ],
+        ladder_result=ladder_available(argmin="r1", escalation=("r1",)),
+    )
+    assert block.selected_route == "r1"
+    assert block.selected_instance is None
+    assert block.as_dict()["selected_instance"] is None
+    assert render_json(block)["selected_instance"] is None
+
+
+def test_selected_route_with_empty_instance_headrooms_yields_none():
+    """(c) a selected route with an empty instance_headrooms (non-subscription
+    channel) — selected_instance is None, as_dict() still includes the key with
+    value None."""
+    block = build_auto_block(
+        role="impl",
+        class_key="impl/deterministic/none/s/python",
+        eligibility_rows=[
+            row("r1", instance_headrooms=()),
+        ],
+        ladder_result=ladder_available(argmin="r1", escalation=("r1",)),
+    )
+    assert block.selected_route == "r1"
+    assert block.selected_instance is None
+    assert "selected_instance" in block.as_dict()
+    assert block.as_dict()["selected_instance"] is None
+    payload = render_json(block)
+    assert "selected_instance" in payload
+    assert payload["selected_instance"] is None
+    assert block.workers[0].instance_headrooms == ()
+    assert block.workers[0].as_dict()["instance_headrooms"] == []
+
+
+def test_no_eligible_worker_yields_none_selected_instance():
+    """(d) selection is None (no eligible worker at all) — selected_instance is None."""
+    block = build_auto_block(
+        role="impl",
+        class_key="impl/deterministic/none/s/python",
+        eligibility_rows=[
+            row("r1", eligible=False, reasons=("excluded",)),
+        ],
+        ladder_result=ladder_available(argmin="r1", escalation=("r1",)),
+    )
+    assert block.selected_route is None
+    assert block.selected_instance is None
+    assert block.as_dict()["selected_instance"] is None
+    assert render_json(block)["selected_instance"] is None
+
+
+def test_render_text_contains_instance_fragment_only_when_selected():
+    """(f) render_text() contains the new deterministic fragment exactly when
+    selected_instance is not None, and does not contain it when
+    selected_instance is None.
+    """
+    inst_eligible = {
+        "instance_id": "inst-alpha",
+        "eligible": True,
+        "reasons": [],
+        "remaining_fraction": 0.5,
+        "health": "healthy",
+        "badge": "ON TRACK",
+    }
+    block_with_instance = build_auto_block(
+        role="impl",
+        class_key="impl/deterministic/none/s/python",
+        eligibility_rows=[
+            row("r1", instance_headrooms=(inst_eligible,)),
+        ],
+        evidence_by_route={"r1": evidence()},
+        ladder_result=ladder_available(argmin="r1", escalation=("r1",)),
+    )
+    text_with = render_text(block_with_instance)
+    assert ", instance inst-alpha" in text_with
+    assert (
+        "Reason: accepted 3/5 comparable (drop_size_band), prior 2 benchmark, "
+        "posterior 3 production, estimate 0.571429, instance inst-alpha"
+    ) in text_with
+
+    # When reason is None (no evidence join), instance is still appended
+    block_no_evidence = build_auto_block(
+        role="impl",
+        class_key="impl/deterministic/none/s/python",
+        eligibility_rows=[
+            row("r1", instance_headrooms=(inst_eligible,)),
+        ],
+        ladder_result=ladder_available(argmin="r1", escalation=("r1",)),
+    )
+    text_no_ev = render_text(block_no_evidence)
+    assert ", instance inst-alpha" in text_no_ev
+    assert (
+        "Reason: unavailable (no evidence join for r1), instance inst-alpha"
+        in text_no_ev
+    )
+
+    # When selected_instance is None, no fragment appears
+    block_without_instance = build_auto_block(
+        role="impl",
+        class_key="impl/deterministic/none/s/python",
+        eligibility_rows=[row("r1")],
+        evidence_by_route={"r1": evidence()},
+        ladder_result=ladder_available(argmin="r1", escalation=("r1",)),
+    )
+    text_without = render_text(block_without_instance)
+    assert ", instance " not in text_without
+    assert "instance" not in text_without
+    assert (
+        "Reason: accepted 3/5 comparable (drop_size_band), prior 2 benchmark, "
+        "posterior 3 production, estimate 0.571429"
+    ) in text_without

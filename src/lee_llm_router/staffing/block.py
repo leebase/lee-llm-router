@@ -81,6 +81,7 @@ STAFFING_BLOCK_JSON_KEYS: tuple[str, ...] = (
     "supervisor",
     "workers",
     "selected_route",
+    "selected_instance",
     "reason",
     "expected_cost",
     "escalation",
@@ -148,6 +149,7 @@ class WorkerFacts:
     eligible: bool
     reasons: tuple[str, ...]
     proof_status: str
+    instance_headrooms: tuple[dict[str, Any], ...] = ()
 
     def describe(self) -> str:
         """One deterministic compact description of the route's facts."""
@@ -174,7 +176,46 @@ class WorkerFacts:
             "eligible": self.eligible,
             "reasons": list(self.reasons),
             "proof_status": self.proof_status,
+            "instance_headrooms": [
+                {
+                    "instance_id": entry["instance_id"],
+                    "eligible": entry["eligible"],
+                    "reasons": list(entry["reasons"]),
+                    "remaining_fraction": entry["remaining_fraction"],
+                    "health": entry["health"],
+                    "badge": entry["badge"],
+                }
+                for entry in self.instance_headrooms
+            ],
         }
+
+
+def _instance_dict(entry: object) -> dict[str, Any]:
+    """Convert an EligibilityInstance or mapping into a JSON-safe dict."""
+    raw_id = _field(entry, "instance_id")
+    instance_id = (
+        raw_id if isinstance(raw_id, str) else ("" if raw_id is None else str(raw_id))
+    )
+    eligible = bool(_field(entry, "eligible", False))
+    raw_reasons = _field(entry, "reasons", ())
+    reasons = [
+        str(r)
+        for r in (raw_reasons if isinstance(raw_reasons, (list, tuple)) else ())
+        if isinstance(r, str) and r
+    ]
+    remaining_fraction = _float_or_none(_field(entry, "remaining_fraction"))
+    raw_health = _field(entry, "health", "unknown")
+    health = getattr(raw_health, "value", raw_health)
+    health_str = str(health) if health is not None else "unknown"
+    badge = _string_or_none(_field(entry, "badge"))
+    return {
+        "instance_id": instance_id,
+        "eligible": eligible,
+        "reasons": reasons,
+        "remaining_fraction": remaining_fraction,
+        "health": health_str,
+        "badge": badge,
+    }
 
 
 def _worker_facts(row: object, proof_status: object) -> WorkerFacts:
@@ -185,6 +226,13 @@ def _worker_facts(row: object, proof_status: object) -> WorkerFacts:
     reasons_iterable: Iterable[object] = (
         reasons_raw if isinstance(reasons_raw, (list, tuple)) else ()
     )
+    raw_instances = _field(row, "instance_headrooms")
+    if isinstance(raw_instances, Iterable) and not isinstance(
+        raw_instances, (str, bytes, Mapping)
+    ):
+        instance_headrooms = tuple(_instance_dict(entry) for entry in raw_instances)
+    else:
+        instance_headrooms = ()
     return WorkerFacts(
         route_id=route_id,
         channel=_string_or_none(_field(row, "channel")),
@@ -195,6 +243,7 @@ def _worker_facts(row: object, proof_status: object) -> WorkerFacts:
             reason for reason in reasons_iterable if isinstance(reason, str) and reason
         ),
         proof_status=_proof_value(proof_status),
+        instance_headrooms=instance_headrooms,
     )
 
 
@@ -292,6 +341,7 @@ class StaffingBlock:
     supervisor: WorkerFacts | None
     workers: tuple[WorkerFacts, ...]
     selected_route: str | None
+    selected_instance: str | None
     reason: ReasonFacts | None
     expected_cost_usd: float | None
     expected_cost_available: bool
@@ -353,6 +403,7 @@ class StaffingBlock:
             "supervisor": supervisor,
             "workers": [worker.as_dict() for worker in self.workers],
             "selected_route": self.selected_route,
+            "selected_instance": self.selected_instance,
             "reason": self.reason.as_dict() if self.reason is not None else None,
             "expected_cost": expected,
             "escalation": list(self.escalation),
@@ -379,11 +430,19 @@ class StaffingBlock:
         return lines
 
     def _reason_lines(self) -> list[str]:
+        instance_suffix = (
+            f", instance {self.selected_instance}"
+            if self.selected_instance is not None
+            else ""
+        )
         if self.selected_route is None:
             return ["Reason: unavailable (no eligible route)"]
         if self.reason is None:
-            return [f"Reason: unavailable (no evidence join for {self.selected_route})"]
-        return [f"Reason: {self.reason.as_text()}"]
+            return [
+                "Reason: unavailable (no evidence join for "
+                f"{self.selected_route}){instance_suffix}"
+            ]
+        return [f"Reason: {self.reason.as_text()}{instance_suffix}"]
 
     def _expected_cost_lines(self) -> list[str]:
         if self.expected_cost_available and self.expected_cost_usd is not None:
@@ -626,6 +685,17 @@ def build_auto_block(
         )
         selection = proven_first[0].route_id if proven_first else None
 
+    selected_instance: str | None = None
+    if selection is not None:
+        selected_worker = by_route.get(selection)
+        if selected_worker is not None:
+            for instance in selected_worker.instance_headrooms:
+                if instance.get("eligible") is True:
+                    raw_id = instance.get("instance_id")
+                    if isinstance(raw_id, str) and raw_id:
+                        selected_instance = raw_id
+                        break
+
     reason = (
         _reason_facts((evidence_by_route or {}).get(selection, None))
         if selection is not None
@@ -690,6 +760,7 @@ def build_auto_block(
         supervisor=supervisor,
         workers=workers,
         selected_route=selection,
+        selected_instance=selected_instance,
         reason=reason,
         expected_cost_usd=expected_cost_usd,
         expected_cost_available=expected_cost_available,
