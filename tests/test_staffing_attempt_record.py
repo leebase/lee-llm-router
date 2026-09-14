@@ -181,6 +181,22 @@ def test_raw_attempt_fixture_is_canonical_byte_copy(schema: dict) -> None:
     assert fixture_path.read_bytes() == expected
 
 
+def test_route_channel_instance_is_optional_observed_metadata(
+    validator: Draft202012Validator,
+) -> None:
+    record = json.loads(
+        (FIXTURE_DIR / "attempt-record-router-run-unavailable.json").read_text()
+    )
+    assert "channel_instance" not in record["route"]
+    assert not list(validator.iter_errors(record))
+
+    record["route"]["channel_instance"] = "account-a"
+    assert not list(validator.iter_errors(record))
+
+    record["route"]["channel_instance"] = None
+    assert not list(validator.iter_errors(record))
+
+
 def test_v2_envelope_shape(schema: dict) -> None:
     assert schema["properties"]["schema_version"]["const"] == 2
     assert schema["properties"]["record_kind"]["enum"] == [

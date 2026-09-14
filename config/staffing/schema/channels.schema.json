@@ -81,6 +81,30 @@
         "replacement_price_ref": {
           "description": "Nonempty reference (catalog pointer) to the replacement price data. A reference string only; never a price value.",
           "$ref": "#/$defs/nonemptyString"
+        },
+        "instances": {
+          "description": "Optional independently addressable channel instances. uniqueItems enforces whole-object uniqueness; duplicate instance_id values are additionally rejected by the loader because this shape-only schema has no cross-item key constraint.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["instance_id", "credential_ref", "enabled"],
+            "properties": {
+              "instance_id": {
+                "description": "Stable identifier for this channel instance.",
+                "$ref": "#/$defs/nonemptyString"
+              },
+              "credential_ref": {
+                "description": "Nonempty reference to credential storage; never a literal secret.",
+                "$ref": "#/$defs/nonemptyString"
+              },
+              "enabled": {
+                "type": "boolean"
+              }
+            }
+          }
         }
       }
     }

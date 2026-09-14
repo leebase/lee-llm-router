@@ -33,7 +33,7 @@ from lee_llm_router.staffing import (
     load_staffing_document,
     validate_class_block,
 )
-from lee_llm_router.staffing.catalog import CrewSupervisor
+from lee_llm_router.staffing.catalog import ChannelInstance, CrewSupervisor
 
 # ---------------------------------------------------------------------------
 # Handwritten valid fixture documents (minimal but schema-valid)
@@ -405,7 +405,56 @@ def test_channels_document_types(catalog_dir: Path) -> None:
     assert first.fee_usd_month[0].value == 200
     assert first.fee_usd_month[1].value == "unknown"
     assert first.windows == ("weekly", "rolling-5h")
+    assert first.instances == ()
+    assert first.effective_instances() == (
+        ChannelInstance(
+            instance_id="chan-sub-a",
+            credential_ref="chan-sub-a",
+            enabled=True,
+        ),
+    )
     assert channels.channels[1].windows == ()
+
+
+def test_explicit_channel_instances_load_as_typed_values(tmp_path: Path) -> None:
+    doc = channels_doc()
+    doc["channels"][0]["instances"] = [
+        {
+            "instance_id": "a",
+            "credential_ref": "chan-sub-a/a",
+            "enabled": True,
+        },
+        {
+            "instance_id": "b",
+            "credential_ref": "chan-sub-a/b",
+            "enabled": False,
+        },
+    ]
+    (tmp_path / "channels.yaml").write_text(yaml.safe_dump(doc), encoding="utf-8")
+
+    channels = load_staffing_document("channels", tmp_path / "channels.yaml")
+    first = channels.channels[0]
+    expected = (
+        ChannelInstance(instance_id="a", credential_ref="chan-sub-a/a", enabled=True),
+        ChannelInstance(instance_id="b", credential_ref="chan-sub-a/b", enabled=False),
+    )
+    assert first.instances == expected
+    assert all(isinstance(instance, ChannelInstance) for instance in first.instances)
+    assert first.effective_instances() == expected
+
+
+def test_committed_catalog_keeps_implicit_channel_instances() -> None:
+    config_dir = Path(__file__).resolve().parents[1] / "config" / "staffing"
+    catalog = load_staffing_catalog(config_dir)
+    for channel in catalog.channels.channels:
+        if channel.instances == ():
+            assert channel.effective_instances() == (
+                ChannelInstance(
+                    instance_id=channel.channel_id,
+                    credential_ref=channel.channel_id,
+                    enabled=True,
+                ),
+            )
 
 
 def test_terms_document_types(catalog_dir: Path) -> None:
@@ -672,6 +721,69 @@ def test_unknown_nested_field_rejected(
     assert excinfo.value.document == name
     assert excinfo.value.path == f"{nested_path}.bogus_nested"
     assert "bogus_nested" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("missing", ["instance_id", "credential_ref", "enabled"])
+def test_channel_instance_missing_required_field_rejected(
+    tmp_path: Path, missing: str
+) -> None:
+    doc = channels_doc()
+    instance = {
+        "instance_id": "a",
+        "credential_ref": "chan-sub-a/a",
+        "enabled": True,
+    }
+    del instance[missing]
+    doc["channels"][0]["instances"] = [instance]
+    (tmp_path / "channels.yaml").write_text(yaml.safe_dump(doc), encoding="utf-8")
+
+    with pytest.raises(StaffingCatalogError) as excinfo:
+        load_staffing_document("channels", tmp_path / "channels.yaml")
+    assert excinfo.value.document == "channels"
+    assert missing in str(excinfo.value)
+    assert excinfo.value.failure_type == FailureType.CONTRACT_VIOLATION
+
+
+def test_channel_instance_unknown_field_rejected(tmp_path: Path) -> None:
+    doc = channels_doc()
+    doc["channels"][0]["instances"] = [
+        {
+            "instance_id": "a",
+            "credential_ref": "chan-sub-a/a",
+            "enabled": True,
+            "unexpected": "nope",
+        }
+    ]
+    (tmp_path / "channels.yaml").write_text(yaml.safe_dump(doc), encoding="utf-8")
+
+    with pytest.raises(StaffingCatalogError) as excinfo:
+        load_staffing_document("channels", tmp_path / "channels.yaml")
+    assert excinfo.value.document == "channels"
+    assert excinfo.value.path == "$.channels[0].instances[0].unexpected"
+    assert "unexpected" in str(excinfo.value)
+    assert excinfo.value.failure_type == FailureType.CONTRACT_VIOLATION
+
+
+def test_channel_instance_duplicate_ids_rejected_by_loader(tmp_path: Path) -> None:
+    doc = channels_doc()
+    doc["channels"][0]["instances"] = [
+        {
+            "instance_id": "a",
+            "credential_ref": "chan-sub-a/a",
+            "enabled": True,
+        },
+        {
+            "instance_id": "a",
+            "credential_ref": "chan-sub-a/other",
+            "enabled": True,
+        },
+    ]
+    (tmp_path / "channels.yaml").write_text(yaml.safe_dump(doc), encoding="utf-8")
+
+    with pytest.raises(StaffingCatalogError) as excinfo:
+        load_staffing_document("channels", tmp_path / "channels.yaml")
+    assert excinfo.value.path == "$.channels[0].instances[1].instance_id"
+    assert "duplicate" in str(excinfo.value)
 
 
 def test_governed_crew_with_supervisor_route_rejected_by_schema(

@@ -11,9 +11,9 @@
 # Fee authority — D203 (decisions.md 2026-09-09): OpenAI $200/month (Lee
 # stated, current), Anthropic $100/month changing to $20/month on
 # 2026-09-30, Gemini $100/month changing to $20/month on 2026-09-30, and the
-# effective date. OpenCode Go's monthly plan fee is "unknown" until Lee
-# supplies it (needs-lee.md). OpenRouter and OpenCode Zen are metered at
-# list price (D203), so no monthly-fee entry exists for them; their
+# effective date. OpenCode Go's monthly plan fee was "unknown" before
+# 2026-09-14 and is $10/month from that date. OpenRouter and OpenCode Zen are
+# metered at list price (D203), so no monthly-fee entry exists for them; their
 # per-token price lives in the replacement_price_ref series. The local tier
 # is parked with no sourced fee (D156).
 #
@@ -99,9 +99,18 @@ channels:
     fee_usd_month:
       - effective_from: "2026-09-09"
         value: unknown
+      - effective_from: "2026-09-14"
+        value: 10
     windows: [rolling-5h, weekly, monthly]
     harness_lock: [opencode, omp, pi]
     replacement_price_ref: config/staffing/pricing/opencode-zen-20260912.mdx
+    instances:
+      - instance_id: a
+        credential_ref: opencode-go/a
+        enabled: true
+      - instance_id: b
+        credential_ref: opencode-go/b
+        enabled: true
 
   - channel_id: openrouter
     kind: metered

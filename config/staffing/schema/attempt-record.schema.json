@@ -2029,6 +2029,18 @@
               "type": "null"
             }
           ]
+        },
+        "channel_instance": {
+          "description": "Optional observed channel-instance metadata. Not part of the route identity tuple, and null/absent when the source records no instance.",
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },

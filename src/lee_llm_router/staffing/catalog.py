@@ -43,6 +43,7 @@ __all__ = [
     "BadgeMultipliers",
     "CanonicalEncoding",
     "Channel",
+    "ChannelInstance",
     "ChannelsCatalog",
     "CheapTrialRule",
     "ClassesCatalog",
@@ -166,6 +167,15 @@ class FeeEntry:
 
 
 @dataclass(frozen=True)
+class ChannelInstance:
+    """One independently addressable subscription account instance."""
+
+    instance_id: str
+    credential_ref: str
+    enabled: bool
+
+
+@dataclass(frozen=True)
 class Channel:
     channel_id: str
     kind: str
@@ -173,6 +183,19 @@ class Channel:
     windows: tuple[str, ...]
     harness_lock: tuple[str, ...]
     replacement_price_ref: str
+    instances: tuple[ChannelInstance, ...] = ()
+
+    def effective_instances(self) -> tuple[ChannelInstance, ...]:
+        """Return declared instances or the channel's implicit instance."""
+        if self.instances:
+            return self.instances
+        return (
+            ChannelInstance(
+                instance_id=self.channel_id,
+                credential_ref=self.channel_id,
+                enabled=True,
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -629,9 +652,23 @@ def _build_routes(data: Mapping[str, Any]) -> RoutesCatalog:
 
 
 def _build_channels(data: Mapping[str, Any]) -> ChannelsCatalog:
-    return ChannelsCatalog(
-        channels=_build_tuple(Channel, data["channels"], "$.channels")
-    )
+    channels = _build_tuple(Channel, data["channels"], "$.channels")
+    for channel_index, channel in enumerate(channels):
+        seen_instance_ids: set[str] = set()
+        for instance_index, instance in enumerate(channel.instances):
+            if instance.instance_id in seen_instance_ids:
+                raise StaffingCatalogError(
+                    "staffing catalog document 'channels' has duplicate "
+                    f"instance_id {instance.instance_id!r} at "
+                    f"'$.channels[{channel_index}].instances[{instance_index}]'",
+                    document="channels",
+                    path=(
+                        f"$.channels[{channel_index}].instances"
+                        f"[{instance_index}].instance_id"
+                    ),
+                )
+            seen_instance_ids.add(instance.instance_id)
+    return ChannelsCatalog(channels=channels)
 
 
 _BADGE_FIELDS: dict[str, str] = {
