@@ -495,3 +495,33 @@ def test_script_status_set_matches_the_reader() -> None:
     in_script = set(re.findall(r'"([^"]+)"', match.group(1)))
 
     assert in_script == set(KNOWN_STATUSES) | {"NO_DATA"}
+
+
+# --------------------------------------------------------------------------
+# Packet M2b2 — instance key pass-through regression (M2)
+# --------------------------------------------------------------------------
+
+
+def test_instance_key_is_passed_through_unmodified(tmp_path: Path) -> None:
+    """The writer must preserve 'instance' keys (both string and null) on entries."""
+    raw = json.loads(SAMPLE.read_text(encoding="utf-8"))
+    entries = [dict(raw["subscriptions"][0]), dict(raw["subscriptions"][1])]
+    entries[0]["instance"] = "a"
+    entries[1]["instance"] = None
+    payload = json.dumps(
+        {
+            "observed_at": raw["observed_at"],
+            "subscriptions": entries,
+        }
+    )
+    capture = _capture_payload(tmp_path, payload)
+    snapshot = tmp_path / "state" / "A8Max.json"
+
+    result = _run(["--input", str(capture)], snapshot)
+
+    assert result.returncode == 0, result.stderr
+    assert snapshot.is_file()
+    written = json.loads(snapshot.read_text(encoding="utf-8"))
+    assert written["subscriptions"][0]["instance"] == "a"
+    assert written["subscriptions"][1]["instance"] is None
+    assert written["subscriptions"] == entries

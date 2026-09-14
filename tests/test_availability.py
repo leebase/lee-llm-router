@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -15,7 +16,10 @@ from lee_llm_router.availability import (
     MAX_FUTURE_SKEW_MINUTES,
     OPENCODE_GO_PROVIDER,
     AvailabilityError,
+    Bucket,
+    ChannelHeadroom,
     Health,
+    _effective_instance,
     _safe_timestamp,
     bucket_health,
     channels_for,
@@ -1050,3 +1054,387 @@ def test_microsecond_resets_at_timestamp_parsing() -> None:
     assert opencode.health is Health.HEALTHY
     assert len(opencode.buckets) == 1
     assert opencode.buckets[0].resets_at == parsed
+
+
+# --------------------------------------------------------------------------
+# Packet M2b1 — per-instance headroom (core)
+# --------------------------------------------------------------------------
+
+
+def test_backward_compat_live_sample_carries_no_instance_and_aggregate_unchanged() -> (
+    None
+):
+    """Live sample carries no 'instance' key; channel aggregate is unchanged."""
+    raw = json.loads(LIVE_SAMPLE.read_text(encoding="utf-8"))
+    entries = raw.get("subscriptions", [])
+    assert len(entries) > 0
+    for entry in entries:
+        assert "instance" not in entry
+
+    snapshot = load_availability(
+        LIVE_SAMPLE, now=LIVE_OBSERVED_AT + timedelta(minutes=2)
+    )
+    # OpenCode: three buckets; Monthly is TOO FAST -> degraded.
+    opencode = snapshot.headroom("opencode-go")
+    assert opencode.health is Health.DEGRADED
+    assert opencode.limiting_bucket == "Monthly"
+    assert opencode.remaining_fraction == pytest.approx(0.89)
+    assert opencode.instance is None
+
+    # All other channel aggregates remain identical and have instance is None
+    assert snapshot.headroom("openai-sub").health is Health.DEGRADED
+    assert snapshot.headroom("openai-sub").limiting_bucket == "Weekly limit"
+    assert snapshot.headroom("openai-sub").remaining_fraction == pytest.approx(0.48)
+    assert snapshot.headroom("openai-sub").instance is None
+
+    assert snapshot.headroom("anthropic-sub").health is Health.DEGRADED
+    assert snapshot.headroom("anthropic-sub").limiting_bucket == "Current session"
+    assert snapshot.headroom("anthropic-sub").remaining_fraction == pytest.approx(0.56)
+    assert snapshot.headroom("anthropic-sub").instance is None
+
+    assert snapshot.headroom("gemini-sub").health is Health.DEGRADED
+    assert snapshot.headroom("gemini-sub").limiting_bucket == "Gemini models — 5-hour"
+    assert snapshot.headroom("gemini-sub").remaining_fraction == pytest.approx(0.44)
+    assert snapshot.headroom("gemini-sub").instance is None
+
+    assert snapshot.headroom("gemini-sub-thirdparty").health is Health.HEALTHY
+    assert snapshot.headroom(
+        "gemini-sub-thirdparty"
+    ).remaining_fraction == pytest.approx(0.85)
+    assert snapshot.headroom("gemini-sub-thirdparty").instance is None
+
+    assert snapshot.headroom("openrouter").health is Health.UNKNOWN
+    assert snapshot.headroom("openrouter").instance is None
+
+
+def test_multi_instance_opencode_go() -> None:
+    """Two OpenCode Go instances: 'a' healthy, 'b' exhausted; aggregate exhausted."""
+    payload = {
+        "observed_at": SYNTHETIC_OBSERVED_AT.isoformat(),
+        "subscriptions": [
+            # Instance "a": three healthy buckets (80% remaining, COLD / ON TRACK)
+            {
+                "provider": "OpenCode/Go",
+                "bucket": "Rolling — 5-hour",
+                "status": "COLD",
+                "remaining_pct": 80.0,
+                "instance": "a",
+            },
+            {
+                "provider": "OpenCode/Go",
+                "bucket": "Weekly",
+                "status": "ON TRACK",
+                "remaining_pct": 80.0,
+                "instance": "a",
+            },
+            {
+                "provider": "OpenCode/Go",
+                "bucket": "Monthly",
+                "status": "ON TRACK",
+                "remaining_pct": 80.0,
+                "instance": "a",
+            },
+            # Instance "b": three exhausted buckets (0% remaining)
+            {
+                "provider": "OpenCode/Go",
+                "bucket": "Rolling — 5-hour",
+                "status": "COLD",
+                "remaining_pct": 0.0,
+                "instance": "b",
+            },
+            {
+                "provider": "OpenCode/Go",
+                "bucket": "Weekly",
+                "status": "COLD",
+                "remaining_pct": 0.0,
+                "instance": "b",
+            },
+            {
+                "provider": "OpenCode/Go",
+                "bucket": "Monthly",
+                "status": "COLD",
+                "remaining_pct": 0.0,
+                "instance": "b",
+            },
+        ],
+    }
+    snapshot = parse_availability(
+        payload, now=SYNTHETIC_OBSERVED_AT + timedelta(minutes=1)
+    )
+    assert snapshot.stale is False
+
+    inst_a = snapshot.instance_headroom("opencode-go", "a")
+    assert inst_a.health is Health.HEALTHY
+    assert inst_a.instance == "a"
+    assert inst_a.remaining_fraction == pytest.approx(0.80)
+    assert len(inst_a.buckets) == 3
+
+    inst_b = snapshot.instance_headroom("opencode-go", "b")
+    assert inst_b.health is Health.EXHAUSTED
+    assert inst_b.instance == "b"
+    assert inst_b.remaining_fraction == pytest.approx(0.0)
+    assert len(inst_b.buckets) == 3
+
+    # Channel aggregate still worst-of-all — proof the two are not conflated.
+    ch = snapshot.headroom("opencode-go")
+    assert ch.health is Health.EXHAUSTED
+    assert ch.instance is None
+    assert ch.remaining_fraction == pytest.approx(0.0)
+    assert len(ch.buckets) == 6
+
+
+def test_implicit_instance_no_instance_key() -> None:
+    """Entry with no 'instance' key resolves to channel name for instance headroom."""
+    payload = {
+        "observed_at": SYNTHETIC_OBSERVED_AT.isoformat(),
+        "subscriptions": [
+            {
+                "provider": "OpenCode/Go",
+                "bucket": "Rolling — 5-hour",
+                "status": "COLD",
+                "remaining_pct": 85.0,
+            },
+            {
+                "provider": "OpenCode/Go",
+                "bucket": "Weekly",
+                "status": "ON TRACK",
+                "remaining_pct": 75.0,
+            },
+        ],
+    }
+    snapshot = parse_availability(
+        payload, now=SYNTHETIC_OBSERVED_AT + timedelta(minutes=1)
+    )
+    ch = snapshot.headroom("opencode-go")
+    inst = snapshot.instance_headroom("opencode-go", "opencode-go")
+
+    assert inst.health == ch.health
+    assert inst.remaining_fraction == ch.remaining_fraction
+    assert inst.health is Health.HEALTHY
+    assert inst.remaining_fraction == pytest.approx(0.75)
+    assert inst.instance == "opencode-go"
+    assert ch.instance is None
+
+
+def test_instance_headroom_missing_instance_returns_unknown() -> None:
+    """Querying an unknown instance returns an unknown ChannelHeadroom."""
+    payload = {
+        "observed_at": SYNTHETIC_OBSERVED_AT.isoformat(),
+        "subscriptions": [
+            {
+                "provider": "OpenCode/Go",
+                "bucket": "Weekly",
+                "status": "COLD",
+                "remaining_pct": 90.0,
+                "instance": "a",
+            }
+        ],
+    }
+    snapshot = parse_availability(
+        payload, now=SYNTHETIC_OBSERVED_AT + timedelta(minutes=1)
+    )
+    missing = snapshot.instance_headroom("opencode-go", "does-not-exist")
+    assert missing.health is Health.UNKNOWN
+    assert missing.instance == "does-not-exist"
+    assert missing.channel == "opencode-go"
+    assert missing.remaining_fraction is None
+    assert missing.limiting_bucket is None
+    assert missing.buckets == ()
+    assert missing.stale is False
+
+
+@pytest.mark.parametrize(
+    "bad_instance",
+    [7, "", "   ", None, [], {}, 3.14],
+    ids=["int", "empty-str", "whitespace-str", "none", "list", "dict", "float"],
+)
+def test_malformed_instance_value_fails_closed_to_none(bad_instance: object) -> None:
+    """Malformed or empty instance values yield Bucket.instance is None."""
+    entry: dict[str, Any] = {
+        "provider": "OpenCode/Go",
+        "bucket": "Weekly",
+        "status": "COLD",
+        "remaining_pct": 90.0,
+        "instance": bad_instance,
+    }
+    snapshot = parse_availability(
+        _payload(entry), now=SYNTHETIC_OBSERVED_AT + timedelta(minutes=1)
+    )
+    bucket = snapshot.headroom("opencode-go").buckets[0]
+    assert bucket.instance is None
+
+
+def test_valid_instance_is_stripped() -> None:
+    """A valid instance string with leading/trailing whitespace is stripped."""
+    entry = {
+        "provider": "OpenCode/Go",
+        "bucket": "Weekly",
+        "status": "COLD",
+        "remaining_pct": 90.0,
+        "instance": "  inst-1  ",
+    }
+    snapshot = parse_availability(
+        _payload(entry), now=SYNTHETIC_OBSERVED_AT + timedelta(minutes=1)
+    )
+    bucket = snapshot.headroom("opencode-go").buckets[0]
+    assert bucket.instance == "inst-1"
+
+
+def test_to_dict_includes_sorted_instances() -> None:
+    """to_dict() on a multi-instance snapshot includes a sorted 'instances' list."""
+    payload = {
+        "observed_at": SYNTHETIC_OBSERVED_AT.isoformat(),
+        "subscriptions": [
+            {
+                "provider": "OpenCode/Go",
+                "bucket": "Weekly",
+                "status": "COLD",
+                "remaining_pct": 90.0,
+                "instance": "b",
+            },
+            {
+                "provider": "OpenCode/Go",
+                "bucket": "Weekly",
+                "status": "COLD",
+                "remaining_pct": 80.0,
+                "instance": "a",
+            },
+            {
+                "provider": "OpenAI/Codex",
+                "bucket": "Weekly limit",
+                "status": "COLD",
+                "remaining_pct": 70.0,
+            },
+        ],
+    }
+    snapshot = parse_availability(
+        payload, now=SYNTHETIC_OBSERVED_AT + timedelta(minutes=1)
+    )
+    data = snapshot.to_dict()
+    assert "instances" in data
+    instances_list = data["instances"]
+    assert len(instances_list) == 3
+
+    for item in instances_list:
+        assert "channel" in item
+        assert "instance" in item
+        assert "health" in item
+
+    pairs = [(item["channel"], item["instance"]) for item in instances_list]
+    assert pairs == sorted(pairs)
+    assert pairs == [
+        ("openai-sub", "openai-sub"),
+        ("opencode-go", "a"),
+        ("opencode-go", "b"),
+    ]
+
+
+def test_to_dict_empty_instances_when_problem_snapshot() -> None:
+    """A problem snapshot has instances == {} and to_dict()['instances'] == []."""
+    snapshot = parse_availability(
+        {"observed_at": SYNTHETIC_OBSERVED_AT.isoformat(), "subscriptions": []},
+        now=SYNTHETIC_OBSERVED_AT + timedelta(minutes=1),
+    )
+    data = snapshot.to_dict()
+    assert "instances" in data
+    assert data["instances"] == []
+
+
+def test_bucket_and_headroom_to_dict_include_instance() -> None:
+    """Bucket.to_dict() and ChannelHeadroom.to_dict() include 'instance' key."""
+    bucket = Bucket(
+        channel="opencode-go",
+        provider="OpenCode/Go",
+        name="Weekly",
+        health=Health.HEALTHY,
+        remaining_fraction=0.9,
+        resets_at=None,
+        resets_in_hours=None,
+        pace_ratio=None,
+        raw_status="COLD",
+        instance="work",
+    )
+    assert bucket.to_dict()["instance"] == "work"
+
+    headroom = ChannelHeadroom(
+        channel="opencode-go",
+        health=Health.HEALTHY,
+        remaining_fraction=0.9,
+        limiting_bucket="Weekly",
+        observed_at=None,
+        stale=False,
+        buckets=(bucket,),
+        instance="work",
+    )
+    assert headroom.to_dict()["instance"] == "work"
+
+    # Default instance is None
+    headroom_default = ChannelHeadroom(
+        channel="opencode-go",
+        health=Health.HEALTHY,
+        remaining_fraction=0.9,
+        limiting_bucket="Weekly",
+        observed_at=None,
+        stale=False,
+        buckets=(),
+    )
+    assert headroom_default.instance is None
+    assert headroom_default.to_dict()["instance"] is None
+
+
+def test_effective_instance_helper() -> None:
+    """_effective_instance returns bucket.instance if set, else channel."""
+    b_with = Bucket(
+        channel="opencode-go",
+        provider="OpenCode/Go",
+        name="Weekly",
+        health=Health.HEALTHY,
+        remaining_fraction=0.9,
+        resets_at=None,
+        resets_in_hours=None,
+        pace_ratio=None,
+        raw_status="COLD",
+        instance="custom-inst",
+    )
+    assert _effective_instance(b_with, "opencode-go") == "custom-inst"
+
+    b_none = Bucket(
+        channel="opencode-go",
+        provider="OpenCode/Go",
+        name="Weekly",
+        health=Health.HEALTHY,
+        remaining_fraction=0.9,
+        resets_at=None,
+        resets_in_hours=None,
+        pace_ratio=None,
+        raw_status="COLD",
+        instance=None,
+    )
+    assert _effective_instance(b_none, "opencode-go") == "opencode-go"
+
+
+def test_stale_snapshot_degrades_instance_headroom() -> None:
+    """A stale snapshot degrades instance headroom to unknown with stale=True."""
+    payload = {
+        "observed_at": SYNTHETIC_OBSERVED_AT.isoformat(),
+        "subscriptions": [
+            {
+                "provider": "OpenCode/Go",
+                "bucket": "Weekly",
+                "status": "COLD",
+                "remaining_pct": 90.0,
+                "instance": "a",
+            }
+        ],
+    }
+    # 200 minutes old -> stale (max_age 90m)
+    snapshot = parse_availability(
+        payload, now=SYNTHETIC_OBSERVED_AT + timedelta(minutes=200)
+    )
+    assert snapshot.stale is True
+
+    inst_a = snapshot.instance_headroom("opencode-go", "a")
+    assert inst_a.health is Health.UNKNOWN
+    assert inst_a.stale is True
+    assert inst_a.limiting_bucket is None
+    assert inst_a.instance == "a"

@@ -150,6 +150,7 @@ class Bucket:
         resets_in_hours: Hours until reset, as reported.
         pace_ratio: Burn pace relative to the window, as reported.
         raw_status: The raw status badge (``COLD``, ``HOT``, ``TOO FAST``, ...).
+        instance: The instance id within the channel, or ``None`` if unspecified.
     """
 
     channel: str
@@ -161,6 +162,7 @@ class Bucket:
     resets_in_hours: float | None
     pace_ratio: float | None
     raw_status: str
+    instance: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serialisable view of this bucket."""
@@ -174,6 +176,7 @@ class Bucket:
             "resets_in_hours": self.resets_in_hours,
             "pace_ratio": self.pace_ratio,
             "raw_status": self.raw_status,
+            "instance": self.instance,
         }
 
 
@@ -189,6 +192,8 @@ class ChannelHeadroom:
         observed_at: Snapshot observation time (aware UTC), or ``None``.
         stale: True when the snapshot is older than the staleness ceiling.
         buckets: The channel's buckets, in snapshot order.
+        instance: The instance id if this headroom is for a specific instance,
+            or ``None`` if channel-wide aggregate.
     """
 
     channel: str
@@ -198,6 +203,7 @@ class ChannelHeadroom:
     observed_at: datetime | None
     stale: bool
     buckets: tuple[Bucket, ...]
+    instance: str | None = None
 
     @property
     def usable(self) -> bool:
@@ -214,6 +220,7 @@ class ChannelHeadroom:
             "observed_at": _iso(self.observed_at),
             "stale": self.stale,
             "buckets": [bucket.to_dict() for bucket in self.buckets],
+            "instance": self.instance,
         }
 
 
@@ -235,6 +242,8 @@ class AvailabilitySnapshot:
         stale_reason: Why ``stale`` is set, or ``None`` when it is not.
         malformed: Labels of recognised-provider entries that could not be
             routed or scored and were forced to ``unknown``.
+        instances: Headroom per (channel, instance) pair, keyed by
+            (channel, instance).
     """
 
     observed_at: datetime | None
@@ -248,6 +257,7 @@ class AvailabilitySnapshot:
     written_at: datetime | None = field(default=None)
     stale_reason: str | None = field(default=None)
     malformed: tuple[str, ...] = field(default=())
+    instances: dict[tuple[str, str], ChannelHeadroom] = field(default_factory=dict)
 
     def headroom(self, channel: str) -> ChannelHeadroom:
         """Return the headroom for ``channel``.
@@ -263,6 +273,24 @@ class AvailabilitySnapshot:
         if existing is not None:
             return existing
         return _unknown_channel(channel, self.observed_at, self.stale)
+
+    def instance_headroom(self, channel: str, instance: str) -> ChannelHeadroom:
+        """Return the headroom for a specific ``(channel, instance)``.
+
+        Args:
+            channel: A channel name.
+            instance: An instance identifier within that channel.
+
+        Returns:
+            The instance's :class:`ChannelHeadroom`. If missing, an unknown
+            headroom for that channel and instance is returned.
+        """
+        existing = self.instances.get((channel, instance))
+        if existing is not None:
+            return existing
+        return _unknown_channel(
+            channel, self.observed_at, self.stale, instance=instance
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serialisable view of the whole snapshot."""
@@ -281,6 +309,9 @@ class AvailabilitySnapshot:
             "channels": {
                 name: headroom.to_dict() for name, headroom in self.channels.items()
             },
+            "instances": [
+                headroom.to_dict() for _, headroom in sorted(self.instances.items())
+            ],
         }
 
 
@@ -421,6 +452,7 @@ def parse_availability(
 
     buckets, ignored, malformed = _buckets_from_entries(entries)
     channels = _channels_from_buckets(buckets, observed_at, stale)
+    instances = _instances_from_buckets(buckets, observed_at, stale)
 
     host = raw.get("host")
     return AvailabilitySnapshot(
@@ -435,6 +467,7 @@ def parse_availability(
         written_at=written_at,
         stale_reason=stale_reason,
         malformed=tuple(malformed),
+        instances=instances,
     )
 
 
@@ -597,6 +630,13 @@ def _buckets_from_entries(
             ignored.append(f"{provider or '?'}/{raw_name or status or '?'}")
             continue
 
+        raw_instance = entry.get("instance")
+        instance = (
+            raw_instance.strip()
+            if isinstance(raw_instance, str) and raw_instance.strip()
+            else None
+        )
+
         failure = status.upper() in _FAILURE_STATUSES
         name = raw_name or status or "unknown"
         if failure:
@@ -628,9 +668,47 @@ def _buckets_from_entries(
                     resets_in_hours=_number(entry.get("resets_in_hours")),
                     pace_ratio=_number(entry.get("pace_ratio")),
                     raw_status=raw_status,
+                    instance=instance,
                 )
             )
     return buckets, ignored, malformed
+
+
+def _effective_instance(bucket: Bucket, channel: str) -> str:
+    """Return the bucket's instance, or the channel name as the default instance."""
+    return bucket.instance if bucket.instance is not None else channel
+
+
+def _instances_from_buckets(
+    buckets: list[Bucket],
+    observed_at: datetime | None,
+    stale: bool,
+) -> dict[tuple[str, str], ChannelHeadroom]:
+    """Aggregate buckets into one :class:`ChannelHeadroom` per (channel, instance)."""
+    groups: dict[tuple[str, str], list[Bucket]] = {}
+    for bucket in buckets:
+        key = (bucket.channel, _effective_instance(bucket, bucket.channel))
+        groups.setdefault(key, []).append(bucket)
+
+    instances: dict[tuple[str, str], ChannelHeadroom] = {}
+    for (channel, instance), group_buckets in groups.items():
+        owned = tuple(group_buckets)
+        worst = max(_SEVERITY[b.health] for b in owned)
+        limiting = next(b for b in owned if _SEVERITY[b.health] == worst)
+        numbers = [
+            b.remaining_fraction for b in owned if b.remaining_fraction is not None
+        ]
+        instances[(channel, instance)] = ChannelHeadroom(
+            channel=channel,
+            health=Health.UNKNOWN if stale else limiting.health,
+            remaining_fraction=min(numbers) if numbers else None,
+            limiting_bucket=None if stale else limiting.name,
+            observed_at=observed_at,
+            stale=stale,
+            buckets=owned,
+            instance=instance,
+        )
+    return instances
 
 
 def _channels_from_buckets(
@@ -669,6 +747,7 @@ def _unknown_channel(
     channel: str,
     observed_at: datetime | None,
     stale: bool,
+    instance: str | None = None,
 ) -> ChannelHeadroom:
     """Build an empty ``unknown`` headroom record for ``channel``."""
     return ChannelHeadroom(
@@ -679,6 +758,7 @@ def _unknown_channel(
         observed_at=observed_at,
         stale=stale,
         buckets=(),
+        instance=instance,
     )
 
 
