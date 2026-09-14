@@ -839,3 +839,11 @@ quoted string, which the templates now strip. Native expansion proven 5/5
 (`docs/staffing/shims-native-smoke.md` §5). Real shims installed in all five harnesses;
 `shims diff` clean for `crew` and `supervise`. Known limitation: the OMP smoke uses the real
 HOME for credentials. Not blocking: a sandboxed reviewer cannot run live harness smokes.
+
+## Filed 2026-09-14 (Chief) — Gemini 3.1 Pro route cannot dispatch
+
+`agy-gemini-3-1-pro-gemini-sub` has `effort: null`; agy refuses `--model gemini-3.1-pro` without
+`--effort` (available: low, high), so every dispatch on that route fails in ~5 s with
+`invalid model selection` (attempt `router-run-2b424a7d…`). It is eligible as a reviewer (D188)
+but unusable. Repair: give the route an explicit effort (a new identity tuple, so a catalog
+change with a test), or mark it inactive until then. Not fixed in-lane tonight.
