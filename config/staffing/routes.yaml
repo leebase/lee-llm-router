@@ -93,6 +93,15 @@
 #     recorded in needs-lee.md.
 
 routes:
+  - route_id: codex-gpt-5-6-sol-xhigh-openai-sub
+    model: gpt-5.6-sol
+    effort: xhigh
+    harness: codex
+    channel: openai-sub
+    dispatch_template: "/usr/bin/env CODEX_STAGE_WORKER_BINARY=/home/lee/.local/bin/codex CODEX_STAGE_WORKER_MODEL=gpt-5.6-sol CODEX_STAGE_WORKER_REASONING_EFFORT=xhigh python3 /home/lee/projects/auto-orch/scripts/codex_stage_worker.py {stage} {prompt_path} {response_path}"
+    usage_capture: none
+    status: active
+
   - route_id: codex-gpt-5-6-sol-high-openai-sub
     model: gpt-5.6-sol
     effort: high

@@ -132,7 +132,7 @@
           "uniqueItems": true
         },
         "language": {
-          "description": "Exactly the eight language values.",
+          "description": "Exactly the nine language values.",
           "type": "array",
           "items": {
             "enum": [
@@ -140,14 +140,15 @@
               "typescript",
               "shell",
               "c",
+              "go",
               "sql",
               "yaml-config",
               "markdown",
               "mixed"
             ]
           },
-          "minItems": 8,
-          "maxItems": 8,
+          "minItems": 9,
+          "maxItems": 9,
           "uniqueItems": true
         }
       }
@@ -322,6 +323,7 @@
             "typescript",
             "shell",
             "c",
+            "go",
             "sql",
             "yaml-config",
             "markdown",

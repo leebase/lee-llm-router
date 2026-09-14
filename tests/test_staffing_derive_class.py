@@ -115,6 +115,32 @@ def test_domain_matches_are_literal_owned_path_evidence(packet):
     assert "database" not in derived.class_key.split("/")[2]
 
 
+@pytest.mark.parametrize(
+    ("owned_paths", "expected_language"),
+    [
+        (("x.go",), "go"),
+        (("x.go", "x.py"), "mixed"),
+    ],
+)
+def test_go_owned_paths_derive_language(
+    tmp_path: Path, owned_paths: tuple[str, ...], expected_language: str
+) -> None:
+    packet_path = tmp_path / "go-packet.md"
+    paths = ", ".join(f"`{path}`" for path in owned_paths)
+    packet_path.write_text(
+        f"""\
+- Kind: impl
+- Declared size: 2 files, at most 80 changed lines
+- Owned paths: {paths}
+""",
+        encoding="utf-8",
+    )
+
+    derived = derive_class(packet_path, classes_path=CLASSES)
+
+    assert derived.language == expected_language
+
+
 def test_keywords_match_owned_paths_never_prose_or_route_metadata(tmp_path: Path):
     packet = tmp_path / "packet.md"
     packet.write_text(

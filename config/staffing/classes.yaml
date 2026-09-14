@@ -137,6 +137,8 @@ value_sets:
     - typescript
     - shell
     - c
+    # Packet S7b: Go is a first-class owned-path language.
+    - go
     - sql
     - yaml-config
     - markdown

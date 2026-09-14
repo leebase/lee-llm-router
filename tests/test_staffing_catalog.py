@@ -7,12 +7,15 @@ not-yet-authored live catalog YAML. No provider prompts are involved.
 from __future__ import annotations
 
 import dataclasses
+import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 import yaml
 
+from lee_llm_router.doctor import main
 from lee_llm_router.providers.base import FailureType
 from lee_llm_router.staffing import (
     DOCUMENT_ORDER,
@@ -219,6 +222,7 @@ def classes_doc() -> dict:
                 "typescript",
                 "shell",
                 "c",
+                "go",
                 "sql",
                 "yaml-config",
                 "markdown",
@@ -455,6 +459,101 @@ def test_committed_catalog_keeps_implicit_channel_instances() -> None:
                     enabled=True,
                 ),
             )
+
+
+SOL_HIGH_ROUTE = "codex-gpt-5-6-sol-high-openai-sub"
+SOL_XHIGH_ROUTE = "codex-gpt-5-6-sol-xhigh-openai-sub"
+
+
+def test_committed_catalog_loads_sol_xhigh_route() -> None:
+    config_dir = Path(__file__).resolve().parents[1] / "config" / "staffing"
+    routes = load_staffing_catalog(config_dir).routes.routes
+    route = next(route for route in routes if route.route_id == SOL_XHIGH_ROUTE)
+
+    assert route.model == "gpt-5.6-sol"
+    assert route.effort == "xhigh"
+    assert route.harness == "codex"
+    assert route.channel == "openai-sub"
+    assert "CODEX_STAGE_WORKER_REASONING_EFFORT=xhigh" in route.dispatch_template
+    assert route.usage_capture == "none"
+    assert route.status == "active"
+
+
+def test_route_show_prints_sol_xhigh_route(capsys: pytest.CaptureFixture[str]) -> None:
+    config_dir = Path(__file__).resolve().parents[1] / "config" / "staffing"
+    with pytest.raises(SystemExit) as excinfo:
+        main(
+            [
+                "route",
+                "show",
+                SOL_XHIGH_ROUTE,
+                "--catalog-dir",
+                str(config_dir),
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert excinfo.value.code == 0
+    assert SOL_XHIGH_ROUTE in captured.out
+    assert "effort: xhigh" in captured.out
+    assert "CODEX_STAGE_WORKER_REASONING_EFFORT=xhigh" in captured.out
+    assert captured.err == ""
+
+
+def test_catalog_explain_sol_xhigh_matches_sol_high_eligibility(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config_dir = Path(__file__).resolve().parents[1] / "config" / "staffing"
+    availability_path = tmp_path / "availability.json"
+    availability_path.write_text(
+        json.dumps(
+            {
+                "host": "s7b-test",
+                "observed_at": datetime.now(timezone.utc).isoformat(),
+                "subscriptions": [
+                    {
+                        "provider": "OpenAI/Codex",
+                        "bucket": "Weekly limit",
+                        "status": "ON TRACK",
+                        "remaining_pct": 80,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        main(
+            [
+                "catalog",
+                "explain",
+                "--role",
+                "impl",
+                "--class",
+                "impl/deterministic/none/s/go",
+                "--at",
+                "2026-09-15",
+                "--availability-file",
+                str(availability_path),
+                "--catalog-dir",
+                str(config_dir),
+                "--json",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    by_route = {row["route_id"]: row for row in payload["routes"]}
+    assert excinfo.value.code == 0
+    assert by_route[SOL_XHIGH_ROUTE]["eligible"] is True
+    assert (
+        by_route[SOL_XHIGH_ROUTE]["eligible"],
+        by_route[SOL_XHIGH_ROUTE]["reasons"],
+    ) == (
+        by_route[SOL_HIGH_ROUTE]["eligible"],
+        by_route[SOL_HIGH_ROUTE]["reasons"],
+    )
+    assert captured.err == ""
 
 
 def test_terms_document_types(catalog_dir: Path) -> None:

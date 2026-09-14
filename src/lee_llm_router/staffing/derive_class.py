@@ -68,6 +68,7 @@ _EXTENSION_LANGUAGES = {
     ".cc": "c",
     ".cpp": "c",
     ".cxx": "c",
+    ".go": "go",
     ".sql": "sql",
     ".yaml": "yaml-config",
     ".yml": "yaml-config",
