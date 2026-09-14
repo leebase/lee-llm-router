@@ -21,10 +21,14 @@ from lee_llm_router.staffing import (
     evaluate_eligibility,
 )
 from lee_llm_router.staffing.catalog import (
+    ChannelInstance,
     canonical_class_key,
     load_staffing_catalog,
 )
-from lee_llm_router.staffing.eligibility import resolve_route_family
+from lee_llm_router.staffing.eligibility import (
+    EligibilityInstance,
+    resolve_route_family,
+)
 
 REPO_CONFIG_DIR = Path(__file__).resolve().parents[1] / "config" / "staffing"
 
@@ -738,11 +742,11 @@ def test_different_family_not_excluded(catalog, healthy_snapshot) -> None:
     # glm-5.3-flash (unnamespaced) is family 'glm', not 'z-ai': untouched.
     opencode_glm = _by_route(rows, GLM_OPENCODE_ROUTE)
     assert opencode_glm.eligible is True
-    assert opencode_glm.reasons == ()
+    assert opencode_glm.reasons == ("inherited channel record",)
     # deepseek-v4-pro (leading token 'deepseek') differs from z-ai: untouched.
     deepseek_pro = _by_route(rows, "pi-deepseek-v4-pro-opencode-go")
     assert deepseek_pro.eligible is True
-    assert deepseek_pro.reasons == ()
+    assert deepseek_pro.reasons == ("inherited channel record",)
 
 
 def test_judge_role_applies_independence(catalog, healthy_snapshot) -> None:
@@ -792,3 +796,477 @@ def test_prose_role_author_route_is_not_applicable(catalog, healthy_snapshot) ->
         author_route_id=FABLE_ROUTE,
     )
     assert all("independence" not in row.reasons for row in rows)
+
+
+# ---------------------------------------------------------------------------
+# Packet M3-1: per-instance D216 reserve and health check
+# ---------------------------------------------------------------------------
+
+
+def test_channel_with_no_declared_instances_behaves_byte_identically(
+    catalog,
+) -> None:
+    """(a) Anthropic has no declared instances: reduces to one implicit instance
+    and behaves byte-identically to before for eligible, at-reserve, and exhausted."""
+    # 1. Healthy / above reserve
+    healthy = _snapshot(
+        {
+            "provider": "Anthropic/Claude",
+            "bucket": "Current session",
+            "status": "ON TRACK",
+            "remaining_pct": 80,
+        }
+    )
+    row_healthy = _by_route(_evaluate(catalog, healthy), _SONNET_HIGH_ROUTE)
+    assert row_healthy.eligible is True
+    assert row_healthy.reasons == ()
+    assert len(row_healthy.instance_headrooms) == 1
+    inst = row_healthy.instance_headrooms[0]
+    assert isinstance(inst, EligibilityInstance)
+    assert inst.instance_id == "anthropic-sub"
+    assert inst.eligible is True
+    assert inst.reasons == ()
+    assert inst.remaining_fraction == pytest.approx(0.80)
+    assert inst.health == "healthy"
+    assert inst.badge == "ON TRACK"
+
+    # 2. At reserve (10%)
+    at_reserve = _snapshot(
+        {
+            "provider": "Anthropic/Claude",
+            "bucket": "Current session",
+            "status": "ON TRACK",
+            "remaining_pct": 10,
+        }
+    )
+    row_reserve = _by_route(_evaluate(catalog, at_reserve), _SONNET_HIGH_ROUTE)
+    assert row_reserve.eligible is False
+    assert row_reserve.reasons == ("reserve: 10% kept in the tank (D216)",)
+    assert len(row_reserve.instance_headrooms) == 1
+    inst_res = row_reserve.instance_headrooms[0]
+    assert inst_res.instance_id == "anthropic-sub"
+    assert inst_res.eligible is False
+    assert inst_res.reasons == ("reserve: 10% kept in the tank (D216)",)
+    assert inst_res.remaining_fraction == pytest.approx(0.10)
+
+    # 3. Exhausted (0%)
+    exhausted = _snapshot(
+        {
+            "provider": "Anthropic/Claude",
+            "bucket": "Current session",
+            "status": "HOT",
+            "remaining_pct": 0,
+        }
+    )
+    row_ex = _by_route(_evaluate(catalog, exhausted), _SONNET_HIGH_ROUTE)
+    assert row_ex.eligible is False
+    assert row_ex.reasons == (
+        "channel exhausted",
+        "reserve: 10% kept in the tank (D216)",
+    )
+    assert len(row_ex.instance_headrooms) == 1
+    inst_ex = row_ex.instance_headrooms[0]
+    assert inst_ex.instance_id == "anthropic-sub"
+    assert inst_ex.eligible is False
+    assert inst_ex.reasons == (
+        "channel exhausted",
+        "reserve: 10% kept in the tank (D216)",
+    )
+    assert inst_ex.remaining_fraction == pytest.approx(0.0)
+    assert inst_ex.health == "exhausted"
+    assert inst_ex.badge == "HOT"
+
+
+def test_opencode_go_one_instance_at_reserve_one_above_route_eligible(
+    catalog,
+) -> None:
+    """(b) opencode-go has instances a/b: instance a at reserve, instance b above.
+    Route remains eligible with instance b ordered first in instance_headrooms."""
+    snapshot = _snapshot(
+        {
+            "provider": "OpenCode/Go",
+            "bucket": "Weekly",
+            "status": "ON TRACK",
+            "remaining_pct": 10,
+            "instance": "a",
+        },
+        {
+            "provider": "OpenCode/Go",
+            "bucket": "Weekly",
+            "status": "ON TRACK",
+            "remaining_pct": 60,
+            "instance": "b",
+        },
+    )
+    row = _by_route(_evaluate(catalog, snapshot), GLM_OPENCODE_ROUTE)
+    assert row.eligible is True
+    assert row.reasons == ()
+    assert len(row.instance_headrooms) == 2
+
+    # b is clear (60%) and sorts first (descending remaining_fraction)
+    first = row.instance_headrooms[0]
+    assert first.instance_id == "b"
+    assert first.eligible is True
+    assert first.reasons == ()
+    assert first.remaining_fraction == pytest.approx(0.60)
+    assert first.health == "healthy"
+    assert first.badge == "ON TRACK"
+
+    # a is at reserve (10%) and sorts second, marked ineligible
+    second = row.instance_headrooms[1]
+    assert second.instance_id == "a"
+    assert second.eligible is False
+    assert second.reasons == ("reserve: 10% kept in the tank (D216)",)
+    assert second.remaining_fraction == pytest.approx(0.10)
+    assert second.health == "degraded"
+    assert second.badge == "ON TRACK"
+
+
+def test_opencode_go_one_instance_exhausted_one_clear_route_eligible(
+    catalog,
+) -> None:
+    """(b symmetric) instance a is clear (75%), instance b is exhausted (0%).
+    Route remains eligible with instance a ordered first in instance_headrooms."""
+    snapshot = _snapshot(
+        {
+            "provider": "OpenCode/Go",
+            "bucket": "Weekly",
+            "status": "COLD",
+            "remaining_pct": 75,
+            "instance": "a",
+        },
+        {
+            "provider": "OpenCode/Go",
+            "bucket": "Weekly",
+            "status": "HOT",
+            "remaining_pct": 0,
+            "instance": "b",
+        },
+    )
+    row = _by_route(_evaluate(catalog, snapshot), GLM_OPENCODE_ROUTE)
+    assert row.eligible is True
+    assert row.reasons == ()
+    assert len(row.instance_headrooms) == 2
+
+    first = row.instance_headrooms[0]
+    assert first.instance_id == "a"
+    assert first.eligible is True
+    assert first.reasons == ()
+    assert first.remaining_fraction == pytest.approx(0.75)
+    assert first.badge == "COLD"
+
+    second = row.instance_headrooms[1]
+    assert second.instance_id == "b"
+    assert second.eligible is False
+    assert second.reasons == (
+        "channel exhausted",
+        "reserve: 10% kept in the tank (D216)",
+    )
+    assert second.remaining_fraction == pytest.approx(0.0)
+    assert second.health == "exhausted"
+
+
+def test_opencode_go_both_instances_at_or_under_reserve_vetoes_route(
+    catalog,
+) -> None:
+    """(c) Both opencode-go instances at/under reserve makes the route ineligible."""
+    snapshot = _snapshot(
+        {
+            "provider": "OpenCode/Go",
+            "bucket": "Weekly",
+            "status": "ON TRACK",
+            "remaining_pct": 10,
+            "instance": "a",
+        },
+        {
+            "provider": "OpenCode/Go",
+            "bucket": "Weekly",
+            "status": "ON TRACK",
+            "remaining_pct": 10,
+            "instance": "b",
+        },
+    )
+    row = _by_route(_evaluate(catalog, snapshot), GLM_OPENCODE_ROUTE)
+    assert row.eligible is False
+    assert row.reasons == ("reserve: 10% kept in the tank (D216)",)
+    assert len(row.instance_headrooms) == 2
+    for inst in row.instance_headrooms:
+        assert inst.eligible is False
+        assert inst.reasons == ("reserve: 10% kept in the tank (D216)",)
+        assert inst.remaining_fraction == pytest.approx(0.10)
+
+
+def test_opencode_go_both_instances_exhausted_vetoes_route_with_reasons(
+    catalog,
+) -> None:
+    """(c) Both opencode-go instances exhausted vetoes route with health
+    and reserve reasons."""
+    snapshot = _snapshot(
+        {
+            "provider": "OpenCode/Go",
+            "bucket": "Weekly",
+            "status": "HOT",
+            "remaining_pct": 0,
+            "instance": "a",
+        },
+        {
+            "provider": "OpenCode/Go",
+            "bucket": "Weekly",
+            "status": "HOT",
+            "remaining_pct": 0,
+            "instance": "b",
+        },
+    )
+    row = _by_route(_evaluate(catalog, snapshot), GLM_OPENCODE_ROUTE)
+    assert row.eligible is False
+    assert "channel exhausted" in row.reasons
+    assert "reserve: 10% kept in the tank (D216)" in row.reasons
+
+
+def test_disabled_instance_excluded_from_instance_headrooms(catalog) -> None:
+    """(d) A disabled instance never appears as eligible and is excluded from
+    instance_headrooms entirely. Uses a test-local catalog with instance b disabled."""
+    test_catalog = replace(
+        catalog,
+        channels=replace(
+            catalog.channels,
+            channels=tuple(
+                (
+                    replace(
+                        channel,
+                        instances=(
+                            ChannelInstance("a", "opencode-go/a", enabled=True),
+                            ChannelInstance("b", "opencode-go/b", enabled=False),
+                        ),
+                    )
+                    if channel.channel_id == "opencode-go"
+                    else channel
+                )
+                for channel in catalog.channels.channels
+            ),
+        ),
+    )
+    # Both instances have headroom in snapshot, but b is disabled in catalog
+    snapshot = _snapshot(
+        {
+            "provider": "OpenCode/Go",
+            "bucket": "Weekly",
+            "status": "ON TRACK",
+            "remaining_pct": 80,
+            "instance": "a",
+        },
+        {
+            "provider": "OpenCode/Go",
+            "bucket": "Weekly",
+            "status": "ON TRACK",
+            "remaining_pct": 95,
+            "instance": "b",
+        },
+    )
+    row = _by_route(_evaluate(test_catalog, snapshot), GLM_OPENCODE_ROUTE)
+    assert row.eligible is True
+    assert row.reasons == ()
+    # Only enabled instance a appears; disabled instance b is excluded entirely
+    assert len(row.instance_headrooms) == 1
+    assert row.instance_headrooms[0].instance_id == "a"
+    assert row.instance_headrooms[0].eligible is True
+    assert all(inst.instance_id != "b" for inst in row.instance_headrooms)
+
+
+def test_disabled_instance_does_not_rescue_route(catalog) -> None:
+    """(d) When the only enabled instance is at reserve, a disabled instance
+    with ample headroom does not rescue the route."""
+    test_catalog = replace(
+        catalog,
+        channels=replace(
+            catalog.channels,
+            channels=tuple(
+                (
+                    replace(
+                        channel,
+                        instances=(
+                            ChannelInstance("a", "opencode-go/a", enabled=True),
+                            ChannelInstance("b", "opencode-go/b", enabled=False),
+                        ),
+                    )
+                    if channel.channel_id == "opencode-go"
+                    else channel
+                )
+                for channel in catalog.channels.channels
+            ),
+        ),
+    )
+    snapshot = _snapshot(
+        {
+            "provider": "OpenCode/Go",
+            "bucket": "Weekly",
+            "status": "ON TRACK",
+            "remaining_pct": 5,
+            "instance": "a",
+        },
+        {
+            "provider": "OpenCode/Go",
+            "bucket": "Weekly",
+            "status": "ON TRACK",
+            "remaining_pct": 95,
+            "instance": "b",
+        },
+    )
+    row = _by_route(_evaluate(test_catalog, snapshot), GLM_OPENCODE_ROUTE)
+    assert row.eligible is False
+    assert "reserve: 10% kept in the tank (D216)" in row.reasons
+    assert len(row.instance_headrooms) == 1
+    assert row.instance_headrooms[0].instance_id == "a"
+    assert row.instance_headrooms[0].eligible is False
+
+
+def test_all_instances_disabled_emits_no_enabled_instance_reason(catalog) -> None:
+    """When all instances of a channel are disabled, a dedicated reason is added."""
+    test_catalog = replace(
+        catalog,
+        channels=replace(
+            catalog.channels,
+            channels=tuple(
+                (
+                    replace(
+                        channel,
+                        instances=(
+                            ChannelInstance("a", "opencode-go/a", enabled=False),
+                            ChannelInstance("b", "opencode-go/b", enabled=False),
+                        ),
+                    )
+                    if channel.channel_id == "opencode-go"
+                    else channel
+                )
+                for channel in catalog.channels.channels
+            ),
+        ),
+    )
+    snapshot = _snapshot(
+        {
+            "provider": "OpenCode/Go",
+            "bucket": "Weekly",
+            "status": "ON TRACK",
+            "remaining_pct": 80,
+            "instance": "a",
+        },
+    )
+    row = _by_route(_evaluate(test_catalog, snapshot), GLM_OPENCODE_ROUTE)
+    assert row.eligible is False
+    assert "no enabled instance for channel 'opencode-go'" in row.reasons
+    assert row.instance_headrooms == ()
+
+
+def test_non_subscription_channel_carries_empty_instance_headrooms(
+    catalog, healthy_snapshot
+) -> None:
+    """Non-subscription channels carry instance_headrooms=() by contract."""
+    row = _by_route(_evaluate(catalog, healthy_snapshot), GLM_OPENROUTER_ROUTE)
+    assert row.channel == "openrouter"
+    assert row.instance_headrooms == ()
+
+
+def test_instance_headrooms_none_remaining_fraction_sorts_last(catalog) -> None:
+    """When an instance has None remaining_fraction, it sorts last in
+    instance_headrooms."""
+    snapshot = _snapshot(
+        {
+            "provider": "OpenCode/Go",
+            "bucket": "Weekly",
+            "status": "ON TRACK",
+            "remaining_pct": 50,
+            "instance": "a",
+        },
+        # instance b has no bucket recorded -> unknown -> remaining_fraction is None
+    )
+    row = _by_route(_evaluate(catalog, snapshot), GLM_OPENCODE_ROUTE)
+    assert row.eligible is True  # a is healthy and clears
+    assert len(row.instance_headrooms) == 2
+    assert row.instance_headrooms[0].instance_id == "a"
+    assert row.instance_headrooms[0].remaining_fraction == pytest.approx(0.50)
+    assert row.instance_headrooms[1].instance_id == "b"
+    assert row.instance_headrooms[1].remaining_fraction is None
+    assert row.instance_headrooms[1].health == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Packet S8: declared instances inherit channel-level availability
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("remaining_pct", "eligible"),
+    ((80, True), (8, False)),
+)
+def test_declared_instances_inherit_untagged_channel_record(
+    catalog, remaining_pct: int, eligible: bool
+) -> None:
+    snapshot = _snapshot(
+        {
+            "provider": "OpenCode/Go",
+            "bucket": "Weekly",
+            "status": "ON TRACK",
+            "remaining_pct": remaining_pct,
+        }
+    )
+
+    row = _by_route(_evaluate(catalog, snapshot), GLM_OPENCODE_ROUTE)
+
+    assert row.eligible is eligible
+    assert {instance.instance_id for instance in row.instance_headrooms} == {"a", "b"}
+    for instance in row.instance_headrooms:
+        assert instance.eligible is eligible
+        assert "inherited channel record" in instance.reasons
+        assert instance.remaining_fraction == pytest.approx(remaining_pct / 100)
+        assert instance.badge == "ON TRACK"
+    if eligible:
+        assert "inherited channel record" in row.reasons
+    else:
+        assert all(
+            "reserve: 10% kept in the tank (D216)" in instance.reasons
+            for instance in row.instance_headrooms
+        )
+
+
+def test_tagged_instance_wins_while_missing_instance_inherits_channel_record(
+    catalog,
+) -> None:
+    snapshot = _snapshot(
+        {
+            "provider": "OpenCode/Go",
+            "bucket": "Weekly",
+            "status": "ON TRACK",
+            "remaining_pct": 80,
+            "instance": "a",
+        },
+        {
+            "provider": "OpenCode/Go",
+            "bucket": "Weekly",
+            "status": "ON TRACK",
+            "remaining_pct": 8,
+        },
+    )
+
+    row = _by_route(_evaluate(catalog, snapshot), GLM_OPENCODE_ROUTE)
+    instances = {instance.instance_id: instance for instance in row.instance_headrooms}
+
+    assert row.eligible is True
+    assert instances["a"].eligible is True
+    assert instances["a"].remaining_fraction == pytest.approx(0.80)
+    assert "inherited channel record" not in instances["a"].reasons
+    assert instances["b"].eligible is False
+    assert instances["b"].remaining_fraction == pytest.approx(0.08)
+    assert "inherited channel record" in instances["b"].reasons
+    assert "reserve: 10% kept in the tank (D216)" in instances["b"].reasons
+
+
+def test_missing_instance_and_channel_record_remains_unknown(catalog) -> None:
+    row = _by_route(_evaluate(catalog, _snapshot()), GLM_OPENCODE_ROUTE)
+
+    assert row.eligible is False
+    assert {instance.health for instance in row.instance_headrooms} == {"unknown"}
+    assert all(not instance.eligible for instance in row.instance_headrooms)
+    assert all(
+        "inherited channel record" not in instance.reasons
+        for instance in row.instance_headrooms
+    )

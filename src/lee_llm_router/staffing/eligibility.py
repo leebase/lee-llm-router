@@ -23,17 +23,19 @@ checks, each with a named reason string:
   authority (no T1-T4 tier is assigned to any current route/model). No
   floor check runs here, so no floor exclusion reason is ever emitted and
   recorded floors change no route's eligibility;
-* subscription headroom veto (``availability.py``) — a subscription
-  channel whose headroom is ``exhausted``, ``likely_exhausted``, or
-  ``unknown`` vetoes its routes. Metered and local channels carry no
-  committed quota records and are never vetoed for their absence;
-* subscription reserve (D216) — a subscription channel whose
-  ``remaining_fraction`` in any binding window is at or below its
-  configured ``reserve_fraction`` (default 0.10; Anthropic and Gemini
-  explicitly 0.10) excludes its routes with the reason
+* subscription headroom veto (``availability.py``) — evaluated per
+  enabled instance: an enabled instance whose headroom is ``exhausted``,
+  ``likely_exhausted``, or ``unknown`` is vetoed. Metered and local channels
+  carry no committed quota records and are never vetoed for their absence;
+* subscription reserve (D216) — evaluated per enabled instance: an enabled
+  instance whose ``remaining_fraction`` in any binding window is at or below
+  its configured ``reserve_fraction`` (default 0.10; Anthropic and Gemini
+  explicitly 0.10) is excluded with the reason
   ``reserve: N% kept in the tank (D216)``. The reserve is a policy floor,
   distinct from the availability reader's ``likely_exhausted`` fail-safe;
-  both checks run and either can independently exclude a route;
+  both checks run and either can independently exclude an instance.
+  A route is vetoed by health/reserve only when every enabled instance is
+  vetoed (or no enabled instance exists);
 * dated terms at the requested date and the badge marginal multiplier —
   each route is priced at the badge derived from its own channel's record
   in the availability snapshot (the limiting bucket's raw status badge);
@@ -98,6 +100,7 @@ from lee_llm_router.staffing.terms import (
 )
 
 __all__ = [
+    "EligibilityInstance",
     "EligibilityPrice",
     "EligibilityRow",
     "StaffingEligibilityError",
@@ -113,6 +116,9 @@ _SUBSCRIPTION_VETO_HEALTH: frozenset[Health] = frozenset(
 
 _RESERVE_REASON = "reserve"
 """Exact prefix for the subscription-channel reserve exclusion reason (D216)."""
+
+_INHERITED_CHANNEL_REASON = "inherited channel record"
+"""Informational reason when an instance uses channel-level availability."""
 
 _NO_DATA_BADGE = "NO DATA"
 """Committed badge used when a route's channel records no status badge.
@@ -193,17 +199,40 @@ class EligibilityPrice:
 
 
 @dataclass(frozen=True)
+class EligibilityInstance:
+    """Headroom and eligibility details for one enabled channel instance.
+
+    Carried on :class:`EligibilityRow` under ``instance_headrooms``. Disabled
+    instances are skipped during evaluation and excluded from
+    ``instance_headrooms`` entirely; only enabled instances appear.
+    """
+
+    instance_id: str
+    eligible: bool
+    reasons: tuple[str, ...]
+    remaining_fraction: float | None
+    health: str
+    badge: str | None
+
+
+@dataclass(frozen=True)
 class EligibilityRow:
     """One catalog route's eligibility under one class/availability/terms set.
 
-    ``reasons`` is an ordered tuple of named reason strings; ``eligible``
-    is exactly ``not reasons``. ``availability_*`` report the snapshot's
-    channel headroom (health string, limiting bucket's raw status badge,
-    smallest remaining fraction) whatever the channel kind — a reported
-    ``unknown`` health on a metered/local channel is informational only
-    and never a veto. ``pricing`` is ``None`` exactly when the replacement
-    price could not be resolved; the marginal multiplier is applied to a
-    copy, never folded into the replacement figures.
+    ``reasons`` is an ordered tuple of named diagnostic strings. The
+    ``inherited channel record`` reason is informational; every other reason
+    excludes the route. ``availability_*`` report the snapshot's channel
+    headroom (health string, limiting bucket's raw status badge, smallest
+    remaining fraction) whatever the channel kind — a reported ``unknown``
+    health on a metered/local channel is informational only and never a veto.
+    ``pricing`` is ``None`` exactly when the replacement price could not be
+    resolved; the marginal multiplier is applied to a copy, never folded into
+    the replacement figures.
+    ``instance_headrooms`` reports per-instance headroom and eligibility
+    for every enabled instance of a subscription channel, ordered by
+    descending remaining fraction (most headroom first; None sorts last).
+    For non-subscription channels or unrecognized channels, this is an
+    empty tuple. Disabled instances are excluded entirely.
     """
 
     route_id: str
@@ -218,6 +247,7 @@ class EligibilityRow:
     availability_badge: str | None
     availability_headroom: float | None
     pricing: EligibilityPrice | None
+    instance_headrooms: tuple[EligibilityInstance, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +418,29 @@ def _availability_badge(headroom: ChannelHeadroom) -> str | None:
     return None
 
 
+def _instance_or_channel_headroom(
+    availability: AvailabilitySnapshot,
+    channel: str,
+    instance: str,
+) -> tuple[ChannelHeadroom, bool]:
+    """Resolve instance headroom, inheriting a recorded channel-level value."""
+    exact = availability.instance_headroom(channel, instance)
+    if exact.buckets:
+        return exact, False
+
+    implicit = availability.instance_headroom(channel, channel)
+    if implicit.buckets:
+        return implicit, True
+
+    aggregate = availability.headroom(channel)
+    has_instance_records = any(
+        recorded_channel == channel for recorded_channel, _ in availability.instances
+    )
+    if not has_instance_records and aggregate.buckets:
+        return aggregate, True
+    return exact, False
+
+
 def _dated_terms_entry(
     terms: TermsCatalog, channel_id: str, when: date
 ) -> TermsEntry | None:
@@ -471,9 +524,10 @@ def evaluate_eligibility(
             :class:`StaffingEligibilityError`.
         availability: An already-normalised
             :class:`~lee_llm_router.availability.AvailabilitySnapshot`.
-            Subscription channels with ``exhausted``/``likely_exhausted``/
-            ``unknown`` headroom are vetoed; metered and local channels are
-            never vetoed for missing quota records.
+            Subscription channels evaluate headroom and reserve per enabled
+            instance; a route is vetoed only when every enabled instance is
+            vetoed (or no enabled instance exists). Metered and local channels
+            are never vetoed for missing quota records.
         at_date: Requested date (ISO string or :class:`datetime.date`) for
             the dated-terms check.
         openrouter_snapshot_path: Injectable pinned OpenRouter snapshot path
@@ -531,7 +585,9 @@ def evaluate_eligibility(
     rows: list[EligibilityRow] = []
     for route in catalog.routes.routes:
         reasons: list[str] = []
+        informational_reasons: list[str] = []
         channel = channels.get(route.channel)
+        instance_headrooms: tuple[EligibilityInstance, ...] = ()
         if channel is None:
             reasons.append(f"channel '{route.channel}' not in channel catalog")
             availability_health = Health.UNKNOWN.value
@@ -558,23 +614,72 @@ def evaluate_eligibility(
             role_scoped = _role_scoped_reason(catalog, route.model, governance_class)
             if role_scoped is not None:
                 reasons.append(role_scoped)
-            if (
-                channel.kind == "subscription"
-                and headroom.health in _SUBSCRIPTION_VETO_HEALTH
-            ):
-                reasons.append(f"channel {headroom.health.value}")
-            if (
-                channel.kind == "subscription"
-                and headroom.remaining_fraction is not None
-            ):
+
+            if channel.kind == "subscription":
+                enabled_instances: list[EligibilityInstance] = []
                 reserve = catalog.policy.reserve_fraction.fraction_for(
                     channel.channel_id
                 )
-                if headroom.remaining_fraction <= reserve:
-                    reasons.append(
-                        f"{_RESERVE_REASON}: {reserve * 100:.0f}% kept in "
-                        "the tank (D216)"
+                for instance in channel.effective_instances():
+                    if not instance.enabled:
+                        continue
+                    inst_headroom, inherited = _instance_or_channel_headroom(
+                        availability, channel.channel_id, instance.instance_id
                     )
+                    inst_vetoes: list[str] = []
+                    if inst_headroom.health in _SUBSCRIPTION_VETO_HEALTH:
+                        inst_vetoes.append(f"channel {inst_headroom.health.value}")
+                    if (
+                        inst_headroom.remaining_fraction is not None
+                        and inst_headroom.remaining_fraction <= reserve
+                    ):
+                        inst_vetoes.append(
+                            f"{_RESERVE_REASON}: {reserve * 100:.0f}% kept in "
+                            "the tank (D216)"
+                        )
+                    inst_reasons = [*inst_vetoes]
+                    if inherited:
+                        inst_reasons.append(_INHERITED_CHANNEL_REASON)
+                        informational_reasons.append(_INHERITED_CHANNEL_REASON)
+                    inst_badge = _availability_badge(inst_headroom)
+                    enabled_instances.append(
+                        EligibilityInstance(
+                            instance_id=instance.instance_id,
+                            eligible=not inst_vetoes,
+                            reasons=tuple(inst_reasons),
+                            remaining_fraction=inst_headroom.remaining_fraction,
+                            health=inst_headroom.health.value,
+                            badge=inst_badge,
+                        )
+                    )
+
+                if not enabled_instances:
+                    reasons.append(
+                        f"no enabled instance for channel '{channel.channel_id}'"
+                    )
+                elif not any(inst.eligible for inst in enabled_instances):
+                    for inst in enabled_instances:
+                        reasons.extend(
+                            reason
+                            for reason in inst.reasons
+                            if reason != _INHERITED_CHANNEL_REASON
+                        )
+
+                instance_headrooms = tuple(
+                    sorted(
+                        enabled_instances,
+                        key=lambda inst: (
+                            inst.remaining_fraction is not None,
+                            (
+                                inst.remaining_fraction
+                                if inst.remaining_fraction is not None
+                                else float("-inf")
+                            ),
+                        ),
+                        reverse=True,
+                    )
+                )
+
             if _dated_terms_entry(catalog.terms, channel.channel_id, when) is None:
                 reasons.append(
                     f"terms unavailable at {when.isoformat()} for channel "
@@ -617,7 +722,8 @@ def evaluate_eligibility(
                 source=replacement.source,
             )
 
-        ordered = _dedupe(reasons)
+        exclusions = _dedupe(reasons)
+        ordered = _dedupe([*reasons, *informational_reasons])
         rows.append(
             EligibilityRow(
                 route_id=route.route_id,
@@ -626,12 +732,13 @@ def evaluate_eligibility(
                 harness=route.harness,
                 channel=route.channel,
                 status=route.status,
-                eligible=not ordered,
+                eligible=not exclusions,
                 reasons=ordered,
                 availability_health=availability_health,
                 availability_badge=availability_badge,
                 availability_headroom=availability_headroom,
                 pricing=pricing,
+                instance_headrooms=instance_headrooms,
             )
         )
     return tuple(rows)
