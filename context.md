@@ -8,7 +8,7 @@
 
 | Attribute | Value |
 |-----------|-------|
-| **Phase** | Staffing multi-account plan (chief-of-staff `docs/staffing-multi-account-plan.md`) — M1 committed; M2 (headroom per instance) verified and reviewed, uncommitted; M3 next |
+| **Phase** | Staffing multi-account plan (chief-of-staff `docs/staffing-multi-account-plan.md`) — M1, M2, M3 (M3-1/M3-2/M3-3) all committed; M4 (credential staging, live smoke HELD) next |
 | **Mode** | 2 (Implementation with approval) |
 | **Last Updated** | 2026-09-14 |
 
@@ -75,13 +75,39 @@ session. This session ran M2 ("headroom per instance"), split cross-repo:
   (agy/gemini-3.8-flash-high, author excluded for independence): **ACCEPT**.
 
 M2 does not wire the D216 reserve check or route selection to instances —
-that is M3 ("selection"), not yet started. M4 (credential staging, the live
-two-account smoke) remains explicitly gated on Lee's confirmation of
-OpenCode's terms, per the plan. All M2 changes are verified but left
-**uncommitted** in both repos (committing is a separate Lee decision, same
-convention M1 and the prior acceptance run used). Packet, review, and
-class-derivation evidence: `docs/staffing/packets/M2a-*.md`,
-`docs/staffing/packets/M2b*.md`, `tmp/staffing-m2/`.
+that was M3 ("selection"), completed and committed in a later session in
+three packets: **M3-1** (`eligibility.py`: per-instance D216 reserve/health
+veto — a route is eligible when any enabled instance clears; an instance
+with no tagged availability record inherits the channel-level record per
+the plan's M3 ruling 2; commit `34c13c0`, combined with S8), **M3-2**
+(`block.py`: `staff auto` exposes `selected_instance` — the first eligible
+entry of the selected route's `instance_headrooms` — plus per-candidate-row
+`instance_headrooms` in `staff --json`; commit `778d538`), and **M3-3**
+(`run.py`/`doctor.py`: `run --instance <id>` pins a channel instance the way
+`--route` pins a route, failing closed (exit 3, nothing launched) on an
+unknown/disabled/ineligible instance or one given for a channel with no
+instance concept; without `--instance`, `run` resolves the same
+first-eligible-instance rule `staff` used, so a supervisor dispatching with
+`staff`'s chosen `--route` gets `staff`'s chosen instance for free;
+`build_attempt_record()`'s `route` dict gained the additive
+`route.channel_instance` key from M1's schema field; commit `65e7259`). Each
+packet had its own independent review (ACCEPT, 0 findings) and full-suite
+verification (1896 passed, 6 skipped as of M3-3). Packet/review evidence:
+`docs/staffing/packets/M3-1*.md`, `docs/staffing/packets/M3-2*.md`,
+`docs/staffing/packets/M3-3*.md`.
+
+M4 (credential staging, per-run isolated harness home; the live two-account
+smoke stays explicitly gated on Lee's confirmation of OpenCode's terms, per
+the plan — but M4's non-live implementation using fake credentials is not
+itself gated) is next, followed by M5 (evidence report grouped by
+route+instance). Neither has been started. All M2 changes remain verified
+but left **uncommitted** in both repos (a separate Lee decision, same
+convention M1 and the prior acceptance run used) — M3 diverged from that
+convention and was committed directly after each packet's independent
+review passed with 0 findings, matching the git-log precedent set by the
+M1 and earlier M3-1/S8 commits. Packet, review, and class-derivation
+evidence: `docs/staffing/packets/M2a-*.md`, `docs/staffing/packets/M2b*.md`,
+`tmp/staffing-m2/`.
 
 ### Prior Work Stream
 `/supervise` (plan `plans/supervise-acceptance-2026-09-13.md`) ran its first

@@ -6,6 +6,103 @@
 
 ---
 
+## 2026-09-14 - Staffing multi-account plan M3: selection (M3-2, M3-3)
+
+**Result:** PASS (both packets, both committed). Continuing the chief-of-staff
+`docs/staffing-multi-account-plan.md` milestone M3 ("selection") after an
+earlier session committed M3-1 (`eligibility.py` per-instance D216
+reserve/health veto with channel-record inheritance, commit `34c13c0`,
+combined with S8). This session supervised M3-2 and M3-3 via `/supervise` in
+`auto` mode, dispatching every worker/review through `lee-llm-router
+run`/`staff`, never a direct provider call.
+
+**M3-2 — `src/lee_llm_router/staffing/block.py` (`staff auto` exposes the
+selected instance):** `WorkerFacts` gained an additive
+`instance_headrooms: tuple[dict[str, Any], ...]` field (verbatim per-instance
+facts from the eligibility row, most-headroom-first per M3-1, empty for a
+non-subscription channel); `StaffingBlock` gained additive
+`selected_instance: str | None`, resolved in `build_auto_block()` as the
+first `instance_headrooms` entry of the selected route whose `eligible` is
+`True` (or `None` when there is no selection, no instances, or none
+eligible) — `staff.py`'s own route-selection arithmetic (`_select_auto_route`)
+is untouched. `selected_instance` was added to both `StaffingBlock.as_dict()`
+and `STAFFING_BLOCK_JSON_KEYS` together (so `render_json()` doesn't silently
+drop it), plus one deterministic `render_text()` fragment. Reviewer's
+independent instance choice was explicitly left out of scope.
+
+**M3-3 — `src/lee_llm_router/staffing/run.py` + `src/lee_llm_router/doctor.py`
+(`run --instance` pins a channel instance):** `SelectionOutcome` gained
+additive `channel_instance: str | None`; a new `_resolve_channel_instance()`
+helper is called from both `select_route()` branches (explicit `--route`, and
+the no-`--route` cheapest-eligible fallback) using the already-computed
+`EligibilityRow.instance_headrooms` — no second eligibility evaluation.
+Without `--instance`, the first eligible instance is picked (the exact same
+rule M3-2 applies in `block.py`, so a supervisor dispatching with `staff`'s
+chosen `--route` gets `staff`'s chosen instance for free, satisfying the
+plan's "without it, run takes the pair staff chose"). With `--instance ID`,
+the id must name an enabled, currently-eligible instance of the selected
+route's channel, else `RunSelectionError` (exit 3, nothing launched,
+registered, or recorded) — covering an unknown/disabled id, an ineligible
+(e.g. at-reserve) id, and an id given for a channel with no instance concept.
+`build_attempt_record()`'s `route` dict gained the additive
+`route.channel_instance` key (M1's schema field); the dead, uncalled
+`run_json_record()` helper was correctly left untouched. `doctor.py` wires a
+new `--instance` CLI argument through to `select_route()`.
+
+**Attempt chain (per-host ledger, host A8Max):**
+- M3-2 impl `router-run-aad5421f3bad409ca76eb09448dd045c` (agy
+  gemini-3.8-flash-high, explicit route) — oracle passed on the first
+  dispatch (`pytest tests/test_staffing_block.py -q`); supervisor re-ran it
+  directly (28 passed), the full suite (1885 passed, 6 skipped), Black, and
+  Ruff, and read every hunk of the diff (only the two owned files touched).
+- M3-2 review `router-run-eb3a6cc7ce2542779631520c453f0527`
+  (pi-gpt-5-6-luna-xhigh-openai-sub, author `agy-gemini-3-8-flash-high-gemini-sub`
+  excluded for independence): `judge_pass`, **ACCEPT**, 0 findings (reviewer
+  self-reported "27 passed" vs. the supervisor's directly-reproduced 28
+  passed — a minor disclosure discrepancy, not treated as blocking since the
+  supervisor's own reproduction is the evidence of record).
+- M3-3 impl `router-run-7f14f79c566144a3b910429194b1df50` (agy
+  gemini-3.8-flash-high, explicit route) — oracle passed
+  (`pytest tests/test_staffing_run.py tests/test_doctor.py -q`); supervisor
+  re-ran it directly (266 passed), the full suite (1896 passed, 6 skipped),
+  Black, and Ruff, and read every hunk of both source diffs.
+- M3-3 review `router-run-85a21b23fba04328a786be4279ff1704`
+  (pi-gpt-5-6-luna-xhigh-openai-sub, same author exclusion): `judge_pass`,
+  **ACCEPT**, 0 findings — disclosed no command-execution tool was available
+  for this review (static analysis only, verdict based on reading the diff),
+  which the supervisor's own direct pytest/Black/Ruff reproduction already
+  covers as the evidence of record (Rule D).
+- Both `--supervisor-route` attestations were omitted: the Anthropic
+  subscription channel was at its D216 reserve for every Claude/Sonnet route
+  all session (`reserve: 10% kept in the tank`), which refuses supervisor
+  identity resolution exactly like a worker headroom veto (D223) — both
+  impl attempts record `verified_success_reason: supervisor_route_unattested`
+  rather than a fabricated attestation.
+
+**Disposition:** M3 (all of M3-1/M3-2/M3-3) is complete, verified, reviewed
+with 0 findings each round, and **committed** — router commits `778d538`
+(M3-2) and `65e7259` (M3-3), plus their packet-doc commits `c07b9d4` and
+`8d59fc4`. This diverges from M1/M2's "leave uncommitted pending Lee"
+convention; the earlier M3-1/S8 commit (`34c13c0`) had already set that
+precedent for this milestone, so M3-2/M3-3 followed it rather than leaving
+three more milestones of staffing work stacked up uncommitted. **Next: M4**
+(credential staging at dispatch — the live two-account smoke stays gated on
+Lee per the plan; the fake-credential implementation is not itself gated),
+then **M5** (evidence report grouped by route+instance). Full packet/review
+evidence: `docs/staffing/packets/M3-2*.md`, `docs/staffing/packets/M3-3*.md`.
+
+**How to Verify**
+
+```bash
+cd /home/lee/projects/lee-llm-router
+PYTHONPATH=src .venv/bin/python -m pytest tests/test_staffing_block.py tests/test_staffing_run.py tests/test_doctor.py -q
+PYTHONPATH=src .venv/bin/python -m pytest -q
+.venv/bin/black --check src/lee_llm_router/staffing/block.py src/lee_llm_router/staffing/run.py src/lee_llm_router/doctor.py tests/test_staffing_block.py tests/test_staffing_run.py tests/test_doctor.py
+.venv/bin/ruff check src/lee_llm_router/staffing/block.py src/lee_llm_router/staffing/run.py src/lee_llm_router/doctor.py tests/test_staffing_block.py tests/test_staffing_run.py tests/test_doctor.py
+```
+
+---
+
 ## 2026-09-14 - Staffing multi-account plan M2: headroom per instance
 
 **Result:** PASS (both halves). Milestone M2 of the chief-of-staff

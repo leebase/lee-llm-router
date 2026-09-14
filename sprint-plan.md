@@ -9,12 +9,19 @@ Supervised via `/supervise`. M1 (catalog + schema) committed before this
 session. M2 ("headroom per instance") verified and independently reviewed
 2026-09-14 across both repos (`chief-of-staff/scripts/ai-subs.sh` — M2a;
 `lee-llm-router` `availability.py`/tests — M2b), left uncommitted pending
-Lee. **Next: M3 ("selection")** — `staff`/`eligibility.py` choose the
-instance with the most headroom above the D216 reserve, exclude an instance
-at reserve like an exhausted channel, and try the next instance before the
-next route on the same-role fallback ladder. M4 (credential staging, the
-live two-account smoke) stays gated on Lee's confirmation of OpenCode's
-terms. See `result-review.md` (2026-09-14 entry) for the full attempt chain.
+Lee. **M3 ("selection") is now complete and committed** in three packets:
+M3-1 (`eligibility.py`, per-instance D216 reserve/health veto with
+channel-record inheritance, commit `34c13c0`), M3-2 (`block.py`, `staff
+auto` exposes `selected_instance` + per-candidate `instance_headrooms`,
+commit `778d538`), and M3-3 (`run.py`/`doctor.py`, `run --instance` pins an
+instance the way `--route` pins a route, `route.channel_instance` on the
+attempt record, commit `65e7259`) — each with its own independent review
+(ACCEPT, 0 findings) and full-suite pass (1896 passed, 6 skipped after
+M3-3). **Next: M4** (credential staging at dispatch; the live two-account
+smoke stays gated on Lee's confirmation of OpenCode's terms, but the
+fake-credential implementation is not itself gated), then **M5** (evidence
+report grouped by route+instance). See `result-review.md` (2026-09-14
+entries) for the full attempt chain.
 
 ---
 
