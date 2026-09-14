@@ -1777,6 +1777,7 @@ def _run_run(args: argparse.Namespace) -> int:
             at_date=at_date,
             author_route_id=getattr(args, "author_route", None),
             route_id=route_id,
+            instance_id=getattr(args, "instance", None),
             supervisor_route_id=getattr(args, "supervisor_route", None),
             openrouter_snapshot_path=args.openrouter_snapshot,
             rate_table_path=args.rate_table,
@@ -2959,6 +2960,22 @@ def main(argv: list[str] | None = None):
             "(an excluded route exits 3 and launches nothing). Without it, "
             "the first eligible route in catalog explain marginal-price "
             "order is selected (basis 'explain_cheapest_eligible')"
+        ),
+    )
+    run_parser.add_argument(
+        "--instance",
+        default=None,
+        dest="instance",
+        metavar="INSTANCE_ID",
+        help=(
+            "Explicit channel instance id: pins an instance the way --route "
+            "pins a route. The instance must exist, be enabled, and be "
+            "currently eligible for the selected route's channel (an unknown, "
+            "disabled, or ineligible instance exits 3 and launches nothing; "
+            "specifying an instance for a non-subscription channel also exits 3). "
+            "Without it, run selects the first eligible instance from the "
+            "route's instance_headrooms (matching staff auto's selected_instance), "
+            "or None when the channel has no instance concept"
         ),
     )
     run_parser.add_argument(

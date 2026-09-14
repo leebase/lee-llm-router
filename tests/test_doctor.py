@@ -2206,3 +2206,144 @@ def test_census_cli_corrupt_registry_record_exits_3(tmp_path, monkeypatch, capsy
         main(["census"])
     assert exc_info.value.code == 3
     assert "not valid JSON" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# run --instance CLI (M3-3)
+# ---------------------------------------------------------------------------
+
+
+def test_run_cli_instance_forwarded_to_select_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--instance parses and reaches select_route with the supplied instance id."""
+    import lee_llm_router.staffing.run as run_module
+    from lee_llm_router.doctor import main
+
+    packet = tmp_path / "packet.md"
+    packet.write_text("- Kind: impl\n", encoding="utf-8")
+    snapshot = _write_snapshot(tmp_path)
+
+    recorded_instance_id: dict[str, str | None] = {}
+    orig_select_route = run_module.select_route
+
+    def spy_select_route(*args, **kwargs):
+        recorded_instance_id["value"] = kwargs.get("instance_id")
+        return orig_select_route(*args, **kwargs)
+
+    monkeypatch.setattr(run_module, "select_route", spy_select_route)
+
+    # Calling with --instance test-pin-id will fail selection at test-pin-id,
+    # cleanly proving that args.instance reached select_route(..., instance_id=...).
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "run",
+                "--role",
+                "impl",
+                "--class",
+                "impl/deterministic/none/s/python",
+                "--packet",
+                str(packet),
+                "--route",
+                "codex-gpt-5-6-sol-low-openai-sub",
+                "--instance",
+                "test-pin-id",
+                "--availability-file",
+                str(snapshot),
+                "--at",
+                "2026-09-15",
+                "--owned-paths",
+                str(packet),
+            ]
+        )
+
+    assert exc_info.value.code == 3
+    assert recorded_instance_id["value"] == "test-pin-id"
+
+
+def test_run_cli_omitted_instance_defaults_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When --instance is omitted, instance_id=None reaches select_route."""
+    import lee_llm_router.staffing.run as run_module
+    from lee_llm_router.doctor import main
+
+    packet = tmp_path / "packet.md"
+    packet.write_text("- Kind: impl\n", encoding="utf-8")
+    snapshot = _write_snapshot(tmp_path)
+
+    recorded_instance_id: dict[str, str | None] = {}
+    orig_select_route = run_module.select_route
+
+    def spy_select_route(*args, **kwargs):
+        recorded_instance_id["value"] = kwargs.get("instance_id")
+        return orig_select_route(*args, **kwargs)
+
+    monkeypatch.setattr(run_module, "select_route", spy_select_route)
+
+    # Stop after select_route by raising a dummy exception from the spy or letting
+    # it proceed. Since we only want to test forwarding, we can let it raise exit 3.
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "run",
+                "--role",
+                "impl",
+                "--class",
+                "impl/deterministic/none/s/python",
+                "--packet",
+                str(packet),
+                "--route",
+                "no-such-route",
+                "--availability-file",
+                str(snapshot),
+                "--at",
+                "2026-09-15",
+                "--owned-paths",
+                str(packet),
+            ]
+        )
+
+    assert recorded_instance_id["value"] is None
+
+
+def test_run_cli_invalid_instance_refused_exit_3(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Invalid --instance produces documented exit-3 refusal at the CLI boundary."""
+    from lee_llm_router.doctor import main
+
+    packet = tmp_path / "packet.md"
+    packet.write_text("- Kind: impl\n", encoding="utf-8")
+    snapshot = _write_snapshot(tmp_path)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "run",
+                "--role",
+                "impl",
+                "--class",
+                "impl/deterministic/none/s/python",
+                "--packet",
+                str(packet),
+                "--route",
+                "codex-gpt-5-6-sol-low-openai-sub",
+                "--instance",
+                "nonexistent-inst",
+                "--availability-file",
+                str(snapshot),
+                "--at",
+                "2026-09-15",
+                "--owned-paths",
+                str(packet),
+            ]
+        )
+
+    assert exc_info.value.code == 3
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "run:" in captured.err
+    assert "--instance 'nonexistent-inst'" in captured.err
+    assert "does not match any enabled instance" in captured.err

@@ -389,8 +389,9 @@ class RunSelectionError(Exception):
 
     Mirrors the old resolver's ``ResolutionError``: a plain
     refusal carrying the process exit code and a stable machine ``kind``
-    (``excluded``, ``unknown_route``, ``no_eligible``, ``invalid_class``,
-    ``invalid_date``, ``invalid_metadata``), not a provider failure.
+    (``excluded``, ``unknown_route``, ``unknown_instance``, ``no_eligible``,
+    ``invalid_class``, ``invalid_date``, ``invalid_metadata``), not a
+    provider failure.
     """
 
     def __init__(
@@ -456,6 +457,10 @@ class SelectionOutcome:
     committed channel catalog. Fail-closed callers must treat ``None`` like
     a metered channel: only a channel positively known to be non-metered
     excuses missing per-token cost evidence."""
+    channel_instance: str | None = None
+    """The resolved instance id for the selected route's channel, or ``None``
+    when the channel is not a subscription channel (empty instance_headrooms)
+    or no instance clears."""
 
 
 @dataclass(frozen=True)
@@ -574,6 +579,62 @@ def _channel_kind(catalog: StaffingCatalog, channel_id: str) -> str | None:
     )
 
 
+def _resolve_channel_instance(
+    row: EligibilityRow,
+    instance_id: str | None,
+) -> str | None:
+    """Resolve the channel instance id for the selected route.
+
+    Without ``instance_id``, returns the first eligible instance from the
+    route's ``instance_headrooms`` (matching ``staff auto``'s selection rule),
+    or ``None`` if the channel has no instance concept or no instance is
+    eligible.
+
+    With ``instance_id``, verifies that the route's channel has instances,
+    the requested instance exists and is enabled, and is currently eligible.
+    Otherwise raises :class:`RunSelectionError` with exit code 3.
+    """
+    if instance_id is None:
+        for entry in row.instance_headrooms:
+            if getattr(entry, "eligible", False):
+                inst_id = getattr(entry, "instance_id", None)
+                if inst_id:
+                    return inst_id
+        return None
+
+    if not row.instance_headrooms:
+        raise RunSelectionError(
+            f"cannot specify --instance {instance_id!r} for route {row.route_id!r}: "
+            f"channel {row.channel!r} has no instance concept",
+            kind="unknown_instance",
+        )
+
+    matched = next(
+        (
+            entry
+            for entry in row.instance_headrooms
+            if getattr(entry, "instance_id", None) == instance_id
+        ),
+        None,
+    )
+    if matched is None:
+        raise RunSelectionError(
+            f"--instance {instance_id!r} does not match any enabled "
+            f"instance for route {row.route_id!r}",
+            kind="unknown_instance",
+        )
+
+    if not getattr(matched, "eligible", False):
+        reasons_str = "; ".join(getattr(matched, "reasons", ()))
+        raise RunSelectionError(
+            f"instance {instance_id!r} of route {row.route_id!r} is not "
+            f"eligible: {reasons_str}",
+            kind="excluded",
+        )
+
+    return instance_id
+
+
 def select_route(
     catalog: StaffingCatalog,
     availability: AvailabilitySnapshot,
@@ -586,6 +647,7 @@ def select_route(
     class_key: str,
     at_date: date | str,
     route_id: str | None = None,
+    instance_id: str | None = None,
     author_route_id: str | None = None,
     supervisor_route_id: str | None = None,
     openrouter_snapshot_path: str | Path | None = None,
@@ -614,6 +676,12 @@ def select_route(
         route_id: Explicit ``--route`` selection. The route must exist and
             be currently eligible; otherwise :class:`RunSelectionError`
             with exit code 3 and the exact explain reason.
+        instance_id: Optional explicit ``--instance`` pin. When supplied,
+            pins a specific channel instance for the selected route. The
+            instance must exist, be enabled, and be eligible (otherwise
+            :class:`RunSelectionError` with exit code 3). When omitted, the
+            first eligible instance in ``instance_headrooms`` is selected,
+            or ``None`` for channels without instances or with none eligible.
         supervisor_route_id: Optional ``--supervisor-route`` attestation
             (P1-4 ruling 3): the caller attests its own route. The id must
             name a known, active, currently usable catalog route — every
@@ -639,8 +707,10 @@ def select_route(
     Raises:
         RunSelectionError: When the class arguments are invalid, the
             explicit route id matches no catalog route, the explicit route
-            is not currently eligible, or no route is eligible for
-            role/class selection. ``exit_code`` is always 3.
+            is not currently eligible, no route is eligible for
+            role/class selection, or the explicit instance is unknown,
+            disabled, ineligible, or specified for a channel with no
+            instance concept. ``exit_code`` is always 3.
     """
     when = _normalize_at_date(at_date)
     try:
@@ -701,6 +771,7 @@ def select_route(
             openrouter_snapshot_path=openrouter_snapshot_path,
             rate_table_path=rate_table_path,
         )
+        channel_instance = _resolve_channel_instance(row, instance_id)
         return SelectionOutcome(
             route=route,
             basis=SELECTION_BASIS_EXPLICIT,
@@ -716,6 +787,7 @@ def select_route(
             cache_marginal_usd_per_token=cache_marg,
             cache_rates_checked=True,
             channel_kind=_channel_kind(catalog, route.channel),
+            channel_instance=channel_instance,
         )
 
     eligible = sorted(
@@ -734,6 +806,7 @@ def select_route(
         openrouter_snapshot_path=openrouter_snapshot_path,
         rate_table_path=rate_table_path,
     )
+    channel_instance = _resolve_channel_instance(selected, instance_id)
     return SelectionOutcome(
         route=route,
         basis=SELECTION_BASIS_EXPLAIN_CHEAPEST_ELIGIBLE,
@@ -749,6 +822,7 @@ def select_route(
         cache_marginal_usd_per_token=cache_marg,
         cache_rates_checked=True,
         channel_kind=_channel_kind(catalog, route.channel),
+        channel_instance=channel_instance,
     )
 
 
@@ -1599,6 +1673,7 @@ def build_attempt_record(
             "harness": route.harness,
             "channel": route.channel,
             "provider": provider,
+            "channel_instance": outcome.channel_instance,
         },
         "class_record": dict(class_record),
         "verdict": verdict,

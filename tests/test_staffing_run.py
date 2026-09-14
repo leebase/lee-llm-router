@@ -435,6 +435,7 @@ def _run_cli(
     role: str = IMPL_ROLE,
     class_string: str = IMPL_CLASS,
     route: str | None = None,
+    instance: str | None = None,
     supervisor_route: str | None = None,
     workdir: Path | None = None,
     parent: str | None = None,
@@ -449,7 +450,8 @@ def _run_cli(
     """Invoke ``doctor.main(["run", ...])`` with fakes and capture output.
 
     ``--role`` and ``--class`` are always supplied (the corrected contract
-    makes them mandatory); ``route`` selects the optional explicit route and
+    makes them mandatory); ``route`` selects the optional explicit route,
+    ``instance`` selects the optional explicit channel instance, and
     ``supervisor_route`` supplies the optional caller attestation. The fake
     subprocess boundary is always patched, so no invocation can
     ever reach a real harness binary. Returns ``(exit_code, captured)``;
@@ -481,6 +483,8 @@ def _run_cli(
     ]
     if route is not None:
         argv += ["--route", route]
+    if instance is not None:
+        argv += ["--instance", instance]
     if supervisor_route is not None:
         argv += ["--supervisor-route", supervisor_route]
     if workdir is not None:
@@ -602,6 +606,7 @@ def test_run_explain_cheapest_selects_first_eligible(
         "harness": route.harness,
         "channel": route.channel,
         "provider": payload["router_event"]["provider"],
+        "channel_instance": route.channel,
     }
     selection = payload["selection"]
     assert selection["basis"] == "explain_cheapest_eligible"
@@ -668,6 +673,7 @@ def test_run_explicit_eligible_route(
         "harness": route.harness,
         "channel": route.channel,
         "provider": payload["router_event"]["provider"],
+        "channel_instance": "openai-sub",
     }
     assert len(launcher.processes) == 1
 
@@ -5037,3 +5043,544 @@ def test_artifacts_write_failure_sets_none_dir_and_notes(
     assert any(
         "persistence failed" in note for note in record["provenance"]["notes"]
     ), f"expected persistence failure in notes: {record['provenance']['notes']}"
+
+
+# ---------------------------------------------------------------------------
+# M3-3: run --instance pins an instance; attempt record carries it
+# ---------------------------------------------------------------------------
+
+OPENCODE_GO_ROUTE = "pi-glm-5-3-flash-opencode-go"
+
+
+def _write_opencode_instance_snapshot(
+    path: Path,
+    instance_a: tuple[str, int] = ("ON TRACK", 10),
+    instance_b: tuple[str, int] = ("ON TRACK", 60),
+    *,
+    codex: tuple[str, int] | None = ("ON TRACK", 80),
+    anthropic: tuple[str, int] | None = ("COLD", 90),
+    gemini: tuple[str, int] | None = ("ON TRACK", 60),
+) -> Path:
+    """Write an availability snapshot with explicit opencode-go instances."""
+    subscriptions = []
+    if codex is not None:
+        subscriptions.append(
+            {
+                "provider": "OpenAI/Codex",
+                "bucket": "Weekly limit",
+                "status": codex[0],
+                "remaining_pct": codex[1],
+            }
+        )
+    if anthropic is not None:
+        subscriptions.append(
+            {
+                "provider": "Anthropic/Claude",
+                "bucket": "Current session",
+                "status": anthropic[0],
+                "remaining_pct": anthropic[1],
+            }
+        )
+    if gemini is not None:
+        subscriptions.append(
+            {
+                "provider": "Gemini/agy",
+                "bucket": "Gemini models",
+                "status": gemini[0],
+                "remaining_pct": gemini[1],
+            }
+        )
+    subscriptions.append(
+        {
+            "provider": "OpenCode/Go",
+            "bucket": "Weekly",
+            "status": instance_a[0],
+            "remaining_pct": instance_a[1],
+            "instance": "a",
+        }
+    )
+    subscriptions.append(
+        {
+            "provider": "OpenCode/Go",
+            "bucket": "Weekly",
+            "status": instance_b[0],
+            "remaining_pct": instance_b[1],
+            "instance": "b",
+        }
+    )
+    observed_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    payload = {
+        "host": "run-test",
+        "observed_at": observed_at.isoformat(),
+        "subscriptions": subscriptions,
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_select_route_no_instance_picks_first_eligible_instance(
+    catalog_dir: Path, tmp_path: Path
+) -> None:
+    """(a) Without --instance, the first eligible instance is chosen."""
+    snap_b_first = _write_opencode_instance_snapshot(
+        tmp_path / "snap_b.json",
+        instance_a=("ON TRACK", 10),  # at reserve (10%), ineligible
+        instance_b=("ON TRACK", 60),  # eligible
+    )
+    catalog = load_staffing_catalog(catalog_dir)
+    avail_b = load_availability(snap_b_first)
+
+    outcome = select_route(
+        catalog,
+        avail_b,
+        role=IMPL_ROLE,
+        oracle_type="deterministic",
+        size_band="s",
+        language="python",
+        class_key=IMPL_CLASS,
+        at_date="2026-09-15",
+        route_id=OPENCODE_GO_ROUTE,
+        instance_id=None,
+    )
+    # Instance a is first in channels.yaml supply order, but b has headroom and
+    # is eligible; channel_instance resolves to b.
+    assert outcome.channel_instance == "b"
+
+    # Symmetrically, when a is clear (75%) and b is exhausted (0%):
+    snap_a_first = _write_opencode_instance_snapshot(
+        tmp_path / "snap_a.json",
+        instance_a=("ON TRACK", 75),
+        instance_b=("EXHAUSTED", 0),
+    )
+    avail_a = load_availability(snap_a_first)
+    outcome_a = select_route(
+        catalog,
+        avail_a,
+        role=IMPL_ROLE,
+        oracle_type="deterministic",
+        size_band="s",
+        language="python",
+        class_key=IMPL_CLASS,
+        at_date="2026-09-15",
+        route_id=OPENCODE_GO_ROUTE,
+        instance_id=None,
+    )
+    assert outcome_a.channel_instance == "a"
+
+
+def test_select_route_no_instance_non_subscription_channel_resolves_none(
+    catalog_dir: Path, snapshot: Path
+) -> None:
+    """(b) Without --instance, non-subscription channel resolves to None."""
+    catalog = load_staffing_catalog(catalog_dir)
+    avail = load_availability(snapshot)
+
+    outcome = select_route(
+        catalog,
+        avail,
+        role=IMPL_ROLE,
+        oracle_type="deterministic",
+        size_band="s",
+        language="python",
+        class_key=IMPL_CLASS,
+        at_date="2026-09-15",
+        route_id=PI_ROUTE,  # openrouter metered channel
+        instance_id=None,
+    )
+    assert outcome.channel_instance is None
+
+
+def test_select_route_explicit_instance_accepted_when_eligible(
+    catalog_dir: Path, tmp_path: Path
+) -> None:
+    """(c) Explicit --instance naming an eligible instance is accepted."""
+    snap = _write_opencode_instance_snapshot(
+        tmp_path / "snap.json",
+        instance_a=("ON TRACK", 50),
+        instance_b=("ON TRACK", 60),
+    )
+    catalog = load_staffing_catalog(catalog_dir)
+    avail = load_availability(snap)
+
+    # b is accepted
+    outcome_b = select_route(
+        catalog,
+        avail,
+        role=IMPL_ROLE,
+        oracle_type="deterministic",
+        size_band="s",
+        language="python",
+        class_key=IMPL_CLASS,
+        at_date="2026-09-15",
+        route_id=OPENCODE_GO_ROUTE,
+        instance_id="b",
+    )
+    assert outcome_b.channel_instance == "b"
+
+    # a is accepted even though b has higher headroom
+    outcome_a = select_route(
+        catalog,
+        avail,
+        role=IMPL_ROLE,
+        oracle_type="deterministic",
+        size_band="s",
+        language="python",
+        class_key=IMPL_CLASS,
+        at_date="2026-09-15",
+        route_id=OPENCODE_GO_ROUTE,
+        instance_id="a",
+    )
+    assert outcome_a.channel_instance == "a"
+
+
+def test_select_route_ineligible_instance_raises_exit_3_nothing_launched(
+    catalog_dir: Path,
+    tmp_path: Path,
+    packet: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    scratch_state: dict[str, Path],
+) -> None:
+    """(d) --instance naming an ineligible instance exits 3 with no side effects."""
+    from lee_llm_router.staffing.run import RunSelectionError
+
+    snap = _write_opencode_instance_snapshot(
+        tmp_path / "snap.json",
+        instance_a=("ON TRACK", 10),  # at reserve (10%)
+        instance_b=("ON TRACK", 60),
+    )
+    catalog = load_staffing_catalog(catalog_dir)
+    avail = load_availability(snap)
+
+    # Unit-level exception check
+    with pytest.raises(RunSelectionError) as exc_info:
+        select_route(
+            catalog,
+            avail,
+            role=IMPL_ROLE,
+            oracle_type="deterministic",
+            size_band="s",
+            language="python",
+            class_key=IMPL_CLASS,
+            at_date="2026-09-15",
+            route_id=OPENCODE_GO_ROUTE,
+            instance_id="a",
+        )
+    assert exc_info.value.exit_code == 3
+    assert exc_info.value.kind == "excluded"
+    assert (
+        "instance 'a' of route 'pi-glm-5-3-flash-opencode-go' is not eligible"
+        in str(exc_info.value)
+    )
+    assert "reserve: 10% kept in the tank (D216)" in str(exc_info.value)
+
+    # CLI-level check: no dispatch, no registry, no attempts/events recorded
+    launcher = LaunchRecorder()
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snap,
+        packet_path=packet,
+        route=OPENCODE_GO_ROUTE,
+        instance="a",
+        launcher=launcher,
+    )
+    assert code == 3
+    assert launcher.processes == []
+    assert census_registry(registry_dir=scratch_state["registry"]).live == ()
+    assert not scratch_state["attempts"].exists()
+    assert not scratch_state["events"].exists()
+
+
+def test_select_route_unknown_or_disabled_instance_raises_exit_3(
+    catalog_dir: Path,
+    tmp_path: Path,
+    packet: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """(e) --instance naming unknown or disabled instance id exits 3."""
+    from lee_llm_router.staffing.run import RunSelectionError
+
+    snap = _write_opencode_instance_snapshot(
+        tmp_path / "snap.json",
+        instance_a=("ON TRACK", 60),
+        instance_b=("ON TRACK", 60),
+    )
+    catalog = load_staffing_catalog(catalog_dir)
+    avail = load_availability(snap)
+
+    # Unknown instance
+    with pytest.raises(RunSelectionError) as exc_info:
+        select_route(
+            catalog,
+            avail,
+            role=IMPL_ROLE,
+            oracle_type="deterministic",
+            size_band="s",
+            language="python",
+            class_key=IMPL_CLASS,
+            at_date="2026-09-15",
+            route_id=OPENCODE_GO_ROUTE,
+            instance_id="unknown_inst_id",
+        )
+    assert exc_info.value.exit_code == 3
+    assert exc_info.value.kind == "unknown_instance"
+    assert "--instance 'unknown_inst_id'" in str(exc_info.value)
+    assert "pi-glm-5-3-flash-opencode-go" in str(exc_info.value)
+
+    # Disabled instance in catalog
+    channels_path = catalog_dir / "channels.yaml"
+    channels_data = yaml.safe_load(channels_path.read_text(encoding="utf-8"))
+    for ch in channels_data["channels"]:
+        if ch["channel_id"] == "opencode-go":
+            for inst in ch["instances"]:
+                if inst["instance_id"] == "b":
+                    inst["enabled"] = False
+    channels_path.write_text(yaml.safe_dump(channels_data), encoding="utf-8")
+    catalog_disabled = load_staffing_catalog(catalog_dir)
+
+    with pytest.raises(RunSelectionError) as exc_info:
+        select_route(
+            catalog_disabled,
+            avail,
+            role=IMPL_ROLE,
+            oracle_type="deterministic",
+            size_band="s",
+            language="python",
+            class_key=IMPL_CLASS,
+            at_date="2026-09-15",
+            route_id=OPENCODE_GO_ROUTE,
+            instance_id="b",
+        )
+    assert exc_info.value.exit_code == 3
+    assert exc_info.value.kind == "unknown_instance"
+    assert "--instance 'b'" in str(exc_info.value)
+    assert "pi-glm-5-3-flash-opencode-go" in str(exc_info.value)
+
+    # CLI check with unknown instance
+    launcher = LaunchRecorder()
+    code, _ = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snap,
+        packet_path=packet,
+        route=OPENCODE_GO_ROUTE,
+        instance="unknown_inst_id",
+        launcher=launcher,
+    )
+    assert code == 3
+    assert launcher.processes == []
+
+
+def test_select_route_instance_on_channel_without_instance_concept_raises_exit_3(
+    catalog_dir: Path,
+    snapshot: Path,
+    packet: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """(f) --instance on a non-subscription channel exits 3."""
+    from lee_llm_router.staffing.run import RunSelectionError
+
+    catalog = load_staffing_catalog(catalog_dir)
+    avail = load_availability(snapshot)
+
+    with pytest.raises(RunSelectionError) as exc_info:
+        select_route(
+            catalog,
+            avail,
+            role=IMPL_ROLE,
+            oracle_type="deterministic",
+            size_band="s",
+            language="python",
+            class_key=IMPL_CLASS,
+            at_date="2026-09-15",
+            route_id=PI_ROUTE,  # metered openrouter
+            instance_id="any-instance",
+        )
+    assert exc_info.value.exit_code == 3
+    assert exc_info.value.kind == "unknown_instance"
+    assert "cannot specify --instance 'any-instance'" in str(exc_info.value)
+    assert "pi-z-ai-glm-5-3-flash-openrouter" in str(exc_info.value)
+    assert "openrouter" in str(exc_info.value)
+
+    # CLI check
+    launcher = LaunchRecorder()
+    code, _ = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=PI_ROUTE,
+        instance="any-instance",
+        launcher=launcher,
+    )
+    assert code == 3
+    assert launcher.processes == []
+
+
+def test_build_attempt_record_carries_channel_instance(
+    catalog_dir: Path, snapshot: Path, scratch_state: dict[str, Path]
+) -> None:
+    """(g) build_attempt_record carries outcome.channel_instance in both cases."""
+    from lee_llm_router.staffing.eligibility import EligibilityPrice
+    from lee_llm_router.staffing.run import (
+        DispatchOutcome,
+        SelectionOutcome,
+        build_attempt_record,
+    )
+
+    catalog = load_staffing_catalog(catalog_dir)
+    route = next(r for r in catalog.routes.routes if r.route_id == CODEX_ROUTE)
+    pricing = EligibilityPrice(
+        badge="TOO FAST",
+        multiplier=1.0,
+        replacement_input_usd_per_token=0.0,
+        replacement_output_usd_per_token=0.0,
+        marginal_input_usd_per_token=0.0,
+        marginal_output_usd_per_token=0.0,
+        source="rate-table:gpt-5.6-sol",
+    )
+    dispatch = DispatchOutcome(
+        argv=("codex", "exec"),
+        exit_code=0,
+        stdout="ok\n",
+        stderr="",
+        duration_seconds=1.0,
+        timed_out=False,
+        usage={
+            "basis": "provider_reported",
+            "input_tokens": 10,
+            "output_tokens": 5,
+        },
+    )
+    availability = load_availability(snapshot)
+    class_record = {
+        "role": "impl",
+        "oracle_type": "deterministic",
+        "size_band": "s",
+        "language": "python",
+        "class_key": "impl/deterministic/none/s/python",
+    }
+
+    # Case 1: non-None channel_instance
+    outcome_inst = SelectionOutcome(
+        route=route,
+        basis="explicit",
+        reason="test",
+        explain_ref="explain",
+        excluded=(),
+        pricing=pricing,
+        channel_instance="b",
+    )
+    record_inst = build_attempt_record(
+        outcome=outcome_inst,
+        dispatch=dispatch,
+        oracle=None,
+        packet_id="sha256:test1",
+        class_record=class_record,
+        availability=availability,
+        at_date=date(2026, 9, 15),
+    )
+    assert record_inst["route"]["channel_instance"] == "b"
+
+    # Case 2: None channel_instance
+    outcome_none = SelectionOutcome(
+        route=route,
+        basis="explicit",
+        reason="test",
+        explain_ref="explain",
+        excluded=(),
+        pricing=pricing,
+        channel_instance=None,
+    )
+    record_none = build_attempt_record(
+        outcome=outcome_none,
+        dispatch=dispatch,
+        oracle=None,
+        packet_id="sha256:test2",
+        class_record=class_record,
+        availability=availability,
+        at_date=date(2026, 9, 15),
+    )
+    assert record_none["route"]["channel_instance"] is None
+
+
+def test_single_instance_channel_resolves_implicit_instance(
+    catalog_dir: Path,
+    snapshot: Path,
+    packet: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Subscription channel with no declared instances resolves implicit id."""
+    from lee_llm_router.staffing.run import RunSelectionError
+
+    catalog = load_staffing_catalog(catalog_dir)
+    avail = load_availability(snapshot)
+
+    # Without --instance, resolves to implicit instance id ("openai-sub")
+    outcome_default = select_route(
+        catalog,
+        avail,
+        role=IMPL_ROLE,
+        oracle_type="deterministic",
+        size_band="s",
+        language="python",
+        class_key=IMPL_CLASS,
+        at_date="2026-09-15",
+        route_id=CODEX_ROUTE,
+        instance_id=None,
+    )
+    assert outcome_default.channel_instance == "openai-sub"
+
+    # With --instance naming that implicit instance id: accepted
+    outcome_pinned = select_route(
+        catalog,
+        avail,
+        role=IMPL_ROLE,
+        oracle_type="deterministic",
+        size_band="s",
+        language="python",
+        class_key=IMPL_CLASS,
+        at_date="2026-09-15",
+        route_id=CODEX_ROUTE,
+        instance_id="openai-sub",
+    )
+    assert outcome_pinned.channel_instance == "openai-sub"
+
+    # With --instance naming a nonexistent instance on this channel: exit 3
+    with pytest.raises(RunSelectionError) as exc_info:
+        select_route(
+            catalog,
+            avail,
+            role=IMPL_ROLE,
+            oracle_type="deterministic",
+            size_band="s",
+            language="python",
+            class_key=IMPL_CLASS,
+            at_date="2026-09-15",
+            route_id=CODEX_ROUTE,
+            instance_id="nonexistent-inst",
+        )
+    assert exc_info.value.exit_code == 3
+    assert exc_info.value.kind == "unknown_instance"
+
+    # Dispatched via CLI records the implicit instance on the attempt
+    launcher = LaunchRecorder(chunks=[CODEX_RECEIPT_STDOUT.encode("utf-8")])
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        launcher=launcher,
+    )
+    assert code == 0
+    payload = json.loads(captured.out)
+    assert payload["route"]["channel_instance"] == "openai-sub"
