@@ -847,3 +847,12 @@ HOME for credentials. Not blocking: a sandboxed reviewer cannot run live harness
 `invalid model selection` (attempt `router-run-2b424a7d…`). It is eligible as a reviewer (D188)
 but unusable. Repair: give the route an explicit effort (a new identity tuple, so a catalog
 change with a test), or mark it inactive until then. Not fixed in-lane tonight.
+
+## Filed 2026-09-14 22:20Z (Chief) — zero-duration exit-0 dispatches are recorded as "unverified", not failures
+
+Observed in another lane: packet `…ba2cfbc4` on `codex-gpt-5-6-sol-low-openai-sub`, seven attempts
+in 15 minutes, each `exit_code=0, duration_seconds=0.00009`, no oracle, verdict `unverified`. No
+worker launched, yet the record is not a failure, so the supervising session re-dispatched
+unchanged and the S5b refusal (which keys on stall/no-progress kills) did not apply. Repair to
+plan: a dispatch that exits in under a second with no output and no owned-file change is
+`platform_env` (kind `no_launch`), and the unchanged-re-dispatch refusal should cover it.
