@@ -213,6 +213,25 @@ def test_auto_is_proof_first_when_expected_cost_is_unavailable(
     assert "auto never selects an unproven route" in result.text
 
 
+def test_auto_escalation_places_eligible_subscriptions_before_metered(
+    catalog, availability
+) -> None:
+    payload = _auto(catalog, availability).payload
+    channel_kind = {
+        channel.channel_id: channel.kind for channel in catalog.channels.channels
+    }
+    worker_by_route = {worker["route_id"]: worker for worker in payload["workers"]}
+    kinds = [
+        channel_kind[worker_by_route[route_id]["channel"]]
+        for route_id in payload["escalation"]
+    ]
+
+    first_metered = kinds.index("metered")
+    assert "subscription" in kinds
+    assert all(kind == "subscription" for kind in kinds[:first_metered])
+    assert "subscription" not in kinds[first_metered:]
+
+
 def test_auto_exposes_every_phase_zero_exclusion(catalog) -> None:
     openrouter_locked = replace(
         catalog,

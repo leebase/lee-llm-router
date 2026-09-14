@@ -254,6 +254,18 @@ def _marginal_rank(rung: LadderInput) -> tuple[float, ...]:
     return (0.0, input_rate, output_rate)
 
 
+def _channel_tier(route: str, channel_kind_by_route: Mapping[str, str] | None) -> int:
+    """Return the D215 prepaid-first tier for an eligible route."""
+    if channel_kind_by_route is None:
+        return 0
+    kind = channel_kind_by_route.get(route)
+    if kind == "subscription":
+        return 0
+    if kind == "metered":
+        return 1
+    return 2
+
+
 def calculate_ladder(
     rungs: Iterable[LadderInput | Mapping[str, Any]],
     *,
@@ -263,6 +275,7 @@ def calculate_ladder(
     attempt_records: Iterable[object] = (),
     supervisor_route: str | None = None,
     class_key: str | None = None,
+    channel_kind_by_route: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Calculate D211 expected costs and select an argmin escalation suffix.
 
@@ -270,7 +283,9 @@ def calculate_ladder(
     q_prime, E``.  If every dependency is known, ``argmin_start`` is the
     minimum-E route (stable on ties).  If any expected cost is unavailable,
     all eligible routes are instead stably ordered by proven-before-unproven,
-    then current marginal price, and the status explicitly says why.
+    then current marginal price, and the status explicitly says why.  When
+    channel kinds are supplied, the D215 subscription, metered, and other
+    tiers precede those existing ordering keys.
     """
 
     terminal = _finite_nonnegative(human_escalation_cost_usd)
@@ -381,16 +396,31 @@ def calculate_ladder(
         )
 
     if all(value is not None for value in expected):
-        start_index = min(
-            range(len(items)), key=lambda index: expected[index]  # type: ignore[arg-type]
-        )
-        ordered = rendered
-        escalation = [item.route for item in items[start_index:]]
+        if channel_kind_by_route is None:
+            start_index = min(
+                range(len(items)),
+                key=lambda index: expected[index],  # type: ignore[arg-type]
+            )
+            ordered = rendered
+            escalation = [item.route for item in items[start_index:]]
+        else:
+            order = sorted(
+                range(len(items)),
+                key=lambda index: (
+                    _channel_tier(items[index].route, channel_kind_by_route),
+                    expected[index],
+                    index,
+                ),
+            )
+            ordered = [rendered[index] for index in order]
+            escalation = [items[index].route for index in order]
+            start_index = order[0]
         status = EXPECTED_COST_AVAILABLE
     else:
         order = sorted(
             range(len(items)),
             key=lambda index: (
+                _channel_tier(items[index].route, channel_kind_by_route),
                 _proof_rank(items[index].proof_status),
                 _marginal_rank(items[index]),
                 index,

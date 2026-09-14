@@ -467,6 +467,12 @@ def _staff_auto(
             attempt_records=records,
             supervisor_route=supervisor_route_id,
             class_key=class_key,
+            channel_kind_by_route={
+                route.route_id: channel.kind
+                for route in catalog.routes.routes
+                for channel in catalog.channels.channels
+                if route.channel == channel.channel_id
+            },
         )
 
     ladder_result = calculate(reviewer_expected_cost_usd)

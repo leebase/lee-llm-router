@@ -13,6 +13,7 @@ from __future__ import annotations
 import pytest
 
 from lee_llm_router.staffing.ladder import (
+    EXPECTED_COST_AVAILABLE,
     EXPECTED_COST_UNAVAILABLE,
     LadderInput,
     calculate_ladder,
@@ -163,6 +164,43 @@ def test_fallback_orders_three_rungs_by_marginal_price():
     assert_s_fail_closed(result)
     assert result["argmin_start"] == "middle"
     assert result["escalation"] == ["middle", "last", "expensive"]
+
+
+def test_subscription_headroom_outranks_cheaper_metered_route(monkeypatch):
+    monkeypatch.setattr(
+        "lee_llm_router.staffing.ladder.supervisor_overhead_from_rows",
+        lambda *_args, **_kwargs: (0.0, 5),
+    )
+    result = calculate(
+        [rung("metered", a=0.01), rung("subscription-on-track", a=0.25)],
+        channel_kind_by_route={
+            "metered": "metered",
+            "subscription-on-track": "subscription",
+        },
+    )
+
+    by_route = {row["route"]: row for row in result["rungs"]}
+    assert result["expected_cost_status"] == EXPECTED_COST_AVAILABLE
+    assert by_route["metered"]["E"] < by_route["subscription-on-track"]["E"]
+    assert by_route["subscription-on-track"]["a"] > 0
+    assert result["argmin_start"] == "subscription-on-track"
+    assert result["escalation"] == ["subscription-on-track", "metered"]
+
+
+def test_badge_price_still_orders_subscription_routes_within_their_tier():
+    result = calculate(
+        [rung("too-fast", a=1.0), rung("cold", a=0.0)],
+        channel_kind_by_route={"too-fast": "subscription", "cold": "subscription"},
+    )
+
+    assert result["escalation"] == ["cold", "too-fast"]
+
+
+def test_omitted_channel_kinds_preserve_existing_price_ordering():
+    result = calculate([rung("subscription-on-track", a=0.25), rung("metered", a=0.01)])
+
+    assert result["argmin_start"] == "metered"
+    assert result["escalation"] == ["metered", "subscription-on-track"]
 
 
 def repair_rows(count, passes):
