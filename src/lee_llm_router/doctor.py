@@ -1617,7 +1617,12 @@ def _run_run(args: argparse.Namespace) -> int:
         register_run,
     )
     from lee_llm_router.staffing.json_int import dump_json
-    from lee_llm_router.staffing.ledger import append_attempt
+    from lee_llm_router.staffing.ledger import (
+        AttemptLedgerError,
+        append_attempt,
+        read_attempts,
+        resolve_attempts_path,
+    )
     from lee_llm_router.staffing.run import (
         OracleOutcome,
         RunDispatchError,
@@ -1630,15 +1635,25 @@ def _run_run(args: argparse.Namespace) -> int:
         run_oracle,
         run_summary_lines,
         select_route,
+        unchanged_redispatch_refusal,
         validate_attempt_metadata,
     )
 
-    def fail(message: str, *, as_json: bool = False, exit_code: int = 3) -> int:
+    def fail(
+        message: str,
+        *,
+        as_json: bool = False,
+        exit_code: int = 3,
+        kind: str | None = None,
+    ) -> int:
         print(f"run: {message}", file=sys.stderr)
         if as_json:
+            payload = {"error": message, "exit_code": exit_code}
+            if kind is not None:
+                payload["kind"] = kind
             print(
                 json.dumps(
-                    {"error": message, "exit_code": exit_code},
+                    payload,
                     ensure_ascii=False,
                     separators=(",", ":"),
                 )
@@ -1790,10 +1805,28 @@ def _run_run(args: argparse.Namespace) -> int:
         )
     except RunRegistryError as exc:
         return fail(f"owned paths invalid: {exc}", as_json=as_json)
+
+    packet_id = packet_id_for_text(prompt)
+    try:
+        attempts = read_attempts(resolve_attempts_path())
+    except FileNotFoundError:
+        attempts = []
+    except (AttemptLedgerError, OSError, UnicodeError) as exc:
+        return fail(f"attempt ledger cannot be read: {exc}", as_json=as_json)
+    refusal = unchanged_redispatch_refusal(
+        attempts,
+        packet_id,
+        outcome.route.route_id,
+        args.timeout,
+        parent,
+    )
+    if refusal is not None:
+        return fail(refusal, as_json=as_json, kind="unchanged_redispatch")
+
     try:
         registration = register_run(
             route_id=outcome.route.route_id,
-            packet_id=packet_id_for_text(prompt),
+            packet_id=packet_id,
             owned_paths=owned_paths,
             workdir=args.workdir,
         )
@@ -1860,7 +1893,7 @@ def _run_run(args: argparse.Namespace) -> int:
                 outcome,
                 dispatch,
                 oracle,
-                packet_id=packet_id_for_text(prompt),
+                packet_id=packet_id,
                 class_record=class_record,
                 availability=availability,
                 at_date=at_date,

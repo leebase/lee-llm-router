@@ -30,6 +30,7 @@ from typing import Any, Sequence
 import pytest
 import yaml
 
+import lee_llm_router.staffing.run as run_module
 from lee_llm_router.availability import load_availability
 from lee_llm_router.doctor import main as cli_main
 from lee_llm_router.providers.antigravity_cli import AGY_USAGE_SOURCE
@@ -1282,6 +1283,89 @@ def test_validate_attempt_metadata_rules() -> None:
             validate_attempt_metadata(**kwargs)
         assert exc_info.value.kind == "invalid_metadata"
         assert exc_info.value.exit_code == 3
+
+
+def _prior_redispatch_attempt(
+    *,
+    attempt_id: str = "attempt-1",
+    packet_id: str = "sha256:packet",
+    route_id: str = CODEX_ROUTE,
+    failure_class: str | None = "platform_timeout",
+    kill_reason: str = "stall",
+    ceiling_minutes: str = "10",
+) -> dict[str, Any]:
+    """Return the attempt fields needed by the pure re-dispatch decision."""
+    return {
+        "attempt_id": attempt_id,
+        "packet_id": packet_id,
+        "failure_class": failure_class,
+        "router_event": {"route_id": route_id},
+        "provenance": {
+            "notes": [
+                f"dispatch kill: {kill_reason} after 60 s "
+                f"(stall 1 min, progress 2 min, ceiling {ceiling_minutes} min)"
+            ]
+        },
+    }
+
+
+@pytest.mark.parametrize("kill_reason", ["stall", "no_progress"])
+def test_unchanged_redispatch_refuses_progress_kill(kill_reason: str) -> None:
+    refusal = run_module.unchanged_redispatch_refusal(
+        [_prior_redispatch_attempt(kill_reason=kill_reason)],
+        "sha256:packet",
+        CODEX_ROUTE,
+        600.0,
+        None,
+    )
+
+    assert refusal == (
+        "refused — unchanged re-dispatch of sha256:packet on "
+        f"{CODEX_ROUTE} after a {kill_reason} kill (attempt attempt-1); "
+        "change the packet, lower --timeout below 10 min, or escalate with "
+        "--parent/--escalation-reason"
+    )
+
+
+@pytest.mark.parametrize(
+    "attempts,timeout,parent",
+    [
+        ([_prior_redispatch_attempt(kill_reason="ceiling")], 600.0, None),
+        ([_prior_redispatch_attempt(failure_class="spec_rejected")], 600.0, None),
+        ([_prior_redispatch_attempt(route_id=PI_ROUTE)], 600.0, None),
+        ([_prior_redispatch_attempt()], 599.9, None),
+        # The CLI guarantees that a parent is paired with an escalation reason.
+        ([_prior_redispatch_attempt()], 600.0, "attempt-1"),
+        ([], 600.0, None),
+        (
+            [
+                _prior_redispatch_attempt(attempt_id="older-stall"),
+                _prior_redispatch_attempt(
+                    attempt_id="latest-success", failure_class=None
+                ),
+            ],
+            600.0,
+            None,
+        ),
+    ],
+    ids=[
+        "ceiling",
+        "other-failure",
+        "other-route",
+        "smaller-timeout",
+        "parent",
+        "empty",
+        "latest",
+    ],
+)
+def test_unchanged_redispatch_allows_exceptions(
+    attempts: list[dict[str, Any]], timeout: float, parent: str | None
+) -> None:
+    refusal = run_module.unchanged_redispatch_refusal(
+        attempts, "sha256:packet", CODEX_ROUTE, timeout, parent
+    )
+
+    assert refusal is None
 
 
 # ---------------------------------------------------------------------------
@@ -4199,6 +4283,56 @@ def test_run_refuses_intersecting_live_run_and_launches_nothing(
     # The live record is still listed after the refusal.
     result = census_registry(registry_dir=registry)
     assert [r.pid for r in result.live] == [FAKE_LIVE_PID]
+
+
+def test_run_refuses_unchanged_redispatch_after_stall_before_registration(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """A repeated packet/route after a stall kill never registers or launches."""
+    first_launcher = LaunchRecorder(never_exits=True)
+    first_code, _ = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        timeout=600,
+        extra=("--stall-minutes", "0.02"),
+        launcher=first_launcher,
+        clock=AdvancingClock(step=0.5),
+    )
+    assert first_code == 124
+    assert len(first_launcher.processes) == 1
+    seeded_ledger = scratch_state["attempts"].read_text(encoding="utf-8")
+    assert "dispatch kill: stall" in seeded_ledger
+    assert list(scratch_state["registry"].glob("*.json")) == []
+
+    from lee_llm_router.staffing import census as census_module
+
+    def unexpected_registration(**_kwargs: Any) -> None:
+        pytest.fail("unchanged re-dispatch reached register_run")
+
+    monkeypatch.setattr(census_module, "register_run", unexpected_registration)
+    second_launcher = LaunchRecorder()
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        timeout=600,
+        extra=("--stall-minutes", "0.02"),
+        launcher=second_launcher,
+    )
+
+    assert code == 3
+    assert second_launcher.processes == []
+    assert scratch_state["attempts"].read_text(encoding="utf-8") == seeded_ledger
+    assert list(scratch_state["registry"].glob("*.json")) == []
+    assert "unchanged re-dispatch" in captured.err
+    assert json.loads(captured.out)["kind"] == "unchanged_redispatch"
 
 
 def test_run_accepts_disjoint_live_run(

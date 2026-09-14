@@ -205,6 +205,7 @@ __all__ = [
     "run_summary_lines",
     "select_route",
     "selection_record",
+    "unchanged_redispatch_refusal",
     "validate_attempt_metadata",
 ]
 
@@ -950,6 +951,82 @@ def packet_id_for_text(packet_text: str) -> str:
     """
     digest = hashlib.sha256(packet_text.encode("utf-8")).hexdigest()
     return f"sha256:{digest}"
+
+
+_DISPATCH_PROGRESS_KILL_RE = re.compile(
+    r"^dispatch kill: (stall|no_progress)\b.*\bceiling " r"([0-9]+(?:\.[0-9]+)?) min\b"
+)
+"""A governed progress-kill note and its recorded ceiling in minutes."""
+
+
+def unchanged_redispatch_refusal(
+    attempts: Sequence[Mapping[str, Any]],
+    packet_id: str,
+    route_id: str,
+    timeout_seconds: float | None,
+    parent: str | None,
+) -> str | None:
+    """Refuse an unchanged route after its latest progress kill.
+
+    The most recent attempt for the exact packet and route is authoritative.
+    A prior stall or no-progress kill may be retried only with a strictly
+    lower timeout, or as an explicit escalation linked to that attempt. The
+    caller validates that a non-null ``parent`` is paired with an escalation
+    reason before invoking this pure decision seam.
+
+    Args:
+        attempts: Validated ledger records in chronological file order.
+        packet_id: Content identity of the packet about to be dispatched.
+        route_id: Selected route for the prospective dispatch.
+        timeout_seconds: Prospective wall-clock ceiling, or None for default.
+        parent: Prospective parent attempt id, or None.
+
+    Returns:
+        The refusal text, or None when the dispatch is allowed.
+    """
+    prior: Mapping[str, Any] | None = None
+    for attempt in reversed(attempts):
+        router_event = attempt.get("router_event")
+        if (
+            attempt.get("packet_id") == packet_id
+            and isinstance(router_event, Mapping)
+            and router_event.get("route_id") == route_id
+        ):
+            prior = attempt
+            break
+
+    if prior is None or prior.get("failure_class") != "platform_timeout":
+        return None
+
+    provenance = prior.get("provenance")
+    if not isinstance(provenance, Mapping):
+        return None
+    notes = provenance.get("notes")
+    if not isinstance(notes, Sequence) or isinstance(notes, (str, bytes)):
+        return None
+
+    for note in notes:
+        if not isinstance(note, str):
+            continue
+        match = _DISPATCH_PROGRESS_KILL_RE.match(note)
+        if match is None:
+            continue
+        kill_reason, ceiling_text = match.groups()
+        attempt_id = prior.get("attempt_id")
+        if parent == attempt_id:
+            return None
+        ceiling_seconds = Decimal(ceiling_text) * Decimal(60)
+        if timeout_seconds is not None:
+            timeout = Decimal(str(timeout_seconds))
+            if timeout.is_finite() and timeout < ceiling_seconds:
+                return None
+        return (
+            f"refused — unchanged re-dispatch of {packet_id} on {route_id} "
+            f"after a {kill_reason} kill (attempt {attempt_id}); change the "
+            f"packet, lower --timeout below {ceiling_text} min, or escalate "
+            "with --parent/--escalation-reason"
+        )
+    return None
 
 
 def _known_token_count(usage: Mapping[str, Any], field: str) -> bool:
