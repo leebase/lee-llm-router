@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 import tempfile
 from pathlib import Path
 
@@ -68,12 +70,23 @@ def test_resolve_credential_path_path_traversal_rejected_before_existence(tmp_pa
     assert raised.value.kind == "invalid_credential_ref"
 
     with pytest.raises(CredentialStagingError) as raised2:
-        resolve_credential_path("../../etc/passwd", root=creds_root)
+        resolve_credential_path("../outside/ref", root=creds_root)
     assert raised2.value.kind == "invalid_credential_ref"
 
     with pytest.raises(CredentialStagingError) as raised3:
-        resolve_credential_path("/etc/passwd", root=creds_root)
+        resolve_credential_path("/abs/outside/ref", root=creds_root)
     assert raised3.value.kind == "invalid_credential_ref"
+
+
+def test_resolve_credential_path_rejects_backslash(tmp_path):
+    """Any credential reference containing a backslash is rejected."""
+    creds_root = tmp_path / "credentials"
+    creds_root.mkdir()
+
+    for ref in ("opencode-go\\b", "..\\outside\\ref", "\\abs\\ref", "nested\\dir/b"):
+        with pytest.raises(CredentialStagingError) as raised:
+            resolve_credential_path(ref, root=creds_root)
+        assert raised.value.kind == "invalid_credential_ref"
 
 
 def test_stage_opencode_home_wraps_provider_key_and_strips_bookkeeping(tmp_path):
@@ -87,6 +100,7 @@ def test_stage_opencode_home_wraps_provider_key_and_strips_bookkeeping(tmp_path)
         auth_path = staging_home / ".local/share/opencode/auth.json"
 
         assert auth_path.is_file()
+        assert stat.S_IMODE(auth_path.stat().st_mode) == 0o600
         parsed = json.loads(auth_path.read_text(encoding="utf-8"))
         assert parsed == {"opencode-go": {"type": "api", "key": "secret"}}
 
@@ -104,14 +118,30 @@ def test_stage_pi_home_wraps_provider_key_and_strips_bookkeeping(tmp_path):
 
         assert pi_agent_dir == staging_home / ".pi/agent"
         assert auth_path.is_file()
+        assert stat.S_IMODE(auth_path.stat().st_mode) == 0o600
         parsed = json.loads(auth_path.read_text(encoding="utf-8"))
-        assert parsed == {"opencode-go": {"type": "api", "key": "secret"}}
+        assert parsed == {"opencode-go": {"type": "api_key", "key": "secret"}}
 
     assert not staging_home.exists()
 
 
+def test_stage_harness_home_staged_file_mode_0600(tmp_path):
+    """Staged auth files have permissions mode 0600 for both harnesses."""
+    credential_path = _write_credential(tmp_path)
+
+    with stage_harness_home(
+        "opencode", credential_path, provider_key="opencode-go"
+    ) as env:
+        opencode_auth = Path(env["HOME"]) / ".local/share/opencode/auth.json"
+        assert stat.S_IMODE(opencode_auth.stat().st_mode) == 0o600
+
+    with stage_harness_home("pi", credential_path, provider_key="opencode-go") as env:
+        pi_auth = Path(env["PI_CODING_AGENT_DIR"]) / "auth.json"
+        assert stat.S_IMODE(pi_auth.stat().st_mode) == 0o600
+
+
 def test_stage_harness_home_malformed_credential_missing_keys(tmp_path):
-    """Missing required 'type' or 'key' string raises malformed_credential."""
+    """Missing or non-string 'key' raises malformed_credential."""
     # Missing 'key'
     cred_no_key = _write_credential(tmp_path / "dir1", {"type": "api"})
     with pytest.raises(CredentialStagingError) as raised1:
@@ -119,10 +149,10 @@ def test_stage_harness_home_malformed_credential_missing_keys(tmp_path):
             pass
     assert raised1.value.kind == "malformed_credential"
 
-    # Missing 'type'
-    cred_no_type = _write_credential(tmp_path / "dir2", {"key": "secret"})
+    # Non-string 'key'
+    non_str_key = _write_credential(tmp_path / "dir2", {"key": 123})
     with pytest.raises(CredentialStagingError) as raised2:
-        with stage_harness_home("opencode", cred_no_type, provider_key="opencode-go"):
+        with stage_harness_home("opencode", non_str_key, provider_key="opencode-go"):
             pass
     assert raised2.value.kind == "malformed_credential"
 
@@ -137,12 +167,42 @@ def test_stage_harness_home_malformed_credential_missing_keys(tmp_path):
             pass
     assert raised3.value.kind == "malformed_credential"
 
-    # Non-string 'type' or 'key'
-    non_str_file = _write_credential(tmp_path / "dir4", {"type": 123, "key": "secret"})
+    # Non-dict JSON
+    non_dict_file = tmp_path / "dir4" / "credential.json"
+    non_dict_file.parent.mkdir(parents=True, exist_ok=True)
+    non_dict_file.write_text(json.dumps(["not", "a", "dict"]), encoding="utf-8")
     with pytest.raises(CredentialStagingError) as raised4:
-        with stage_harness_home("opencode", non_str_file, provider_key="opencode-go"):
+        with stage_harness_home("opencode", non_dict_file, provider_key="opencode-go"):
             pass
     assert raised4.value.kind == "malformed_credential"
+
+
+def test_stage_harness_home_ignores_stored_type(tmp_path):
+    """Stored 'type' is ignored; harness literal is used instead."""
+    cred_no_type = _write_credential(tmp_path / "no_type", {"key": "secret1"})
+    cred_other_type = _write_credential(
+        tmp_path / "other_type", {"type": "custom", "key": "secret2"}
+    )
+    cred_non_str_type = _write_credential(
+        tmp_path / "non_str_type", {"type": 999, "key": "secret3"}
+    )
+
+    for cred_path, expected_key in [
+        (cred_no_type, "secret1"),
+        (cred_other_type, "secret2"),
+        (cred_non_str_type, "secret3"),
+    ]:
+        with stage_harness_home(
+            "opencode", cred_path, provider_key="opencode-go"
+        ) as env:
+            auth_path = Path(env["HOME"]) / ".local/share/opencode/auth.json"
+            parsed = json.loads(auth_path.read_text(encoding="utf-8"))
+            assert parsed == {"opencode-go": {"type": "api", "key": expected_key}}
+
+        with stage_harness_home("pi", cred_path, provider_key="opencode-go") as env:
+            auth_path = Path(env["PI_CODING_AGENT_DIR"]) / "auth.json"
+            parsed = json.loads(auth_path.read_text(encoding="utf-8"))
+            assert parsed == {"opencode-go": {"type": "api_key", "key": expected_key}}
 
 
 def test_stage_harness_home_invalid_utf8_raises_malformed_credential(tmp_path):
@@ -181,6 +241,25 @@ def test_stage_harness_home_oserror_raises_staging_failed(tmp_path, monkeypatch)
 
     assert raised.value.kind == "staging_failed"
     assert isinstance(raised.value.__cause__, OSError)
+
+    monkeypatch.undo()
+    orig_chmod = os.chmod
+
+    def failing_chmod(path, mode, *args, **kwargs):
+        if "auth.json" in str(path):
+            raise OSError("chmod failed")
+        return orig_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(os, "chmod", failing_chmod)
+
+    with pytest.raises(CredentialStagingError) as raised_chmod:
+        with stage_harness_home(
+            "opencode", credential_path, provider_key="opencode-go"
+        ):
+            pass
+
+    assert raised_chmod.value.kind == "staging_failed"
+    assert isinstance(raised_chmod.value.__cause__, OSError)
 
 
 def test_stage_omp_is_unsupported_before_temp_directory_creation(tmp_path, monkeypatch):
