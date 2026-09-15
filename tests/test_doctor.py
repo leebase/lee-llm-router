@@ -2475,7 +2475,7 @@ def test_run_dispatch_staged_credential_visible_to_harness(
     assert child_env.get("PI_CODING_AGENT_DIR") == str(staged_home_pi / ".pi/agent")
     assert len(auth_file_contents_during_call) == 1
     assert json.loads(auth_file_contents_during_call[0]) == {
-        "opencode-go": {"type": "api", "key": "fake-token-a"}
+        "opencode-go": {"type": "api_key", "key": "fake-token-a"}
     }
     # And staging directory is deleted after dispatch
     assert not staged_home_pi.exists()
