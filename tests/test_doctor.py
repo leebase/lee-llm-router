@@ -2347,3 +2347,420 @@ def test_run_cli_invalid_instance_refused_exit_3(
     assert "run:" in captured.err
     assert "--instance 'nonexistent-inst'" in captured.err
     assert "does not match any enabled instance" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# run credential staging at dispatch (M4-2)
+# ---------------------------------------------------------------------------
+
+
+def test_run_dispatch_staged_credential_visible_to_harness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Multi-instance run stages credential to temporary HOME visible to
+    popen for pi and opencode.
+    """
+    from lee_llm_router.doctor import main
+    from lee_llm_router.staffing import credentials
+    from tests.test_staffing_run import LaunchRecorder
+
+    # Isolate credentials directory
+    credentials_dir = tmp_path / "credentials"
+    monkeypatch.setattr(credentials, "DEFAULT_CREDENTIALS_DIR", credentials_dir)
+
+    # Write fake credential files
+    cred_file_pi = credentials_dir / "opencode-go" / "a.json"
+    cred_file_pi.parent.mkdir(parents=True, exist_ok=True)
+    cred_file_pi.write_text(
+        json.dumps(
+            {
+                "type": "api",
+                "key": "fake-token-a",
+                "instance_id": "a",
+                "placed_at": "2026-09-15T00:00:00Z",
+                "placed_by": "test",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cred_file_oc = credentials_dir / "opencode-go" / "b.json"
+    cred_file_oc.write_text(
+        json.dumps(
+            {
+                "type": "api",
+                "key": "fake-token-b",
+                "instance_id": "b",
+                "placed_at": "2026-09-15T00:00:00Z",
+                "placed_by": "test",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    # Isolate registry and ledgers
+    registry_dir = tmp_path / "run-registry"
+    monkeypatch.setenv("LEE_LLM_ROUTER_RUN_REGISTRY_DIR", str(registry_dir))
+    monkeypatch.setenv("LEE_LLM_ROUTER_ATTEMPTS_FILE", str(tmp_path / "attempts.jsonl"))
+    monkeypatch.setenv("LEE_LLM_ROUTER_EVENTS_FILE", str(tmp_path / "events.jsonl"))
+
+    packet = tmp_path / "packet.md"
+    packet.write_text("- Kind: impl\n", encoding="utf-8")
+
+    subscriptions = [
+        {
+            "provider": "OpenCode/Go",
+            "bucket": "Weekly",
+            "status": "ON TRACK",
+            "remaining_pct": 80.0,
+            "instance": "a",
+        },
+        {
+            "provider": "OpenCode/Go",
+            "bucket": "Weekly",
+            "status": "ON TRACK",
+            "remaining_pct": 75.0,
+            "instance": "b",
+        },
+    ]
+    snapshot = _write_snapshot(tmp_path, subscriptions=subscriptions)
+
+    # 1. Test Pi harness: pi-glm-5-3-flash-opencode-go on instance a
+    captured_home_during_call: list[Path] = []
+    auth_file_contents_during_call: list[str] = []
+
+    launcher_pi = LaunchRecorder()
+
+    def spy_popen_pi(argv, **kwargs):
+        env = kwargs.get("env", {})
+        home = Path(env["HOME"])
+        captured_home_during_call.append(home)
+        auth_file = home / ".pi/agent/auth.json"
+        if auth_file.is_file():
+            auth_file_contents_during_call.append(auth_file.read_text(encoding="utf-8"))
+        return launcher_pi(argv, **kwargs)
+
+    monkeypatch.setattr("lee_llm_router.staffing.run._DEFAULT_POPEN", spy_popen_pi)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "run",
+                "--role",
+                "impl",
+                "--class",
+                "impl/deterministic/none/s/python",
+                "--packet",
+                str(packet),
+                "--route",
+                "pi-glm-5-3-flash-opencode-go",
+                "--instance",
+                "a",
+                "--availability-file",
+                str(snapshot),
+                "--at",
+                "2026-09-15",
+                "--owned-paths",
+                str(packet),
+            ]
+        )
+    assert exc_info.value.code == 0
+    assert len(launcher_pi.processes) == 1
+    proc = launcher_pi.processes[0]
+    child_env = proc.popen_kwargs.get("env")
+    assert child_env is not None
+    assert captured_home_during_call
+    staged_home_pi = captured_home_during_call[0]
+    assert child_env["HOME"] == str(staged_home_pi)
+    assert child_env.get("PI_CODING_AGENT_DIR") == str(staged_home_pi / ".pi/agent")
+    assert len(auth_file_contents_during_call) == 1
+    assert json.loads(auth_file_contents_during_call[0]) == {
+        "opencode-go": {"type": "api", "key": "fake-token-a"}
+    }
+    # And staging directory is deleted after dispatch
+    assert not staged_home_pi.exists()
+
+    # 2. Test OpenCode harness:
+    # opencode-opencode-go-qwen3-7-plus-opencode-go on instance b
+    captured_home_during_call.clear()
+    auth_file_contents_during_call.clear()
+
+    launcher_oc = LaunchRecorder()
+
+    def spy_popen_oc(argv, **kwargs):
+        env = kwargs.get("env", {})
+        home = Path(env["HOME"])
+        captured_home_during_call.append(home)
+        auth_file = home / ".local/share/opencode/auth.json"
+        if auth_file.is_file():
+            auth_file_contents_during_call.append(auth_file.read_text(encoding="utf-8"))
+        return launcher_oc(argv, **kwargs)
+
+    monkeypatch.setattr("lee_llm_router.staffing.run._DEFAULT_POPEN", spy_popen_oc)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "run",
+                "--role",
+                "impl",
+                "--class",
+                "impl/deterministic/none/s/python",
+                "--packet",
+                str(packet),
+                "--route",
+                "opencode-opencode-go-qwen3-7-plus-opencode-go",
+                "--instance",
+                "b",
+                "--availability-file",
+                str(snapshot),
+                "--at",
+                "2026-09-15",
+                "--owned-paths",
+                str(packet),
+            ]
+        )
+    assert exc_info.value.code == 0
+    assert len(launcher_oc.processes) == 1
+    proc_oc = launcher_oc.processes[0]
+    child_env_oc = proc_oc.popen_kwargs.get("env")
+    assert child_env_oc is not None
+    staged_home_oc = captured_home_during_call[0]
+    assert len(auth_file_contents_during_call) == 1
+    assert json.loads(auth_file_contents_during_call[0]) == {
+        "opencode-go": {"type": "api", "key": "fake-token-b"}
+    }
+    assert not staged_home_oc.exists()
+
+
+def test_run_dispatch_missing_credential_fails_closed_exit_3(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Missing credential file fails closed before launch (exit 3),
+    registering nothing.
+    """
+    import lee_llm_router.staffing.census as census_mod
+    from lee_llm_router.doctor import main
+    from lee_llm_router.staffing import credentials
+    from tests.test_staffing_run import LaunchRecorder
+
+    credentials_dir = tmp_path / "credentials"
+    credentials_dir.mkdir(parents=True, exist_ok=True)
+    # Do not write any credential file
+    monkeypatch.setattr(credentials, "DEFAULT_CREDENTIALS_DIR", credentials_dir)
+
+    registry_dir = tmp_path / "run-registry"
+    monkeypatch.setenv("LEE_LLM_ROUTER_RUN_REGISTRY_DIR", str(registry_dir))
+    monkeypatch.setenv("LEE_LLM_ROUTER_ATTEMPTS_FILE", str(tmp_path / "attempts.jsonl"))
+    monkeypatch.setenv("LEE_LLM_ROUTER_EVENTS_FILE", str(tmp_path / "events.jsonl"))
+
+    register_run_called = False
+    orig_register = census_mod.register_run
+
+    def spy_register_run(*args, **kwargs):
+        nonlocal register_run_called
+        register_run_called = True
+        return orig_register(*args, **kwargs)
+
+    monkeypatch.setattr(census_mod, "register_run", spy_register_run)
+
+    launcher = LaunchRecorder()
+    monkeypatch.setattr("lee_llm_router.staffing.run._DEFAULT_POPEN", launcher)
+
+    packet = tmp_path / "packet.md"
+    packet.write_text("- Kind: impl\n", encoding="utf-8")
+
+    subscriptions = [
+        {
+            "provider": "OpenCode/Go",
+            "bucket": "Weekly",
+            "status": "ON TRACK",
+            "remaining_pct": 80.0,
+            "instance": "a",
+        },
+    ]
+    snapshot = _write_snapshot(tmp_path, subscriptions=subscriptions)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "run",
+                "--role",
+                "impl",
+                "--class",
+                "impl/deterministic/none/s/python",
+                "--packet",
+                str(packet),
+                "--route",
+                "pi-glm-5-3-flash-opencode-go",
+                "--instance",
+                "a",
+                "--availability-file",
+                str(snapshot),
+                "--at",
+                "2026-09-15",
+                "--owned-paths",
+                str(packet),
+            ]
+        )
+    assert exc_info.value.code == 3
+    captured = capsys.readouterr()
+    assert "run:" in captured.err
+    assert "credential staging failed:" in captured.err
+    assert "Credential file does not exist" in captured.err
+
+    # Crucially: register_run was never called and run registry is empty
+    assert not register_run_called
+    assert not registry_dir.exists() or list(registry_dir.iterdir()) == []
+    # And popen was never attempted
+    assert launcher.processes == []
+
+
+def test_run_dispatch_single_instance_channel_unchanged_no_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Channel with no declared instances behaves identically without
+    credential lookup.
+    """
+    from lee_llm_router.doctor import main
+    from lee_llm_router.staffing import credentials
+    from tests.test_staffing_run import CODEX_RECEIPT_STDOUT, LaunchRecorder
+
+    # Credentials directory does not even exist
+    credentials_dir = tmp_path / "nonexistent-credentials"
+    monkeypatch.setattr(credentials, "DEFAULT_CREDENTIALS_DIR", credentials_dir)
+
+    registry_dir = tmp_path / "run-registry"
+    monkeypatch.setenv("LEE_LLM_ROUTER_RUN_REGISTRY_DIR", str(registry_dir))
+    monkeypatch.setenv("LEE_LLM_ROUTER_ATTEMPTS_FILE", str(tmp_path / "attempts.jsonl"))
+    monkeypatch.setenv("LEE_LLM_ROUTER_EVENTS_FILE", str(tmp_path / "events.jsonl"))
+
+    launcher = LaunchRecorder(chunks=[CODEX_RECEIPT_STDOUT.encode("utf-8")])
+    monkeypatch.setattr("lee_llm_router.staffing.run._DEFAULT_POPEN", launcher)
+
+    packet = tmp_path / "packet.md"
+    packet.write_text("- Kind: impl\n", encoding="utf-8")
+    snapshot = _write_snapshot(tmp_path)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "run",
+                "--role",
+                "impl",
+                "--class",
+                "impl/deterministic/none/s/python",
+                "--packet",
+                str(packet),
+                "--route",
+                "codex-gpt-5-6-sol-low-openai-sub",
+                "--availability-file",
+                str(snapshot),
+                "--at",
+                "2026-09-15",
+                "--owned-paths",
+                str(packet),
+            ]
+        )
+    assert exc_info.value.code == 0
+    assert len(launcher.processes) == 1
+    proc = launcher.processes[0]
+    # No env keyword argument forced
+    assert "env" not in proc.popen_kwargs
+
+
+def test_run_dispatch_unsupported_harness_fails_closed_exit_3(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Unsupported harness on declared instances channel fails closed
+    before registration.
+    """
+    import shutil
+
+    import yaml
+
+    import lee_llm_router.staffing.census as census_mod
+    from lee_llm_router.doctor import _default_catalog_dir, main
+    from lee_llm_router.staffing import credentials
+    from tests.test_staffing_run import LaunchRecorder
+
+    # Setup scratch catalog with an unsupported harness on opencode-go
+    catalog_dest = tmp_path / "catalog"
+    shutil.copytree(_default_catalog_dir(), catalog_dest)
+    routes_path = catalog_dest / "routes.yaml"
+    routes_data = yaml.safe_load(routes_path.read_text(encoding="utf-8"))
+    for r in routes_data["routes"]:
+        if r["route_id"] == "pi-glm-5-3-flash-opencode-go":
+            r["harness"] = "omp"  # unsupported for staging
+    routes_path.write_text(yaml.safe_dump(routes_data), encoding="utf-8")
+
+    credentials_dir = tmp_path / "credentials"
+    monkeypatch.setattr(credentials, "DEFAULT_CREDENTIALS_DIR", credentials_dir)
+    cred_file = credentials_dir / "opencode-go" / "a.json"
+    cred_file.parent.mkdir(parents=True, exist_ok=True)
+    cred_file.write_text(
+        json.dumps({"type": "api", "key": "fake-token"}), encoding="utf-8"
+    )
+
+    registry_dir = tmp_path / "run-registry"
+    monkeypatch.setenv("LEE_LLM_ROUTER_RUN_REGISTRY_DIR", str(registry_dir))
+    monkeypatch.setenv("LEE_LLM_ROUTER_ATTEMPTS_FILE", str(tmp_path / "attempts.jsonl"))
+    monkeypatch.setenv("LEE_LLM_ROUTER_EVENTS_FILE", str(tmp_path / "events.jsonl"))
+
+    register_run_called = False
+    orig_register = census_mod.register_run
+
+    def spy_register_run(*args, **kwargs):
+        nonlocal register_run_called
+        register_run_called = True
+        return orig_register(*args, **kwargs)
+
+    monkeypatch.setattr(census_mod, "register_run", spy_register_run)
+
+    launcher = LaunchRecorder()
+    monkeypatch.setattr("lee_llm_router.staffing.run._DEFAULT_POPEN", launcher)
+
+    packet = tmp_path / "packet.md"
+    packet.write_text("- Kind: impl\n", encoding="utf-8")
+
+    subscriptions = [
+        {
+            "provider": "OpenCode/Go",
+            "bucket": "Weekly",
+            "status": "ON TRACK",
+            "remaining_pct": 80.0,
+            "instance": "a",
+        },
+    ]
+    snapshot = _write_snapshot(tmp_path, subscriptions=subscriptions)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "run",
+                "--role",
+                "impl",
+                "--class",
+                "impl/deterministic/none/s/python",
+                "--packet",
+                str(packet),
+                "--route",
+                "pi-glm-5-3-flash-opencode-go",
+                "--instance",
+                "a",
+                "--catalog-dir",
+                str(catalog_dest),
+                "--availability-file",
+                str(snapshot),
+                "--at",
+                "2026-09-15",
+                "--owned-paths",
+                str(packet),
+            ]
+        )
+    assert exc_info.value.code == 3
+    captured = capsys.readouterr()
+    assert "credential staging failed:" in captured.err
+    assert "Credential staging is not supported for harness 'omp'" in captured.err
+    assert not register_run_called
+    assert launcher.processes == []

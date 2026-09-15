@@ -7,8 +7,10 @@ authentication layout expected by a supported harness.
 
 from __future__ import annotations
 
+import json
 import shutil
 import tempfile
+from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 
@@ -60,22 +62,33 @@ def resolve_credential_path(credential_ref: str, *, root: Path | None = None) ->
         The existing regular JSON credential file.
 
     Raises:
-        CredentialStagingError: If the referenced path is not a regular file.
+        CredentialStagingError: If the referenced path escapes the root or is
+            not a regular file.
     """
-    credential_path = (root or DEFAULT_CREDENTIALS_DIR).expanduser() / (
-        f"{credential_ref}.json"
-    )
-    if not credential_path.is_file():
+    resolved_root = (root or DEFAULT_CREDENTIALS_DIR).expanduser().resolve()
+    candidate_path = (resolved_root / f"{credential_ref}.json").resolve()
+    if (
+        not candidate_path.is_relative_to(resolved_root)
+        or candidate_path == resolved_root
+    ):
+        raise CredentialStagingError(
+            f"Invalid credential reference {credential_ref!r}: "
+            f"resolves outside credentials root {resolved_root}",
+            kind="invalid_credential_ref",
+        )
+    if not candidate_path.is_file():
         raise CredentialStagingError(
             f"Credential file does not exist or is not a regular file: "
-            f"{credential_path}",
+            f"{candidate_path}",
             kind="missing_credential",
         )
-    return credential_path
+    return candidate_path
 
 
 def stage_harness_home(
-    harness: str, credential_path: Path
+    harness: str,
+    credential_path: Path,
+    provider_key: str,
 ) -> AbstractContextManager[dict[str, str]]:
     """Stage one credential in a temporary home for a supported harness.
 
@@ -83,6 +96,8 @@ def stage_harness_home(
         harness: Harness name.  Only ``"opencode"`` and ``"pi"`` are
             supported by this JSON-file staging mechanism.
         credential_path: An already-resolved regular credential file.
+        provider_key: The channel ID to nest the credential under (e.g.
+            ``"opencode-go"``).
 
     Returns:
         A context manager yielding environment overrides for the harness
@@ -97,21 +112,75 @@ def stage_harness_home(
             f"Credential staging is not supported for harness {harness!r}",
             kind="unsupported_harness",
         )
-    return _stage_harness_home(credential_path, layout)
+    return _stage_harness_home(credential_path, layout, provider_key=provider_key)
 
 
 @contextmanager
 def _stage_harness_home(
     credential_path: Path,
     layout: tuple[Path, tuple[tuple[str, Path], ...]],
-) -> AbstractContextManager[dict[str, str]]:
+    provider_key: str,
+) -> Iterator[dict[str, str]]:
     """Stage a credential using a previously validated harness layout."""
     auth_relative_path, extra_env = layout
-    staging_home = Path(tempfile.mkdtemp(prefix="lee-llm-router-cred-"))
     try:
+        staging_home = Path(tempfile.mkdtemp(prefix="lee-llm-router-cred-"))
+    except OSError as exc:
+        raise CredentialStagingError(
+            f"Failed to create temporary staging directory: {exc}",
+            kind="staging_failed",
+        ) from exc
+
+    try:
+        try:
+            content = credential_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise CredentialStagingError(
+                f"Failed to read credential file {credential_path}: {exc}",
+                kind="staging_failed",
+            ) from exc
+        except UnicodeDecodeError as exc:
+            raise CredentialStagingError(
+                f"Malformed credential file {credential_path}: invalid UTF-8: {exc}",
+                kind="malformed_credential",
+            ) from exc
+
+        try:
+            raw_data = json.loads(content)
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+            raise CredentialStagingError(
+                f"Malformed credential file {credential_path}: invalid JSON: {exc}",
+                kind="malformed_credential",
+            ) from exc
+
+        if (
+            not isinstance(raw_data, dict)
+            or not isinstance(raw_data.get("type"), str)
+            or not isinstance(raw_data.get("key"), str)
+        ):
+            raise CredentialStagingError(
+                f"Malformed credential file {credential_path}: "
+                f"expected JSON object with string fields 'type' and 'key'",
+                kind="malformed_credential",
+            )
+
+        payload = {
+            provider_key: {
+                "type": raw_data["type"],
+                "key": raw_data["key"],
+            }
+        }
+        serialized = json.dumps(payload)
+
         auth_path = staging_home / auth_relative_path
-        auth_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(credential_path, auth_path)
+        try:
+            auth_path.parent.mkdir(parents=True, exist_ok=True)
+            auth_path.write_text(serialized, encoding="utf-8")
+        except OSError as exc:
+            raise CredentialStagingError(
+                f"Failed to write staged auth file to {auth_path}: {exc}",
+                kind="staging_failed",
+            ) from exc
 
         env = {"HOME": str(staging_home)}
         env.update(

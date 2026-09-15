@@ -2404,6 +2404,7 @@ def run_supervised_dispatch(
     read_chunk: Callable[[], bytes | None] | None = None,
     read_err_chunk: Callable[[], bytes | None] | None = None,
     stderr: TextIO | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> int:
     """Execute a resolved worker harness and supervise it with StallWatchdog.
 
@@ -2435,6 +2436,7 @@ def run_supervised_dispatch(
             to reading child stderr).
         stderr: Stream for watchdog warnings and ceiling messages (defaults
             to sys.stderr).
+        extra_env: Environment variables to merge into the child environment.
 
     Returns:
         Exit code: 124 on ceiling timeout, otherwise child exit code.
@@ -2484,16 +2486,22 @@ def run_supervised_dispatch(
     # neither the platform flag nor an environment override.
     real_popen = _real_popen_injected(popen)
     provenance_marker: bytes | None = None
+    child_env: dict[str, str] | None = None
+    if extra_env:
+        child_env = os.environ.copy()
+        child_env.update(extra_env)
     if os.name == "posix" and real_popen:
         launch_kwargs["start_new_session"] = True
         if _LinuxDescendantTree.available():
             provenance_value = uuid.uuid4().hex
-            child_env = os.environ.copy()
+            if child_env is None:
+                child_env = os.environ.copy()
             child_env[_WORKER_PROVENANCE_ENV] = provenance_value
-            launch_kwargs["env"] = child_env
             provenance_marker = f"{_WORKER_PROVENANCE_ENV}={provenance_value}".encode(
                 "ascii"
             )
+    if child_env is not None:
+        launch_kwargs["env"] = child_env
     proc = popen(argv, **launch_kwargs)
     if os.name == "posix" and isinstance(proc, subprocess.Popen):
         proc = _ProcessGroupProxy(proc, provenance_marker)
@@ -2642,6 +2650,7 @@ def dispatch_route(
     sleep: Callable[[float], None] | None = None,
     poll_seconds: float = DEFAULT_POLL_SECONDS,
     stderr: TextIO | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> DispatchOutcome:
     """Dispatch the selected route once through the watchdog boundary.
 
@@ -2667,6 +2676,8 @@ def dispatch_route(
         sleep: Injected sleep callable (tests).
         poll_seconds: Watchdog polling cadence.
         stderr: Stream for watchdog warnings (defaults to ``sys.stderr``).
+        extra_env: Optional environment variables to merge into the child
+            environment.
 
     Returns:
         The :class:`DispatchOutcome` with the final argv, captured
@@ -2739,6 +2750,7 @@ def dispatch_route(
         sink=stdout_buf.extend,
         err_sink=stderr_buf.extend,
         stderr=stderr,
+        extra_env=extra_env,
     )
     duration = clock_fn() - started
 

@@ -48,6 +48,7 @@ from lee_llm_router.staffing.run import (
     Resolution,
     _usage_for_harness,
     build_dispatch_command,
+    dispatch_route,
     run_supervised_dispatch,
     select_route,
     validate_attempt_metadata,
@@ -5584,3 +5585,92 @@ def test_single_instance_channel_resolves_implicit_instance(
     assert code == 0
     payload = json.loads(captured.out)
     assert payload["route"]["channel_instance"] == "openai-sub"
+
+
+# ---------------------------------------------------------------------------
+# extra_env child-environment merging and provenance coexistence (M4-2)
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_route_extra_env_merged_into_child_env(
+    catalog_dir: Path,
+) -> None:
+    """extra_env is merged alongside os.environ and passed to popen."""
+    catalog = load_staffing_catalog(catalog_dir)
+    route = next(r for r in catalog.routes.routes if r.route_id == OPENCODE_GO_ROUTE)
+
+    recorder = LaunchRecorder(chunks=[b"ok\n"])
+    dispatch_route(
+        route,
+        "test prompt",
+        popen=recorder,
+        extra_env={"HOME": "/fake/staged/home", "TEST_EXTRA_VAR": "val"},
+    )
+    assert len(recorder.processes) == 1
+    proc = recorder.processes[0]
+    child_env = proc.popen_kwargs.get("env")
+    assert child_env is not None
+    assert child_env["HOME"] == "/fake/staged/home"
+    assert child_env["TEST_EXTRA_VAR"] == "val"
+    # Merged, not replaced: unrelated inherited variables like PATH survive
+    assert "PATH" in child_env
+    assert child_env["PATH"] == os.environ["PATH"]
+
+
+def test_dispatch_route_without_extra_env_keeps_env_unset_for_fake_popen(
+    catalog_dir: Path,
+) -> None:
+    """Without extra_env, fake popen receives no 'env' keyword argument."""
+    catalog = load_staffing_catalog(catalog_dir)
+    route = next(r for r in catalog.routes.routes if r.route_id == OPENCODE_GO_ROUTE)
+
+    recorder = LaunchRecorder(chunks=[b"ok\n"])
+    dispatch_route(
+        route,
+        "test prompt",
+        popen=recorder,
+        extra_env=None,
+    )
+    assert len(recorder.processes) == 1
+    proc = recorder.processes[0]
+    assert "env" not in proc.popen_kwargs
+
+
+def test_supervised_dispatch_extra_env_and_provenance_coexist() -> None:
+    """extra_env and Linux provenance marker coexist without clobbering each other."""
+    from lee_llm_router.staffing.run import (
+        _WORKER_PROVENANCE_ENV,
+        Resolution,
+        run_supervised_dispatch,
+    )
+
+    recorded_kwargs: dict[str, Any] = {}
+
+    def fake_real_popen(child_argv: list[str], **kwargs: Any) -> FakeProcess:
+        recorded_kwargs.update(kwargs)
+        return FakeProcess(child_argv, exit_code=0)
+
+    # Mark fake_real_popen as a real spawner so the posix provenance branch executes
+    setattr(fake_real_popen, "_lee_llm_router_real_popen", True)
+
+    resolution = Resolution(
+        worker_id="test-worker",
+        dispatch_command=["echo", "hi"],
+        prompt_delivery="argv",
+    )
+    code = run_supervised_dispatch(
+        resolution,
+        "test prompt",
+        popen=fake_real_popen,
+        extra_env={"HOME": "/fake/staged/home", "CUSTOM_KEY": "val"},
+    )
+    assert code == 0
+    child_env = recorded_kwargs.get("env")
+    assert child_env is not None
+    assert child_env["HOME"] == "/fake/staged/home"
+    assert child_env["CUSTOM_KEY"] == "val"
+    assert "PATH" in child_env
+    assert child_env["PATH"] == os.environ["PATH"]
+    if os.name == "posix" and Path("/proc").is_dir():
+        assert _WORKER_PROVENANCE_ENV in child_env
+        assert len(child_env[_WORKER_PROVENANCE_ENV]) == 32

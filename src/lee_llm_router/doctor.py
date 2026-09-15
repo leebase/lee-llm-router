@@ -1608,6 +1608,7 @@ def _run_run(args: argparse.Namespace) -> int:
     from lee_llm_router.availability import load_availability
     from lee_llm_router.providers.base import LLMRouterError
     from lee_llm_router.staffing import (
+        credentials,
         load_staffing_catalog,
     )
     from lee_llm_router.staffing.census import (
@@ -1785,6 +1786,51 @@ def _run_run(args: argparse.Namespace) -> int:
     except RunSelectionError as exc:
         return fail(str(exc), as_json=as_json, exit_code=exc.exit_code)
 
+    credential_path: Path | None = None
+    target_channel = next(
+        (
+            ch
+            for ch in catalog.channels.channels
+            if ch.channel_id == outcome.route.channel
+        ),
+        None,
+    )
+    if (
+        target_channel is not None
+        and target_channel.instances
+        and outcome.channel_instance is not None
+    ):
+        matching_instance = next(
+            (
+                inst
+                for inst in target_channel.effective_instances()
+                if inst.instance_id == outcome.channel_instance
+            ),
+            None,
+        )
+        if matching_instance is None:
+            return fail(
+                f"credential staging failed: channel instance "
+                f"{outcome.channel_instance!r} not found",
+                as_json=as_json,
+                exit_code=3,
+            )
+        try:
+            credential_path = credentials.resolve_credential_path(
+                matching_instance.credential_ref
+            )
+            credentials.stage_harness_home(
+                outcome.route.harness,
+                credential_path,
+                provider_key=outcome.route.channel,
+            )
+        except credentials.CredentialStagingError as exc:
+            return fail(
+                f"credential staging failed: {exc}",
+                as_json=as_json,
+                exit_code=3,
+            )
+
     # Parse and validate before the worker boundary. This is deliberately
     # after selection (so it cannot alter routing) but before any launch.
     oracle_argv = None
@@ -1838,17 +1884,37 @@ def _run_run(args: argparse.Namespace) -> int:
         """Dispatch, record, and print — every exit deregisters the run."""
         try:
             raw_prog = getattr(args, "progress_minutes", 20.0)
-            dispatch = dispatch_route(
-                outcome.route,
-                prompt,
-                workdir=args.workdir,
-                timeout_seconds=args.timeout,
-                stall_minutes=getattr(args, "stall_minutes", 10.0),
-                progress_minutes=raw_prog if raw_prog and raw_prog > 0 else None,
-                stall_action=getattr(args, "stall_action", "kill"),
-                watch_dirs=owned_paths,
-            )
-        except LLMRouterError as exc:
+            if credential_path is not None:
+                with credentials.stage_harness_home(
+                    outcome.route.harness,
+                    credential_path,
+                    provider_key=outcome.route.channel,
+                ) as extra_env:
+                    dispatch = dispatch_route(
+                        outcome.route,
+                        prompt,
+                        workdir=args.workdir,
+                        timeout_seconds=args.timeout,
+                        stall_minutes=getattr(args, "stall_minutes", 10.0),
+                        progress_minutes=(
+                            raw_prog if raw_prog and raw_prog > 0 else None
+                        ),
+                        stall_action=getattr(args, "stall_action", "kill"),
+                        watch_dirs=owned_paths,
+                        extra_env=extra_env,
+                    )
+            else:
+                dispatch = dispatch_route(
+                    outcome.route,
+                    prompt,
+                    workdir=args.workdir,
+                    timeout_seconds=args.timeout,
+                    stall_minutes=getattr(args, "stall_minutes", 10.0),
+                    progress_minutes=raw_prog if raw_prog and raw_prog > 0 else None,
+                    stall_action=getattr(args, "stall_action", "kill"),
+                    watch_dirs=owned_paths,
+                )
+        except (LLMRouterError, credentials.CredentialStagingError) as exc:
             return fail(f"dispatch failed: {exc}", as_json=as_json)
 
         oracle = None
