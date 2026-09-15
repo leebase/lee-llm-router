@@ -283,6 +283,21 @@ routes:
     usage_capture: none
     status: active
 
+  # DeepSeek V4.1 Flash on the OpenCode Go subscription (Lee, 2026-09-15: "we can
+  # also use DeepSeek V4.1 Flash via opencode go sub"). Prepaid channel, so under
+  # D215 it outranks the metered pi/openrouter V4.1 route. Zen publishes no
+  # V4.1 Flash price row yet; accounting proxy is the agent-orch rate-table row
+  # opencode-go/deepseek-v4.1-flash (OpenRouter same-vendor list price, D207
+  # convention). proof_status is unproven until a `run` lands in the ledger.
+  - route_id: opencode-opencode-go-deepseek-v4-1-flash-opencode-go
+    model: opencode-go/deepseek-v4.1-flash
+    effort: null
+    harness: opencode
+    channel: opencode-go
+    dispatch_template: "/usr/bin/env OPENCODE_STAGE_WORKER_BINARY=/home/lee/.opencode/bin/opencode OPENCODE_STAGE_WORKER_MODEL=opencode-go/deepseek-v4.1-flash OPENCODE_STAGE_WORKER_AGENT=build OPENCODE_STAGE_WORKER_DIR=/tmp python3 /home/lee/projects/auto-orch/scripts/opencode_stage_worker.py {stage} {prompt_path} {response_path}"
+    usage_capture: none
+    status: active
+
   - route_id: opencode-opencode-go-deepseek-v4-pro-opencode-go
     model: opencode-go/deepseek-v4-pro
     effort: null
@@ -374,6 +389,15 @@ routes:
     harness: pi
     channel: openrouter
     dispatch_template: "/usr/bin/env PI_STAGE_WORKER_BINARY=/home/lee/.npm-global/bin/pi PI_STAGE_WORKER_PROVIDER=openrouter PI_STAGE_WORKER_MODEL=deepseek/deepseek-v4.1-flash python3 /home/lee/projects/auto-orch/scripts/pi_stage_worker.py {stage} {prompt_path} {response_path}"
+    usage_capture: none
+    status: active
+
+  - route_id: pi-deepseek-v4-1-flash-opencode-go
+    model: deepseek-v4.1-flash
+    effort: null
+    harness: pi
+    channel: opencode-go
+    dispatch_template: "/usr/bin/env PI_STAGE_WORKER_BINARY=/home/lee/.npm-global/bin/pi PI_STAGE_WORKER_PROVIDER=opencode-go PI_STAGE_WORKER_MODEL=deepseek-v4.1-flash python3 /home/lee/projects/auto-orch/scripts/pi_stage_worker.py {stage} {prompt_path} {response_path}"
     usage_capture: none
     status: active
 

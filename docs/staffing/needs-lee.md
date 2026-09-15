@@ -856,3 +856,15 @@ worker launched, yet the record is not a failure, so the supervising session re-
 unchanged and the S5b refusal (which keys on stall/no-progress kills) did not apply. Repair to
 plan: a dispatch that exits in under a second with no output and no owned-file change is
 `platform_env` (kind `no_launch`), and the unchanged-re-dispatch refusal should cover it.
+
+## 2026-09-15 — DeepSeek V4.1 Flash on OpenCode Go: Zen has no price row (Chief ruling, confirm)
+
+Lee: "we can also use DeepSeek V4.1 Flash via opencode go sub." OpenCode Go serves
+`opencode-go/deepseek-v4.1-flash` (`opencode models`, 2026-09-15), but the OpenCode Zen pricing
+table (refreshed on demand to `opencode-zen-20260915.mdx`) still has no DeepSeek V4.1 Flash row.
+Chief ruling under the D207 convention: the accounting proxy is OpenRouter's same-vendor list
+price for `deepseek/deepseek-v4.1-flash` ($0.15/$0.60 per M, cache read $0.003), recorded in the
+agent-orch rate table (`fbedba0`) with provenance. Two routes added, both `active`, `unproven`:
+`opencode-opencode-go-deepseek-v4-1-flash-opencode-go` and `pi-deepseek-v4-1-flash-opencode-go`.
+Under D215 the prepaid Go routes outrank the metered `pi-deepseek-deepseek-v4-1-flash-openrouter`
+route. **Lee:** confirm the proxy, or name a different one; swap to the Zen row when published.
