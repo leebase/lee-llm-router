@@ -8,7 +8,7 @@
 
 | Attribute | Value |
 |-----------|-------|
-| **Phase** | Staffing multi-account plan (chief-of-staff `docs/staffing-multi-account-plan.md`) — M1, M2, M3 (M3-1/M3-2/M3-3) all committed; M4 (credential staging, live smoke HELD) next |
+| **Phase** | Staffing multi-account plan (chief-of-staff `docs/staffing-multi-account-plan.md`) — M1, M2, M3, M4 (M4-1/M4-2) all committed; M5 (evidence report) next; live two-account smoke HELD |
 | **Mode** | 2 (Implementation with approval) |
 | **Last Updated** | 2026-09-14 |
 
@@ -96,18 +96,34 @@ verification (1896 passed, 6 skipped as of M3-3). Packet/review evidence:
 `docs/staffing/packets/M3-1*.md`, `docs/staffing/packets/M3-2*.md`,
 `docs/staffing/packets/M3-3*.md`.
 
-M4 (credential staging, per-run isolated harness home; the live two-account
-smoke stays explicitly gated on Lee's confirmation of OpenCode's terms, per
-the plan — but M4's non-live implementation using fake credentials is not
-itself gated) is next, followed by M5 (evidence report grouped by
-route+instance). Neither has been started. All M2 changes remain verified
+M4 ("credential staging at dispatch") is now complete and committed, in two
+packets: **M4-1** (`src/lee_llm_router/staffing/credentials.py`, new module:
+resolves a channel instance's `credential_ref` and stages a fresh temporary
+per-run harness home containing only that credential, for `opencode`/`pi`
+only — `omp`'s real auth store turned out to be a SQLite-backed
+`omp auth-broker` vault, not a static file, contradicting the plan's
+assumption, so it is deliberately unsupported pending a ruling rather than
+improvised; commit `dca7f70`) and **M4-2** (`run.py`/`doctor.py` wiring:
+`run` stages the selected instance's credential before launch and fails
+closed, exit 3, nothing registered or launched, on a missing/malformed
+credential, a path-traversal `credential_ref`, or an unsupported harness;
+commit `01e2722`). M4-2 took three independent-review rounds (REJECT →
+REJECT → PASS) before landing — the first round caught a real defect the
+supervisor confirmed against the real `~/.local/share/opencode/auth.json`
+and `~/.pi/agent/auth.json` files on this machine (staged credentials
+weren't nested under the channel's provider key at all). Full attempt-id
+chain and finding text: `result-review.md` (2026-09-14, "M4: credential
+staging at dispatch" entry). The live two-account smoke stays explicitly
+**HELD** pending Lee's confirmation of OpenCode's terms — nothing in M4
+touched a real account. **Next: M5** (evidence report grouped by
+route+instance, 20 min bound per the plan). All M2 changes remain verified
 but left **uncommitted** in both repos (a separate Lee decision, same
-convention M1 and the prior acceptance run used) — M3 diverged from that
-convention and was committed directly after each packet's independent
+convention M1 and the prior acceptance run used) — M3 and M4 diverged from
+that convention and were committed directly after each packet's independent
 review passed with 0 findings, matching the git-log precedent set by the
 M1 and earlier M3-1/S8 commits. Packet, review, and class-derivation
 evidence: `docs/staffing/packets/M2a-*.md`, `docs/staffing/packets/M2b*.md`,
-`tmp/staffing-m2/`.
+`docs/staffing/packets/M4-*.md`, `tmp/staffing-m2/`, `tmp/staffing-m4/`.
 
 ### Prior Work Stream
 `/supervise` (plan `plans/supervise-acceptance-2026-09-13.md`) ran its first

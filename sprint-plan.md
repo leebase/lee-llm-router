@@ -17,11 +17,20 @@ commit `778d538`), and M3-3 (`run.py`/`doctor.py`, `run --instance` pins an
 instance the way `--route` pins a route, `route.channel_instance` on the
 attempt record, commit `65e7259`) — each with its own independent review
 (ACCEPT, 0 findings) and full-suite pass (1896 passed, 6 skipped after
-M3-3). **Next: M4** (credential staging at dispatch; the live two-account
-smoke stays gated on Lee's confirmation of OpenCode's terms, but the
-fake-credential implementation is not itself gated), then **M5** (evidence
-report grouped by route+instance). See `result-review.md` (2026-09-14
-entries) for the full attempt chain.
+M3-3). **M4 ("credential staging at dispatch") is now complete and
+committed** in two packets: M4-1 (`credentials.py`, new staging module,
+`opencode`/`pi` only — `omp` deliberately unsupported, its real auth store
+is a SQLite vault not a static file, contradicting the plan's assumption;
+commit `dca7f70`) and M4-2 (`run.py`/`doctor.py` wiring, fail-closed before
+registration/launch on a missing/malformed credential or unsupported
+harness; commit `01e2722`, after 3 independent-review rounds — REJECT
+(wrong staged auth.json shape, confirmed against the real files on this
+machine, plus 2 hardening gaps) → REJECT (one remaining
+`UnicodeDecodeError` gap) → PASS, 0 findings). Full suite: 1913 passed, 6
+skipped. The live two-account smoke stays HELD pending Lee's confirmation
+of OpenCode's terms. **Next: M5** (evidence report grouped by
+route+instance, 20 min bound). See `result-review.md` (2026-09-14 entries)
+for the full attempt chain.
 
 ---
 

@@ -6,6 +6,126 @@
 
 ---
 
+## 2026-09-14 - Staffing multi-account plan M4: credential staging at dispatch
+
+**Result:** PASS (both packets, both committed). Continuing the chief-of-staff
+`docs/staffing-multi-account-plan.md` milestone M4 ("credential staging at
+dispatch") after M1/M2/M3 (all committed). Supervised via `/supervise` in
+`auto` mode, dispatching every worker/review through `lee-llm-router
+run`/`staff`. The live two-account smoke stays explicitly **HELD** per the
+plan pending Lee's confirmation of OpenCode's terms — nothing in this
+session touched a real account or dispatched a real subprocess against a
+live credential.
+
+**M4-1 — `src/lee_llm_router/staffing/credentials.py` (new, committed
+`dca7f70`):** resolves a channel instance's `credential_ref` to
+`~/.local/state/lee-llm-router/credentials/<ref>.json` and builds a fresh,
+temporary, per-run staging home containing only that credential, laid out
+where `opencode`/`pi` read their auth (`HOME`, plus `PI_CODING_AGENT_DIR`
+for `pi`), deleted unconditionally after use. **`omp` is deliberately
+unsupported**: research during packetization found omp's real auth store is
+a SQLite-backed `omp auth-broker` vault, not a static JSON file, directly
+contradicting the plan's assumption ("omp: its own config path — read the
+harness to find it") — flagged rather than improvised; no route in the
+catalog currently dispatches `omp` against a multi-instance channel, so this
+is not a live gap today. One same-route repair fixed a real defect the
+worker's own test caught (`stage_harness_home` was a bare
+`@contextmanager` generator, so an unsupported-harness call only raised on
+`__enter__`, not on bare invocation, contradicting the module's own
+fail-closed contract); a second same-route repair was Black formatting
+only. Independent review: **ACCEPT, 0 blocking findings**.
+
+**M4-2 — `src/lee_llm_router/staffing/run.py` + `src/lee_llm_router/doctor.py`
+(wiring, committed `01e2722`):** `run_supervised_dispatch()`/`dispatch_route()`
+gained an additive `extra_env` parameter, merged into the child's
+environment unconditionally (coexisting with the existing Linux provenance
+marker in the same dict, never a competing `env` assignment). `doctor.py`'s
+`_run_run()` resolves and validates credential staging *before*
+`register_run()` and before any subprocess launch — fails closed (exit 3,
+nothing registered, nothing launched) on a missing credential file, an
+`credential_ref` that would escape the credential store, or an unsupported
+harness — then stages the credential for the actual dispatch inside
+`_execute_registered()`. A channel with no declared `instances` is provably
+unchanged (no lookup, no env change). **This packet went through three
+independent-review rounds before landing:**
+- Round 1 (author `agy-gemini-3-8-flash-high-gemini-sub`, reviewer
+  `pi-gpt-5-6-luna-xhigh-openai-sub`): **REJECT**, 1 blocking + 2 high
+  findings. Supervisor independently confirmed the blocking finding against
+  the *real* files on this machine (read-only; no secret value was ever
+  printed or logged): the staged `auth.json` copied the credential file's
+  raw bytes verbatim instead of nesting it under the channel's provider key
+  (e.g. `{"opencode-go": {"type": "api", "key": ...}}`) — both
+  `~/.local/share/opencode/auth.json` and `~/.pi/agent/auth.json` are
+  provider-keyed dicts, confirmed directly. The two high findings (no
+  path-traversal guard on `credential_ref`; `OSError` during staging not
+  converted to the governed `CredentialStagingError`) were also confirmed.
+- Round 2 repair (`M4-2-fix1`, same author route, same reviewer route):
+  fixed all three findings — provider-key wrapping with bookkeeping-field
+  stripping, `is_relative_to` traversal guard, `OSError` → `CredentialStagingError`.
+  This dispatch **stalled** (killed at the 10-minute stall bound,
+  `platform_timeout`/stall classification) but its file edits were already
+  complete and correct when killed; the supervisor personally re-ran the
+  oracle, full suite, Black, and Ruff directly (Rule D) rather than
+  blindly re-dispatching, and accepted on that direct evidence. Re-review:
+  **REJECT**, 1 new finding — `credential_path.read_text(encoding="utf-8")`
+  can raise `UnicodeDecodeError`, a `ValueError` subclass not caught by the
+  surrounding `except OSError`, so a non-UTF-8 credential file would crash
+  instead of failing closed.
+- Round 3 repair (`M4-2-fix2`, same author/reviewer routes): narrow fix,
+  `UnicodeDecodeError` now caught and converted to
+  `CredentialStagingError(kind="malformed_credential")`. Re-review:
+  **PASS, 0 findings.**
+
+Supervisor personally re-ran pytest (owned-file scope, then full suite),
+Black, and Ruff after every impl dispatch in this chain and read every
+diff hunk (`git diff --stat` matched exactly the packet's declared owned
+paths each time, no scope violations). Final full-suite state: **1913
+passed, 6 skipped** (was 1902 before M4; M4-1 added 6, M4-2 added 7,
+M4-2-fix1 added 3 net, M4-2-fix2 added 1).
+
+**Attempt chain (per-host ledger, host A8Max) — packet docs and full
+findings text in `docs/staffing/packets/M4-1-*.md` and `docs/staffing/packets/M4-2-*.md`:**
+- M4-1 impl `router-run-a9b0fccd41ee414787e95b979ee4c694` (supervisor
+  mis-dispatched the oracle with an invalid `PYTHONPATH=src` argv prefix —
+  `platform_env`, own dispatch mistake, not a worker fault; the worker's
+  files were already correct).
+- M4-1-fix1 impl `router-run-470351d400b845269cdccfee3e3d80c4`
+  (pi-gpt-5-6-luna-xhigh-openai-sub): fixed the eager-validation gap.
+- M4-1-fix2 impl `router-run-5669244a6e07491782aafd27fb0cfd8f`
+  (pi-gpt-5-6-luna-xhigh-openai-sub): Black formatting only.
+- M4-1 review `router-run-9e4fca906d224a4bbecff4dc48cddaa2`
+  (agy-gemini-3-8-flash-high-gemini-sub): ACCEPT.
+- M4-2 impl `router-run-bd69df44aa1f41a8a9b7b87852f75fb1`
+  (agy-gemini-3-8-flash-high-gemini-sub).
+- M4-2 review `router-run-ae9b51a1810644f790e209233e79606f`
+  (pi-gpt-5-6-luna-xhigh-openai-sub): REJECT, 3 findings.
+- M4-2-fix1 impl `router-run-f2ecb79b5d4143639cbf8f5efda081b9`
+  (agy-gemini-3-8-flash-high-gemini-sub; stalled/killed, accepted on direct
+  supervisor re-verification per Rule D).
+- M4-2-fix1 review `router-run-51a6957e3fe142bebae3d7c15ea771fe`
+  (pi-gpt-5-6-luna-xhigh-openai-sub): REJECT, 1 finding.
+- M4-2-fix2 impl `router-run-dd3cf15237364304b56634107b06e168`
+  (agy-gemini-3-8-flash-high-gemini-sub).
+- M4-2-fix2 review `router-run-3cb3db30e8f24722b9b3b4b3b42e7a0c`
+  (pi-gpt-5-6-luna-xhigh-openai-sub): PASS, 0 findings.
+
+**Disposition:** M4 is complete, verified, reviewed to 0 findings, and
+**committed** (router commits `dca7f70` M4-1, `01e2722` M4-2). **Next: M5**
+(evidence report grouped by route+instance). The live two-account smoke
+stays HELD.
+
+**How to Verify**
+
+```bash
+cd /home/lee/projects/lee-llm-router
+.venv/bin/python -m pytest tests/test_staffing_credentials.py tests/test_staffing_run.py tests/test_doctor.py -q
+.venv/bin/python -m pytest -q
+.venv/bin/black --check src/lee_llm_router/staffing/credentials.py src/lee_llm_router/staffing/run.py src/lee_llm_router/doctor.py tests/test_staffing_credentials.py tests/test_staffing_run.py tests/test_doctor.py
+.venv/bin/ruff check src/lee_llm_router/staffing/credentials.py src/lee_llm_router/staffing/run.py src/lee_llm_router/doctor.py tests/test_staffing_credentials.py tests/test_staffing_run.py tests/test_doctor.py
+```
+
+---
+
 ## 2026-09-14 - Staffing multi-account plan M3: selection (M3-2, M3-3)
 
 **Result:** PASS (both packets, both committed). Continuing the chief-of-staff
