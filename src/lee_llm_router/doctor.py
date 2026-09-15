@@ -1630,6 +1630,7 @@ def _run_run(args: argparse.Namespace) -> int:
         RunSelectionError,
         build_attempt_record,
         dispatch_route,
+        no_work_evidence,
         oracle_timeout_seconds,
         packet_id_for_text,
         parse_oracle_command,
@@ -1994,12 +1995,25 @@ def _run_run(args: argparse.Namespace) -> int:
         else:
             for line in run_summary_lines(outcome, dispatch, oracle, record=record):
                 print(line)
-        if oracle_setup_error is None:
-            return dispatch.exit_code
-        # The one attempt record is already persisted; return the governed
-        # failure for the oracle that could not run (never a fake success).
-        print(f"run: oracle failed: {oracle_setup_error}", file=sys.stderr)
-        return 3
+        if oracle_setup_error is not None:
+            # The one attempt record is already persisted; return the governed
+            # failure for the oracle that could not run (never a fake success).
+            print(f"run: oracle failed: {oracle_setup_error}", file=sys.stderr)
+            return 3
+        if no_work_evidence(dispatch, oracle):
+            # The one truthful, schema-valid attempt is already persisted and
+            # printed above. A clean exit with no oracle, no owned-path change,
+            # and no result/answer in stdout is a governed ``platform_env``
+            # failure, never a successful command, so the caller cannot mistake
+            # it for work and re-dispatch the unchanged packet/route.
+            print(
+                "run: no effective work: exit 0 with no oracle, no owned-path "
+                "change, and no result/answer in stdout; recorded "
+                "failure_class=platform_env",
+                file=sys.stderr,
+            )
+            return 3
+        return dispatch.exit_code
 
     # Deregistration covers every boundary after registration — normal
     # return, governed failure exit, exception, ceiling timeout, and

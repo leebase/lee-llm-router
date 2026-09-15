@@ -587,7 +587,7 @@ def test_run_explain_cheapest_selects_first_eligible(
         packet_path=packet,
         launcher=launcher,
     )
-    assert code == 0
+    assert code == 3
     payload = json.loads(captured.out)
 
     expected_id, expected_excluded = _explain_first_eligible(
@@ -633,7 +633,7 @@ def test_run_selection_record_is_explain_evidence_only(
         packet_path=packet,
         launcher=launcher,
     )
-    assert code == 0
+    assert code == 3
     payload = json.loads(captured.out)
     selection = payload["selection"]
     assert set(selection) == {"basis", "reason", "explain_ref", "excluded"}
@@ -661,7 +661,7 @@ def test_run_explicit_eligible_route(
         route=CODEX_ROUTE,
         launcher=launcher,
     )
-    assert code == 0
+    assert code == 3
     payload = json.loads(captured.out)
     selection = payload["selection"]
     assert selection["basis"] == "explicit"
@@ -796,7 +796,7 @@ def test_run_supervisor_attestation_is_identity_not_capability(
         launcher=launcher,
     )
 
-    assert code == 0
+    assert code == 3
     payload = _assert_output_matches_single_append(captured, scratch_state)
     assert len(launcher.processes) == 1
     catalog = load_staffing_catalog(catalog_dir)
@@ -893,7 +893,7 @@ def test_run_supervisor_attestation_never_automatic_is_identity_exempt(
         supervisor_route=FABLE_ROUTE,
         launcher=launcher,
     )
-    assert code == 0, captured.err
+    assert code == 3, captured.err
     assert len(launcher.processes) == 1
     payload = json.loads(captured.out)
     assert payload["supervisor_route"]["model"] == "claude-fable-5-1"
@@ -949,7 +949,7 @@ def test_run_author_route_excludes_author_and_same_family(
         route=PI_ROUTE,
         launcher=launcher,
     )
-    assert code == 0
+    assert code == 3
     payload = json.loads(captured.out)
     assert payload["selection"]["basis"] == "explicit"
     assert not any(
@@ -1013,7 +1013,7 @@ def test_run_author_route_selection_excludes_author_and_preserves_explain(
         launcher=launcher,
         extra=("--author-route", PI_ROUTE),
     )
-    assert code == 0
+    assert code == 3
     payload = json.loads(captured.out)
     selection = payload["selection"]
     assert selection["basis"] == "explain_cheapest_eligible"
@@ -1058,7 +1058,7 @@ def test_run_author_route_not_applicable_outside_review_judge(
         launcher=launcher,
         extra=("--author-route", PI_ROUTE),
     )
-    assert code == 0
+    assert code == 3
     payload = json.loads(captured.out)
     assert all(
         entry["reason"] != "independence" for entry in payload["selection"]["excluded"]
@@ -1207,7 +1207,7 @@ def test_run_complete_parent_pair_launches_once_and_does_not_escalate(
         escalation_reason="review rejected the attempt",
         launcher=launcher,
     )
-    assert code == 0
+    assert code == 3
     payload = _assert_output_matches_single_append(captured, scratch_state)
     assert len(launcher.processes) == 1
     assert payload["parent_attempt_id"] == "attempt-123"
@@ -1375,6 +1375,485 @@ def test_unchanged_redispatch_allows_exceptions(
     assert refusal is None
 
 
+def _prior_no_work_attempt(
+    *,
+    attempt_id: str = "attempt-1",
+    packet_id: str = "sha256:packet",
+    route_id: str = CODEX_ROUTE,
+) -> dict[str, Any]:
+    """Return the attempt fields of a recorded no-effective-work result."""
+    return {
+        "attempt_id": attempt_id,
+        "packet_id": packet_id,
+        "failure_class": None,
+        "router_event": {"route_id": route_id},
+        "provenance": {
+            "notes": [
+                "dispatch no-work: worker exit 0 with no "
+                "oracle and no owned-path change (no effective work evidence)"
+            ]
+        },
+    }
+
+
+def test_unchanged_redispatch_refuses_no_work_result() -> None:
+    """A recorded terminal-receipt-only result refuses an unchanged re-dispatch."""
+    refusal = run_module.unchanged_redispatch_refusal(
+        [_prior_no_work_attempt()], "sha256:packet", CODEX_ROUTE, 600.0, None
+    )
+
+    assert run_module.NO_WORK_NOTE_PREFIX == "dispatch no-work:"
+    assert refusal is not None
+    assert refusal.startswith(
+        "refused — unchanged re-dispatch of sha256:packet on "
+        f"{CODEX_ROUTE} after a no-work result"
+    )
+    assert "attempt attempt-1" in refusal
+    assert "--parent/--escalation-reason" in refusal
+
+
+@pytest.mark.parametrize(
+    "attempts,packet_id,route_id,parent",
+    [
+        ([_prior_no_work_attempt()], "sha256:changed", CODEX_ROUTE, None),
+        ([_prior_no_work_attempt()], "sha256:packet", PI_ROUTE, None),
+        ([_prior_no_work_attempt()], "sha256:packet", CODEX_ROUTE, "attempt-1"),
+        (
+            [
+                _prior_no_work_attempt(attempt_id="older-no-work"),
+                {
+                    "attempt_id": "latest-success",
+                    "packet_id": "sha256:packet",
+                    "failure_class": None,
+                    "router_event": {"route_id": CODEX_ROUTE},
+                    "provenance": {"notes": []},
+                },
+            ],
+            "sha256:packet",
+            CODEX_ROUTE,
+            None,
+        ),
+        ([], "sha256:packet", CODEX_ROUTE, None),
+    ],
+    ids=["changed-packet", "other-route", "parent", "latest", "empty"],
+)
+def test_unchanged_redispatch_allows_no_work_exceptions(
+    attempts: list[dict[str, Any]],
+    packet_id: str,
+    route_id: str,
+    parent: str | None,
+) -> None:
+    """A changed packet, another route, an escalation, or a newer clean
+    attempt all reopen the no-work path; an empty ledger never refuses."""
+    refusal = run_module.unchanged_redispatch_refusal(
+        attempts, packet_id, route_id, 600.0, parent
+    )
+
+    assert refusal is None
+
+
+def test_unchanged_redispatch_refuses_successive_no_work_chain() -> None:
+    """Two successive no-work results on the same fingerprint spend the one
+    repair: even an explicit parent link to the latest attempt is refused."""
+    attempts = [
+        _prior_no_work_attempt(attempt_id="no-work-1"),
+        _prior_no_work_attempt(attempt_id="no-work-2"),
+    ]
+    refusal = run_module.unchanged_redispatch_refusal(
+        attempts, "sha256:packet", CODEX_ROUTE, 600.0, "no-work-2"
+    )
+
+    assert refusal is not None
+    assert "repeated no-work results" in refusal
+    assert "no-work-1" in refusal
+    assert "no-work-2" in refusal
+    assert "one repair is spent" in refusal
+
+
+def test_unchanged_redispatch_first_escalation_allowed_then_spent() -> None:
+    """The one repair is available once; the next unchanged no-work attempt on
+    the same fingerprint is refused even when it links to the latest one."""
+    first = _prior_no_work_attempt(attempt_id="no-work-1")
+    assert (
+        run_module.unchanged_redispatch_refusal(
+            [first], "sha256:packet", CODEX_ROUTE, 600.0, "no-work-1"
+        )
+        is None
+    )
+    second = _prior_no_work_attempt(attempt_id="no-work-2")
+    assert (
+        run_module.unchanged_redispatch_refusal(
+            [first, second], "sha256:packet", CODEX_ROUTE, 600.0, "no-work-2"
+        )
+        is not None
+    )
+
+
+def test_unchanged_redispatch_chain_resets_after_work_result() -> None:
+    """A materially changed work result between no-work attempts resets the
+    one-repair budget, so a fresh no-work result is not wrongly quarantined."""
+    first = _prior_no_work_attempt(attempt_id="no-work-1")
+    worked = {
+        "attempt_id": "worked",
+        "packet_id": "sha256:packet",
+        "failure_class": None,
+        "router_event": {"route_id": CODEX_ROUTE},
+        "provenance": {"notes": ["worker produced a substantive answer"]},
+    }
+    fresh = _prior_no_work_attempt(attempt_id="no-work-fresh")
+    assert (
+        run_module.unchanged_redispatch_refusal(
+            [first, worked, fresh],
+            "sha256:packet",
+            CODEX_ROUTE,
+            600.0,
+            "no-work-fresh",
+        )
+        is None
+    )
+
+
+def _prior_unverified_output_attempt(
+    attempt_id: str, fingerprint: str
+) -> dict[str, Any]:
+    """Return one unchanged/no-oracle result with a persisted output hash."""
+    return {
+        "attempt_id": attempt_id,
+        "packet_id": "sha256:packet",
+        "failure_class": None,
+        "verdict": "unverified",
+        "router_event": {"route_id": CODEX_ROUTE},
+        "provenance": {"notes": [f"dispatch result fingerprint: sha256:{fingerprint}"]},
+    }
+
+
+def test_unchanged_redispatch_bounds_repeated_identical_unknown_output() -> None:
+    """Two identical unverified outputs spend the bounded retry even when an
+    unknown metadata spelling escaped the structural classifier."""
+    attempts = [
+        _prior_unverified_output_attempt("unknown-1", "a" * 64),
+        _prior_unverified_output_attempt("unknown-2", "a" * 64),
+    ]
+
+    refusal = run_module.unchanged_redispatch_refusal(
+        attempts, "sha256:packet", CODEX_ROUTE, 600.0, None
+    )
+
+    assert refusal is not None
+    assert "repeated identical unverified output" in refusal
+    assert "unknown-1" in refusal
+    assert "unknown-2" in refusal
+
+
+def test_unchanged_redispatch_output_bound_resets_on_material_evidence() -> None:
+    """A first answer and a changed result remain retryable; packet/route
+    changes are already excluded by the decision seam's fingerprint filter."""
+    first = _prior_unverified_output_attempt("answer-1", "a" * 64)
+    changed = _prior_unverified_output_attempt("answer-2", "b" * 64)
+
+    assert (
+        run_module.unchanged_redispatch_refusal(
+            [first], "sha256:packet", CODEX_ROUTE, 600.0, None
+        )
+        is None
+    )
+    assert (
+        run_module.unchanged_redispatch_refusal(
+            [first, changed], "sha256:packet", CODEX_ROUTE, 600.0, None
+        )
+        is None
+    )
+
+
+def test_unchanged_redispatch_allows_material_change_after_no_work_chain() -> None:
+    """A spent no-work fingerprint still opens for a materially changed packet
+    or a different route, so recovery is never permanently blocked."""
+    attempts = [
+        _prior_no_work_attempt(attempt_id="no-work-1"),
+        _prior_no_work_attempt(attempt_id="no-work-2"),
+    ]
+    assert (
+        run_module.unchanged_redispatch_refusal(
+            attempts, "sha256:changed", CODEX_ROUTE, 600.0, None
+        )
+        is None
+    )
+    assert (
+        run_module.unchanged_redispatch_refusal(
+            attempts, "sha256:packet", PI_ROUTE, 600.0, None
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "stdout,expected",
+    [
+        ("", False),
+        ("   \n", False),
+        (CODEX_RECEIPT_STDOUT, False),
+        (PI_EVENT_STDOUT, False),
+        (OPENCODE_RECEIPT_STDOUT, False),
+        ("I reviewed the packet; the design is sound.\n", True),
+        (
+            '{"type":"message","message":{"role":"assistant",'
+            '"content":"Let me review this.\\nREVIEW VERDICT: ACCEPT"}}',
+            True,
+        ),
+        (
+            '{"type":"item.completed","item":{"id":"item_0",'
+            '"type":"agent_message","text":"OK"}}',
+            True,
+        ),
+        (AGY_RECEIPT_STDOUT, True),
+        ('{"type":"error","content":"authentication failed"}', False),
+        (
+            '{"type":"error","role":"assistant",' '"content":"authentication failed"}',
+            False,
+        ),
+        (
+            '{"type":"error","detail":{"type":"result",'
+            '"result":"authentication failed"}}',
+            False,
+        ),
+        (
+            '{"type":"usage","detail":{"role":"assistant",' '"output":"12 input"}}',
+            False,
+        ),
+        ('{"type":"status","text":"still starting"}', False),
+        ('{"type":"turn.completed","output":"completed"}', False),
+        ('{"type":"turn.completed","result":"completed"}', False),
+        (
+            '{"status":"completed","message":"completed",'
+            '"usage":{"input_tokens":1}}',
+            False,
+        ),
+        (
+            '{"event":"turn.completed","detail":{"message":'
+            '{"role":"assistant","content":"completed"}},'
+            '"usage":{"input_tokens":1}}',
+            False,
+        ),
+        (
+            '[{"event":"turn.completed","result":"completed",'
+            '"usage":{"input_tokens":1}}]',
+            False,
+        ),
+        (
+            '{"type":"turn.completed","detail":{"type":"result",'
+            '"result":"completed"}}',
+            False,
+        ),
+        (
+            '{"type":"turn.completed","detail":{"role":"assistant",'
+            '"content":"completed"}}',
+            False,
+        ),
+        (
+            '{"type":"turn.completed","detail":{"message":'
+            '{"role":"assistant","content":"completed"}}}',
+            False,
+        ),
+        (
+            '{"type":"turn.completed","payload":{"item":'
+            '{"type":"agent_message","text":"completed"}}}',
+            False,
+        ),
+        (
+            '{"type":"response.completed","payload":{"type":"result",'
+            '"result":"completed"}}',
+            False,
+        ),
+        (
+            '{"type":"response.completed","item":{"type":"result",'
+            '"result":"completed"}}',
+            False,
+        ),
+        (
+            '{"type":"task.finished","status":{"role":"assistant",'
+            '"content":"done"}}',
+            False,
+        ),
+        ('{"type":"usage","detail":{"output":"12 input, 7 output"}}', False),
+        ('{"type":"response.failed","message":"authentication failed"}', False),
+        ('{"type":"error_event","message":"authentication failed"}', False),
+        ('{"type":"error","text":"authentication failed"}', False),
+        ('{"type":"message_end","message":"finished"}', False),
+        (
+            '{"type":"response.failed","detail":{"payload":'
+            '{"content":"authentication failed"}}}',
+            False,
+        ),
+        ('{"result":"Implemented the requested fix."}', True),
+        ('{"type":"result","result":"Implemented the requested fix."}', True),
+        (
+            '{"type":"turn.completed","item":{"role":"assistant",'
+            '"content":"Implemented the requested fix."}}',
+            True,
+        ),
+        (
+            '{"type":"message_end","message":{"role":"assistant",'
+            '"content":"Implemented the requested fix."}}',
+            True,
+        ),
+        (
+            '{"type":"turn.completed","item":{"type":"agent_message",'
+            '"content":"Implemented the requested fix."}}',
+            True,
+        ),
+        (
+            '{"type":"response.completed","item":{"type":"output_text",'
+            '"text":"Implemented the requested fix."}}',
+            True,
+        ),
+        (
+            '{"type":"response.completed","response":'
+            '{"output_text":"Implemented the repair."}}',
+            True,
+        ),
+        ('["First finding", "Second finding"]', True),
+    ],
+    ids=[
+        "empty",
+        "whitespace",
+        "codex-usage-receipt",
+        "pi-usage-receipt",
+        "opencode-usage-receipt",
+        "plain-prose",
+        "pi-answer",
+        "codex-answer",
+        "agy-response",
+        "error-content-metadata",
+        "error-role-content-metadata",
+        "nested-error-result-metadata",
+        "nested-usage-role-output-metadata",
+        "status-text-metadata",
+        "completed-output-metadata",
+        "completed-result-metadata",
+        "status-only-completed-metadata",
+        "event-key-nested-completed-metadata",
+        "top-level-event-array-completed-metadata",
+        "completed-detail-result-metadata",
+        "completed-detail-assistant-metadata",
+        "completed-detail-message-metadata",
+        "completed-payload-item-metadata",
+        "completed-payload-result-metadata",
+        "completed-item-result-metadata",
+        "finished-status-assistant-metadata",
+        "nested-usage-output-metadata",
+        "response-failed-message-metadata",
+        "error-event-message-metadata",
+        "error-text-metadata",
+        "message-end-message-metadata",
+        "nested-generic-error-content-metadata",
+        "answer-envelope",
+        "typed-answer-envelope",
+        "nested-assistant-in-completion",
+        "nested-assistant-in-message-end",
+        "nested-agent-message-in-completion",
+        "nested-output-text-in-completion",
+        "response-output-text-in-completion",
+        "top-level-string-array-answer",
+    ],
+)
+def test_stdout_has_work_evidence_uses_answer_not_usage(
+    stdout: str, expected: bool
+) -> None:
+    """A terminal usage receipt is not work; prose or a content answer is."""
+    assert run_module.stdout_has_work_evidence(stdout) is expected
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        '{"type":"error","role":"assistant",' '"content":"authentication failed"}',
+        '{"type":"error","detail":{"type":"result",'
+        '"result":"authentication failed"}}',
+        '{"type":"usage","detail":{"role":"assistant",' '"output":"12 input"}}',
+    ],
+    ids=[
+        "error-role-content",
+        "nested-error-result",
+        "nested-usage-role-output",
+    ],
+)
+def test_no_work_evidence_metadata_type_outranks_answer_hints(stdout: str) -> None:
+    """Metadata-only output remains no-work despite broad answer-shape hints."""
+    from lee_llm_router.staffing.run import DispatchOutcome, no_work_evidence
+
+    dispatch = DispatchOutcome(
+        argv=("worker",),
+        exit_code=0,
+        stdout=stdout,
+        stderr="",
+        duration_seconds=0.0,
+        timed_out=False,
+        usage={},
+        owned_paths_changed=False,
+    )
+
+    assert run_module.stdout_has_work_evidence(stdout) is False
+    assert no_work_evidence(dispatch, None) is True
+
+
+@pytest.mark.parametrize(
+    "exit_code,timed_out,owned_paths_changed,has_oracle,expected",
+    [
+        (0, False, False, False, True),
+        (0, False, None, False, False),
+        (0, False, True, False, False),
+        (1, False, False, False, False),
+        (0, True, False, False, False),
+        (0, False, False, True, False),
+    ],
+    ids=[
+        "clean-no-work",
+        "unmeasured-owned-paths",
+        "owned-path-changed",
+        "nonzero-exit",
+        "timed-out",
+        "oracle-present",
+    ],
+)
+def test_no_work_evidence_requires_positive_confirmed_evidence(
+    exit_code: int,
+    timed_out: bool,
+    owned_paths_changed: bool | None,
+    has_oracle: bool,
+    expected: bool,
+) -> None:
+    """Only a positively measured clean/no-oracle/unchanged result is no work;
+    an unmeasured owned-path set or any contrary evidence is never accused."""
+    from lee_llm_router.staffing.run import (
+        DispatchOutcome,
+        OracleOutcome,
+        no_work_evidence,
+    )
+
+    dispatch = DispatchOutcome(
+        argv=("codex",),
+        exit_code=exit_code,
+        stdout="",
+        stderr="",
+        duration_seconds=0.0,
+        timed_out=timed_out,
+        usage={},
+        owned_paths_changed=owned_paths_changed,
+    )
+    oracle = None
+    if has_oracle:
+        oracle = OracleOutcome(
+            argv=("true",),
+            exit_code=0,
+            stdout="",
+            stderr="",
+            duration_seconds=0.0,
+            timed_out=False,
+        )
+
+    assert no_work_evidence(dispatch, oracle) is expected
+
+
 # ---------------------------------------------------------------------------
 # 6. Pi dispatch argv + usage
 # ---------------------------------------------------------------------------
@@ -1394,7 +1873,7 @@ def test_run_pi_dispatch_argv_and_usage(
         route=PI_ROUTE,
         launcher=launcher,
     )
-    assert code == 0
+    assert code == 3
     assert len(launcher.processes) == 1
     proc = launcher.processes[0]
     argv = proc.argv
@@ -1482,7 +1961,7 @@ def test_run_codex_dispatch_argv_and_usage(
         route=CODEX_ROUTE,
         launcher=launcher,
     )
-    assert code == 0
+    assert code == 3
     assert len(launcher.processes) == 1
     argv = launcher.processes[0].argv
     assert argv[0] == "codex"
@@ -1531,7 +2010,7 @@ def test_run_claude_governed_capture_argv_and_usage(
         route=CLAUDE_ROUTE,
         launcher=launcher,
     )
-    assert code == 0
+    assert code == 3
     assert len(launcher.processes) == 1
     argv = launcher.processes[0].argv
     assert argv[0] == "claude"
@@ -2248,7 +2727,7 @@ def test_run_workdir_validation(
         workdir=workdir,
         launcher=launcher,
     )
-    assert code == 0
+    assert code == 3
     # The refused first attempt launched nothing; only the valid run did.
     assert len(launcher.processes) == 1
     assert launcher.processes[0].popen_kwargs.get("cwd") == str(workdir)
@@ -2273,7 +2752,7 @@ def test_run_launches_once_and_appends_exactly_one_matching_record(
         route=CODEX_ROUTE,
         launcher=launcher,
     )
-    assert code == 0
+    assert code == 3
     assert len(launcher.processes) == 1
     payload = _assert_output_matches_single_append(captured, scratch_state)
     assert payload["schema_version"] == 2
@@ -2316,7 +2795,7 @@ def test_run_record_carries_duration_and_dispatch_provenance_without_streams(
         route=CODEX_ROUTE,
         launcher=launcher,
     )
-    assert code == 0
+    assert code == 3
     payload = json.loads(captured.out)
     assert "dispatch" not in payload
     assert CODEX_RECEIPT_STDOUT not in json.dumps(payload)
@@ -2389,7 +2868,7 @@ def test_run_without_oracle_is_unverified_and_launches_only_worker(
         launcher=launcher,
     )
 
-    assert code == 0
+    assert code == 3
     payload = json.loads(captured.out)
     assert payload["verdict"] == "unverified"
     assert payload["oracle_cmd"] is None
@@ -2888,7 +3367,7 @@ def test_run_packet_id_is_content_addressed_not_a_path(
         launcher=launcher,
     )
 
-    assert code == 0
+    assert code == 3
     payload = _assert_output_matches_single_append(captured, scratch_state)
     assert payload["packet_id"] == packet_id_for_text(PACKET_TEXT)
     assert payload["packet_id"].startswith("sha256:")
@@ -2910,7 +3389,7 @@ def test_run_unknown_codex_cache_split_withholds_numeric_cost(
         launcher=launcher,
     )
 
-    assert code == 0
+    assert code == 3
     payload = _assert_output_matches_single_append(captured, scratch_state)
     assert payload["cost"] == {"basis": ["unavailable"]}
     # The missing cache split remains null; it is never treated as all
@@ -2958,7 +3437,7 @@ def test_run_unavailable_or_insufficient_usage_has_no_cost_figures(
         launcher=launcher,
     )
 
-    assert code == 0
+    assert code == 3
     payload = _assert_output_matches_single_append(captured, scratch_state)
     assert payload["usage"]["basis"] == "unavailable"
     assert reason_fragment in payload["usage"]["unavailable_reason"]
@@ -3016,7 +3495,7 @@ def test_run_calls_committed_append_once(
         launcher=launcher,
     )
 
-    assert code == 0
+    assert code == 3
     payload = _assert_output_matches_single_append(captured, scratch_state)
     assert calls == [payload]
 
@@ -3492,7 +3971,7 @@ def test_run_cli_cache_pricing_end_to_end(
         route=CODEX_ROUTE,
         launcher=launcher_sol,
     )
-    assert code == 0
+    assert code == 3
     payload_sol = _assert_output_matches_single_append(captured, scratch_state)
     assert payload_sol["cost"]["basis"] == ["list", "marginal"]
     assert payload_sol["cost"]["usd_list"] == pytest.approx(0.0586256)
@@ -3532,7 +4011,7 @@ def test_run_cli_cache_pricing_end_to_end(
         route=PI_ROUTE,
         launcher=launcher_glm,
     )
-    assert code_glm == 0
+    assert code_glm == 3
     payload_glm = _assert_output_matches_single_append(captured_glm, scratch_state)
     assert payload_glm["cost"]["basis"] == ["list", "marginal"]
     # 2026-09-11 snapshot rates (D218, doubled since 2026-09-09).
@@ -3592,7 +4071,7 @@ def test_run_worker_usage_capture_exception_appends_attempt_with_unavailable_usa
         launcher=launcher,
     )
 
-    assert code == 0
+    assert code == 3
     payload = _assert_output_matches_single_append(captured, scratch_state)
     assert len(calls) == 1
     assert calls[0] == payload
@@ -3941,7 +4420,7 @@ def test_run_claude_contradictory_cache_total_preserves_worker_with_unavailable_
         launcher=launcher,
     )
 
-    assert code == 0
+    assert code == 3
     payload = _assert_output_matches_single_append(captured, scratch_state)
     assert len(launcher.processes) == 1
     assert payload["route"]["harness"] == "claude"
@@ -3983,7 +4462,7 @@ def test_run_claude_model_usage_contradictory_cache_total_is_unavailable_cost(
         launcher=launcher,
     )
 
-    assert code == 0
+    assert code == 3
     payload = _assert_output_matches_single_append(captured, scratch_state)
     assert payload["usage"]["basis"] == "unavailable"
     assert "is below its known components" in payload["usage"]["unavailable_reason"]
@@ -4023,7 +4502,7 @@ def test_run_claude_cache_write_total_preserves_evidence_without_numeric_cost(
         launcher=launcher,
     )
 
-    assert code == 0
+    assert code == 3
     payload = _assert_output_matches_single_append(captured, scratch_state)
     assert payload["usage"]["basis"] == "provider_reported"
     assert payload["usage"]["input_tokens"] == 10
@@ -4068,7 +4547,7 @@ def test_run_codex_huge_token_integer_keeps_worker_with_unavailable_cost(
         launcher=launcher,
     )
 
-    assert code == 0
+    assert code == 3
     payload = _assert_output_matches_single_append(captured, scratch_state)
     assert len(launcher.processes) == 1
     assert payload["usage"]["basis"] == "provider_reported"
@@ -4181,7 +4660,7 @@ def test_run_records_validated_class_derivation_overrides(
         route=PI_ROUTE,
         extra=("--class-derivation", str(derivation)),
     )
-    assert code == 0
+    assert code == 3
     payload = _assert_output_matches_single_append(captured, scratch_state)
     assert (
         'class derivation overrides: [{"derived":"xs","field":"size_band",'
@@ -4342,6 +4821,493 @@ def test_run_refuses_unchanged_redispatch_after_stall_before_registration(
     assert json.loads(captured.out)["kind"] == "unchanged_redispatch"
 
 
+def test_run_metadata_only_json_refuses_unchanged_redispatch(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """Metadata content exits 3, then cannot reopen an unchanged cycle."""
+    metadata = (
+        b'{"type":"error","role":"assistant",' b'"content":"authentication failed"}\n'
+    )
+    first_launcher = LaunchRecorder(chunks=[metadata], exit_code=0)
+    first_code, first_captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        launcher=first_launcher,
+    )
+
+    assert first_code == 3
+    assert len(first_launcher.processes) == 1
+    payload = _assert_output_matches_single_append(first_captured, scratch_state)
+    assert payload["failure_class"] == "platform_env"
+    assert any("dispatch no-work:" in note for note in payload["provenance"]["notes"])
+    seeded_ledger = scratch_state["attempts"].read_text(encoding="utf-8")
+
+    second_launcher = LaunchRecorder(chunks=[metadata], exit_code=0)
+    second_code, second_captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        launcher=second_launcher,
+    )
+
+    assert second_code == 3
+    assert second_launcher.processes == []
+    assert scratch_state["attempts"].read_text(encoding="utf-8") == seeded_ledger
+    assert json.loads(second_captured.out)["kind"] == "unchanged_redispatch"
+
+
+@pytest.mark.parametrize(
+    "completion",
+    [
+        b'{"type":"turn.completed","detail":{"type":"result",'
+        b'"result":"completed"}}\n',
+        b'{"type":"turn.completed","detail":{"message":'
+        b'{"role":"assistant","content":"completed"}}}\n',
+        b'{"status":"completed","message":"completed",'
+        b'"usage":{"input_tokens":1}}\n',
+        b'{"event":"turn.completed","detail":{"message":'
+        b'{"role":"assistant","content":"completed"}},'
+        b'"usage":{"input_tokens":1}}\n',
+        b'[{"event":"turn.completed","result":"completed",'
+        b'"usage":{"input_tokens":1}}]\n',
+    ],
+    ids=[
+        "detail-result",
+        "detail-message",
+        "status-only",
+        "event-key-nested",
+        "top-level-event-array",
+    ],
+)
+def test_run_structural_metadata_refuses_unchanged_redispatch(
+    monkeypatch,
+    capsys,
+    catalog_dir,
+    snapshot,
+    packet,
+    scratch_state,
+    completion,
+):
+    """A generic completion detail cannot masquerade as an answer result."""
+    first_launcher = LaunchRecorder(chunks=[completion], exit_code=0)
+    first_code, first_captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        launcher=first_launcher,
+    )
+
+    assert first_code == 3
+    assert len(first_launcher.processes) == 1
+    payload = _assert_output_matches_single_append(first_captured, scratch_state)
+    assert payload["failure_class"] == "platform_env"
+    assert payload["verdict"] == "unverified"
+    assert payload["verified_success"] is False
+    assert any("dispatch no-work:" in note for note in payload["provenance"]["notes"])
+    seeded_ledger = scratch_state["attempts"].read_text(encoding="utf-8")
+    assert list(scratch_state["registry"].glob("*.json")) == []
+
+    second_launcher = LaunchRecorder(chunks=[completion], exit_code=0)
+    second_code, second_captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        launcher=second_launcher,
+    )
+
+    assert second_code == 3
+    assert second_launcher.processes == []
+    assert scratch_state["attempts"].read_text(encoding="utf-8") == seeded_ledger
+    assert list(scratch_state["registry"].glob("*.json")) == []
+    assert json.loads(second_captured.out)["kind"] == "unchanged_redispatch"
+
+
+def test_run_no_work_result_returns_governed_nonzero_exit(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """The CLI must not report success for the no-work incident shape.
+
+    Regression for the unclosed acceptance defect: a terminal usage-receipt
+    only dispatch records ``failure_class=platform_env`` but the process
+    previously still exited 0, so a caller could treat the no-work invocation
+    as a successful command. The truthful schema-valid attempt is appended
+    first and remains the only stdout object; the process then returns the
+    governed nonzero failure (exit 3) and explains the stop on stderr.
+    """
+    receipt = (CODEX_RECEIPT_STDOUT + "\n").encode("utf-8")
+    launcher = LaunchRecorder(chunks=[receipt], exit_code=0)
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        launcher=launcher,
+    )
+
+    assert code == 3
+    assert len(launcher.processes) == 1
+    payload = _assert_output_matches_single_append(captured, scratch_state)
+    assert payload["failure_class"] == "platform_env"
+    assert payload["verdict"] == "unverified"
+    assert payload["verified_success"] is False
+    assert any("dispatch no-work:" in note for note in payload["provenance"]["notes"])
+    assert "run: no effective work" in captured.err
+    assert "failure_class=platform_env" in captured.err
+
+
+def test_run_refuses_unchanged_redispatch_after_no_work_result(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """The observed no-progress shape: a nonblank packet dispatched to the same
+    route returns a terminal usage receipt only, with no oracle and no
+    owned-file change. The first attempt records the no-work result truthfully
+    and returns the governed nonzero failure; the identical unchanged
+    re-dispatch is refused before registration and launches nothing, so the
+    queue cannot cycle on the unchanged hash/route."""
+    receipt = (CODEX_RECEIPT_STDOUT + "\n").encode("utf-8")
+    first_launcher = LaunchRecorder(chunks=[receipt], exit_code=0)
+    first_code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        launcher=first_launcher,
+    )
+    assert first_code == 3
+    assert len(first_launcher.processes) == 1
+    payload = _assert_output_matches_single_append(captured, scratch_state)
+    assert payload["verdict"] == "unverified"
+    assert payload["failure_class"] == "platform_env"
+    assert payload["verified_success"] is False
+    assert any("dispatch no-work:" in note for note in payload["provenance"]["notes"])
+    assert any(
+        "no result/answer in stdout" in note for note in payload["provenance"]["notes"]
+    )
+    seeded_ledger = scratch_state["attempts"].read_text(encoding="utf-8")
+    assert list(scratch_state["registry"].glob("*.json")) == []
+
+    from lee_llm_router.staffing import census as census_module
+
+    def unexpected_registration(**_kwargs: Any) -> None:
+        pytest.fail("unchanged no-work re-dispatch reached register_run")
+
+    monkeypatch.setattr(census_module, "register_run", unexpected_registration)
+    second_launcher = LaunchRecorder(chunks=[receipt], exit_code=0)
+    second_code, second_captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        launcher=second_launcher,
+    )
+
+    assert second_code == 3
+    assert second_launcher.processes == []
+    assert scratch_state["attempts"].read_text(encoding="utf-8") == seeded_ledger
+    assert list(scratch_state["registry"].glob("*.json")) == []
+    assert "unchanged re-dispatch" in second_captured.err
+    assert "no-work result" in second_captured.err
+    assert json.loads(second_captured.out)["kind"] == "unchanged_redispatch"
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        b"I reviewed the packet. The design is sound; no changes needed.\n",
+        b'{"type":"response.completed","response":'
+        b'{"output_text":"Implemented the repair."}}\n',
+    ],
+    ids=["plain-prose", "response-output-text"],
+)
+def test_run_read_only_answer_is_not_no_work(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state, answer
+):
+    """A planning/review worker that produces a substantive answer while
+    changing no owned file and running no oracle is effective work, not the
+    no-work incident shape: the record carries no no-work note or class."""
+    launcher = LaunchRecorder(chunks=[answer], exit_code=0)
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        launcher=launcher,
+    )
+
+    assert code == 0
+    payload = _assert_output_matches_single_append(captured, scratch_state)
+    assert payload["verdict"] == "unverified"
+    assert payload["failure_class"] is None
+    assert not any(
+        "dispatch no-work:" in note for note in payload["provenance"]["notes"]
+    )
+    assert any(
+        note.startswith("dispatch result fingerprint: sha256:")
+        for note in payload["provenance"]["notes"]
+    )
+
+
+def test_run_result_fingerprint_includes_changed_stderr(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """Changed stderr is new returned evidence, while an identical stdout/stderr
+    pair still spends the bounded retry before another worker is launched."""
+    unknown = b'{"phase":"settled","message":"settled"}\n'
+    fingerprints = []
+    for diagnostic in (b"authentication failed\n", b"authentication recovered\n"):
+        launcher = LaunchRecorder(
+            chunks=[unknown], stderr_chunks=[diagnostic], exit_code=0
+        )
+        code, captured = _run_cli(
+            monkeypatch,
+            capsys,
+            catalog_dir=catalog_dir,
+            snapshot_path=snapshot,
+            packet_path=packet,
+            route=CODEX_ROUTE,
+            launcher=launcher,
+        )
+        assert code == 0
+        assert len(launcher.processes) == 1
+        payload = json.loads(captured.out)
+        fingerprints.append(
+            next(
+                note
+                for note in payload["provenance"]["notes"]
+                if note.startswith("dispatch result fingerprint: sha256:")
+            )
+        )
+
+    assert fingerprints[0] != fingerprints[1]
+
+    # The changed result reset the comparison, so one retry of that new exact
+    # stdout/stderr result is allowed and recorded.
+    third_launcher = LaunchRecorder(
+        chunks=[unknown],
+        stderr_chunks=[b"authentication recovered\n"],
+        exit_code=0,
+    )
+    third_code, third_captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        launcher=third_launcher,
+    )
+    assert third_code == 0
+    assert len(third_launcher.processes) == 1
+    third_payload = json.loads(third_captured.out)
+    third_fingerprint = next(
+        note
+        for note in third_payload["provenance"]["notes"]
+        if note.startswith("dispatch result fingerprint: sha256:")
+    )
+    assert third_fingerprint == fingerprints[1]
+
+    seeded_ledger = scratch_state["attempts"].read_text(encoding="utf-8")
+    fourth_launcher = LaunchRecorder(
+        chunks=[unknown],
+        stderr_chunks=[b"authentication recovered\n"],
+        exit_code=0,
+    )
+    fourth_code, fourth_captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        launcher=fourth_launcher,
+    )
+    assert fourth_code == 3
+    assert fourth_launcher.processes == []
+    assert scratch_state["attempts"].read_text(encoding="utf-8") == seeded_ledger
+    assert json.loads(fourth_captured.out)["kind"] == "unchanged_redispatch"
+
+
+def test_run_bounds_repeated_unknown_metadata_output(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """An unrecognized metadata spelling cannot drive infinite unchanged
+    dispatches: one first result and one retry append, then the exact output
+    fingerprint is refused before registration or launch."""
+    unknown = b'{"phase":"settled","message":"settled"}\n'
+    for expected_lines in (1, 2):
+        launcher = LaunchRecorder(chunks=[unknown], exit_code=0)
+        code, captured = _run_cli(
+            monkeypatch,
+            capsys,
+            catalog_dir=catalog_dir,
+            snapshot_path=snapshot,
+            packet_path=packet,
+            route=CODEX_ROUTE,
+            launcher=launcher,
+        )
+        assert code == 0
+        assert len(launcher.processes) == 1
+        payload = json.loads(captured.out)
+        assert payload["verdict"] == "unverified"
+        assert payload["failure_class"] is None
+        assert (
+            len(scratch_state["attempts"].read_text(encoding="utf-8").splitlines())
+            == expected_lines
+        )
+
+    seeded_ledger = scratch_state["attempts"].read_text(encoding="utf-8")
+    third_launcher = LaunchRecorder(chunks=[unknown], exit_code=0)
+    third_code, third_captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        launcher=third_launcher,
+    )
+
+    assert third_code == 3
+    assert third_launcher.processes == []
+    assert scratch_state["attempts"].read_text(encoding="utf-8") == seeded_ledger
+    assert "repeated identical unverified output" in third_captured.err
+    assert json.loads(third_captured.out)["kind"] == "unchanged_redispatch"
+
+
+def test_run_refuses_second_no_work_repair_with_parent(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    """Successive unchanged no-work results with explicit parents: the first
+    escalation is allowed, the second is refused even though it links to the
+    latest attempt, so the identical fingerprint cannot cycle."""
+    receipt = (CODEX_RECEIPT_STDOUT + "\n").encode("utf-8")
+    first_code, first_captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        launcher=LaunchRecorder(chunks=[receipt], exit_code=0),
+    )
+    # The recorded no-work result is a governed failure: the attempt is
+    # appended, then the process returns nonzero rather than a false success.
+    assert first_code == 3
+    first = _assert_output_matches_single_append(first_captured, scratch_state)
+
+    second_launcher = LaunchRecorder(chunks=[receipt], exit_code=0)
+    second_code, second_captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        parent=first["attempt_id"],
+        escalation_reason="non_convergence",
+        launcher=second_launcher,
+    )
+    # The one allowed escalation still produced no work, so it is appended and
+    # also returns the governed nonzero result.
+    assert second_code == 3
+    assert len(second_launcher.processes) == 1
+    lines = scratch_state["attempts"].read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    second = json.loads(lines[-1])
+    assert json.loads(second_captured.out) == second
+
+    third_launcher = LaunchRecorder(chunks=[receipt], exit_code=0)
+    third_code, third_captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        parent=second["attempt_id"],
+        escalation_reason="non_convergence",
+        launcher=third_launcher,
+    )
+
+    assert third_code == 3
+    assert third_launcher.processes == []
+    assert scratch_state["attempts"].read_text(encoding="utf-8").splitlines() == lines
+    assert "repeated no-work results" in third_captured.err
+    assert json.loads(third_captured.out)["kind"] == "unchanged_redispatch"
+
+
+def test_run_allows_material_change_after_no_work_result(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state, tmp_path
+):
+    """A no-work result never blocks materially changed evidence: a different
+    packet (new content hash) and an explicit escalation both launch again."""
+    receipt = (CODEX_RECEIPT_STDOUT + "\n").encode("utf-8")
+    first_code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        launcher=LaunchRecorder(chunks=[receipt], exit_code=0),
+    )
+    # Every no-work attempt is recorded truthfully and returns nonzero.
+    assert first_code == 3
+    first_payload = _assert_output_matches_single_append(captured, scratch_state)
+    prior_attempt = first_payload["attempt_id"]
+
+    changed_packet = tmp_path / "changed-packet.md"
+    changed_packet.write_text("changed packet body: new evidence.\n", encoding="utf-8")
+    changed_launcher = LaunchRecorder(chunks=[receipt], exit_code=0)
+    changed_code, _ = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=changed_packet,
+        route=CODEX_ROUTE,
+        launcher=changed_launcher,
+    )
+    assert changed_code == 3
+    assert len(changed_launcher.processes) == 1
+
+    escalated_launcher = LaunchRecorder(chunks=[receipt], exit_code=0)
+    escalated_code, _ = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        parent=prior_attempt,
+        escalation_reason="non_convergence",
+        launcher=escalated_launcher,
+    )
+    assert escalated_code == 3
+    assert len(escalated_launcher.processes) == 1
+
+
 def test_run_accepts_disjoint_live_run(
     monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state, tmp_path
 ):
@@ -4360,7 +5326,7 @@ def test_run_accepts_disjoint_live_run(
         route=CODEX_ROUTE,
         launcher=launcher,
     )
-    assert code == 0
+    assert code == 3
     _assert_output_matches_single_append(captured, scratch_state)
     assert len(launcher.processes) == 1
     result = census_registry(registry_dir=registry)
@@ -5300,6 +6266,7 @@ def test_select_route_unknown_or_disabled_instance_raises_exit_3(
     packet: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    scratch_state,
 ) -> None:
     """(e) --instance naming unknown or disabled instance id exits 3."""
     from lee_llm_router.staffing.run import RunSelectionError
@@ -5382,6 +6349,7 @@ def test_select_route_instance_on_channel_without_instance_concept_raises_exit_3
     packet: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    scratch_state,
 ) -> None:
     """(f) --instance on a non-subscription channel exits 3."""
     from lee_llm_router.staffing.run import RunSelectionError
@@ -5517,6 +6485,7 @@ def test_single_instance_channel_resolves_implicit_instance(
     packet: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    scratch_state,
 ) -> None:
     """Subscription channel with no declared instances resolves implicit id."""
     from lee_llm_router.staffing.run import RunSelectionError
@@ -5582,7 +6551,7 @@ def test_single_instance_channel_resolves_implicit_instance(
         route=CODEX_ROUTE,
         launcher=launcher,
     )
-    assert code == 0
+    assert code == 3
     payload = json.loads(captured.out)
     assert payload["route"]["channel_instance"] == "openai-sub"
 

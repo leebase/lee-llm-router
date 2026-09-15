@@ -168,6 +168,7 @@ from lee_llm_router.watchdog import (
     StallReport,
     StallWatchdog,
     run_supervised,
+    scan_watch_dirs,
 )
 
 __all__ = [
@@ -207,6 +208,9 @@ __all__ = [
     "selection_record",
     "unchanged_redispatch_refusal",
     "validate_attempt_metadata",
+    "NO_WORK_NOTE_PREFIX",
+    "no_work_evidence",
+    "stdout_has_work_evidence",
 ]
 
 SELECTION_EXIT_CODE = 3
@@ -249,6 +253,19 @@ PROMPT_PLACEHOLDER = "{prompt}"
 
 Moved here (P2-9 removal) from the deleted ``lee_llm_router.resolver``; the
 per-harness provider modules carry their own identical constant."""
+
+NO_WORK_NOTE_PREFIX = "dispatch no-work:"
+"""Stable provenance-note prefix for a clean dispatch that produced no effective
+work evidence: exit 0, no oracle, no owned-path change, and no substantive
+answer/result in stdout.
+
+The note is machine-readable evidence for :func:`unchanged_redispatch_refusal`
+and is used by no other rule. The record is a governed failure: it carries the
+committed schema-valid class ``platform_env`` (the router's no-work shape is a
+no-launch/platform surface per the filed needs-lee note) in addition to this
+provenance evidence. A substantive stdout answer, an oracle, an owned-path
+change, a nonzero exit, or a timeout is never no work.
+"""
 
 
 @dataclass(frozen=True)
@@ -491,6 +508,13 @@ class DispatchOutcome:
     stall_minutes: float | None = None
     progress_minutes: float | None = None
     max_minutes: float | None = None
+    owned_paths_changed: bool | None = None
+    """Whether any watched owned path changed over the dispatch window.
+
+    ``True``/``False`` when the dispatch boundary measured the owned paths
+    (the CLI always supplies a non-empty owned-path set); ``None`` when no
+    path was watched and the router therefore must not claim either way.
+    """
 
 
 @dataclass(frozen=True)
@@ -1032,6 +1056,41 @@ _DISPATCH_PROGRESS_KILL_RE = re.compile(
 )
 """A governed progress-kill note and its recorded ceiling in minutes."""
 
+_NO_WORK_NOTE_RE = re.compile(r"^dispatch no-work:\s")
+"""A governed no-effective-work note (:data:`NO_WORK_NOTE_PREFIX`)."""
+
+_RESULT_FINGERPRINT_RE = re.compile(
+    r"^dispatch result fingerprint: (sha256:[0-9a-f]{64})$"
+)
+"""An exact stdout/stderr result hash for unverified dispatch evidence."""
+
+
+def _has_no_work_note(attempt: Mapping[str, Any]) -> bool:
+    """Whether one validated attempt carries a governed no-work note."""
+    provenance = attempt.get("provenance")
+    if not isinstance(provenance, Mapping):
+        return False
+    notes = provenance.get("notes")
+    if not isinstance(notes, Sequence) or isinstance(notes, (str, bytes)):
+        return False
+    return any(isinstance(note, str) and _NO_WORK_NOTE_RE.match(note) for note in notes)
+
+
+def _result_fingerprint(attempt: Mapping[str, Any]) -> str | None:
+    """Return a persisted exact stdout/stderr result fingerprint when present."""
+    if attempt.get("verdict") != "unverified":
+        return None
+    provenance = attempt.get("provenance")
+    if not isinstance(provenance, Mapping):
+        return None
+    notes = provenance.get("notes")
+    if not isinstance(notes, Sequence) or isinstance(notes, (str, bytes)):
+        return None
+    for note in notes:
+        if isinstance(note, str) and (match := _RESULT_FINGERPRINT_RE.match(note)):
+            return match.group(1)
+    return None
+
 
 def unchanged_redispatch_refusal(
     attempts: Sequence[Mapping[str, Any]],
@@ -1040,13 +1099,19 @@ def unchanged_redispatch_refusal(
     timeout_seconds: float | None,
     parent: str | None,
 ) -> str | None:
-    """Refuse an unchanged route after its latest progress kill.
+    """Refuse an unchanged route after its latest no-work or progress kill.
 
     The most recent attempt for the exact packet and route is authoritative.
-    A prior stall or no-progress kill may be retried only with a strictly
-    lower timeout, or as an explicit escalation linked to that attempt. The
-    caller validates that a non-null ``parent`` is paired with an escalation
-    reason before invoking this pure decision seam.
+    A recorded no-effective-work result (exit 0, no oracle, no owned-path
+    change, and no substantive stdout answer) is a mechanical cycle exactly
+    like a stall or no-progress kill: it may be retried once as an explicit
+    escalation linked to that attempt. Once the immediately preceding attempt
+    on the same packet and route is itself no-work, the one repair is spent
+    and no parent link reopens the identical cycle; only a materially changed
+    packet or route can. A prior stall or no-progress kill may additionally be
+    retried with a strictly lower timeout. The caller validates that a
+    non-null ``parent`` is paired with an escalation reason before invoking
+    this pure decision seam.
 
     Args:
         attempts: Validated ledger records in chronological file order.
@@ -1058,25 +1123,72 @@ def unchanged_redispatch_refusal(
     Returns:
         The refusal text, or None when the dispatch is allowed.
     """
-    prior: Mapping[str, Any] | None = None
-    for attempt in reversed(attempts):
+    fingerprint: list[Mapping[str, Any]] = []
+    for attempt in attempts:
         router_event = attempt.get("router_event")
         if (
             attempt.get("packet_id") == packet_id
             and isinstance(router_event, Mapping)
             and router_event.get("route_id") == route_id
         ):
-            prior = attempt
-            break
+            fingerprint.append(attempt)
 
-    if prior is None or prior.get("failure_class") != "platform_timeout":
+    if not fingerprint:
         return None
 
+    prior = fingerprint[-1]
     provenance = prior.get("provenance")
     if not isinstance(provenance, Mapping):
         return None
     notes = provenance.get("notes")
     if not isinstance(notes, Sequence) or isinstance(notes, (str, bytes)):
+        return None
+
+    attempt_id = prior.get("attempt_id")
+    if _has_no_work_note(prior):
+        # One-repair bound (successive unchanged no-work results): the first
+        # no-work attempt may be re-dispatched exactly once as an explicit
+        # escalation, but once the immediately preceding attempt on the same
+        # packet and route is also no-work the repair is spent. A parent link
+        # to that prior attempt can no longer reopen the identical cycle.
+        previous = fingerprint[-2] if len(fingerprint) >= 2 else None
+        if previous is not None and _has_no_work_note(previous):
+            return (
+                f"refused — unchanged re-dispatch of {packet_id} on {route_id} "
+                f"after repeated no-work results (attempts "
+                f"{previous.get('attempt_id')}, {attempt_id}); the one repair "
+                "is spent — change the packet or produce new evidence"
+            )
+        if parent == attempt_id:
+            return None
+        return (
+            f"refused — unchanged re-dispatch of {packet_id} on {route_id} "
+            f"after a no-work result (attempt {attempt_id}); change the "
+            "packet, produce owned-path change or oracle evidence, or escalate "
+            "with --parent/--escalation-reason"
+        )
+
+    # Structural classification is intentionally finite. As a final bound on
+    # an unknown metadata envelope, two consecutive exact stdout/stderr result
+    # hashes for an otherwise unchanged, unverified/no-oracle/no-owned-path
+    # attempt spend the retry. A first read-only answer is never quarantined,
+    # and a changed stdout/stderr result, packet, route, owned-path, or oracle
+    # evidence resets this comparison.
+    previous = fingerprint[-2] if len(fingerprint) >= 2 else None
+    result_fingerprint = _result_fingerprint(prior)
+    if (
+        previous is not None
+        and result_fingerprint is not None
+        and _result_fingerprint(previous) == result_fingerprint
+    ):
+        return (
+            f"refused — unchanged re-dispatch of {packet_id} on {route_id} "
+            "after repeated identical unverified output (attempts "
+            f"{previous.get('attempt_id')}, {attempt_id}); change the packet "
+            "or produce changed result, owned-path, or oracle evidence"
+        )
+
+    if prior.get("failure_class") != "platform_timeout":
         return None
 
     for note in notes:
@@ -1647,6 +1759,27 @@ def build_attempt_record(
             f"exit_code={oracle.exit_code}, timed_out={oracle.timed_out}, "
             f"error={oracle.error or 'none'}"
         )
+    if (
+        oracle is None
+        and dispatch.exit_code == 0
+        and not dispatch.timed_out
+        and dispatch.owned_paths_changed is False
+    ):
+        result_bytes = json.dumps(
+            {"stderr": dispatch.stderr, "stdout": dispatch.stdout},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        result_digest = hashlib.sha256(result_bytes).hexdigest()
+        notes.append(f"dispatch result fingerprint: sha256:{result_digest}")
+    if no_work_evidence(dispatch, oracle):
+        notes.append(
+            f"{NO_WORK_NOTE_PREFIX} worker exit 0 with no oracle, no "
+            "owned-path change, and no result/answer in stdout (no effective "
+            "work evidence); recorded as a platform_env governed failure and "
+            "any unchanged re-dispatch of this packet and route is refused"
+        )
     if class_derivation is not None:
         notes.append(
             "class derivation overrides: "
@@ -1774,9 +1907,17 @@ def _verified_success_reason(
 def _failure_class(
     dispatch: DispatchOutcome, oracle: OracleOutcome | None
 ) -> str | None:
-    """Return only a failure class directly supported by run evidence."""
+    """Return only a failure class directly supported by run evidence.
+
+    A clean exit that produced no effective-work evidence is a governed
+    ``platform_env`` failure (the no-launch/no-work platform surface), not a
+    successful unverified run; the matching provenance note carries the
+    no-work evidence and drives the unchanged-re-dispatch refusal.
+    """
     if dispatch.timed_out or (oracle is not None and oracle.timed_out):
         return "platform_timeout"
+    if no_work_evidence(dispatch, oracle):
+        return "platform_env"
     if oracle is not None and oracle.error is not None:
         return "platform_env"
     if oracle is not None and oracle.exit_code not in (None, 0):
@@ -2734,6 +2875,12 @@ def dispatch_route(
     stdout_buf = bytearray()
     stderr_buf = bytearray()
 
+    # Effective-work evidence: snapshot the watched owned paths immediately
+    # before and after the dispatch window. ``None`` means no path was
+    # watched, so the router must not claim either change or no change.
+    watch_paths = tuple(Path(path) for path in watch_dirs)
+    owned_before = scan_watch_dirs(watch_paths) if watch_paths else None
+
     started = clock_fn()
     exit_code = run_supervised_dispatch(
         resolution,
@@ -2753,6 +2900,11 @@ def dispatch_route(
         extra_env=extra_env,
     )
     duration = clock_fn() - started
+
+    owned_after = scan_watch_dirs(watch_paths) if watch_paths else None
+    owned_paths_changed: bool | None = None
+    if owned_before is not None and owned_after is not None:
+        owned_paths_changed = owned_after != owned_before
 
     kill_reason = getattr(exit_code, "kill_reason", None)
     if kill_reason is None and exit_code == _TIMEOUT_EXIT_CODE:
@@ -2786,7 +2938,330 @@ def dispatch_route(
         stall_minutes=stall_minutes,
         progress_minutes=progress_minutes,
         max_minutes=max_minutes,
+        owned_paths_changed=owned_paths_changed,
     )
+
+
+_WORK_TEXT_KEYS = frozenset(
+    {
+        "answer",
+        "completion",
+        "content",
+        "message",
+        "output",
+        "output_text",
+        "response",
+        "result",
+        "text",
+    }
+)
+"""JSON keys whose non-empty string value is a worker answer/result.
+
+The set is a contract about answer shape, not a harness list: every wired
+harness embeds its final text under one of these keys (``content``, ``text``,
+``response``, ``output_text``, ...), while a terminal usage receipt carries
+only type/usage metadata. Classifying output shape keeps the rule
+harness-neutral.
+"""
+
+
+_METADATA_EVENT_TOKENS = frozenset(
+    {
+        "complete",
+        "completed",
+        "completion",
+        "done",
+        "end",
+        "ended",
+        "error",
+        "failed",
+        "failure",
+        "finish",
+        "finished",
+        "status",
+        "usage",
+    }
+)
+"""Type-name tokens that identify lifecycle, error, or accounting events."""
+
+
+_ANSWER_EVENT_TYPES = frozenset(
+    {
+        "agent_message",
+        "answer",
+        "assistant",
+        "assistant_message",
+        "output_text",
+        "result",
+    }
+)
+"""Typed payload objects that explicitly identify generated answer text."""
+
+
+_BLOCKING_METADATA_EVENT_TOKENS = frozenset(
+    {"error", "failed", "failure", "status", "usage"}
+)
+"""Metadata event tokens whose nested hints cannot become answer evidence."""
+
+
+_GENERATED_MESSAGE_KEYS = frozenset({"item", "message", "response"})
+"""Direct slots that may contain a generated-message object."""
+
+
+_GENERATED_MESSAGE_EVENT_TYPES = frozenset(
+    {"agent_message", "assistant", "assistant_message", "output_text"}
+)
+"""Types that unambiguously identify generated text inside such a slot."""
+
+
+_JSON_PARSE_FAILED = object()
+"""Sentinel distinguishing a JSON ``null`` parse from a parse failure."""
+
+
+def _try_parse_json(text: str) -> Any:
+    """Parse one JSON document, returning :data:`_JSON_PARSE_FAILED` on failure."""
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return _JSON_PARSE_FAILED
+
+
+def _normalize_event_name(value: str) -> str:
+    """Return one separator-normalized event discriminator."""
+    separated = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", value.strip())
+    return re.sub(r"[^a-z0-9]+", "_", separated.lower()).strip("_")
+
+
+def _normalized_event_type(value: Mapping[str, Any]) -> str:
+    """Return the structural event discriminator for an output object.
+
+    Harnesses spell the same envelope discriminator as ``type`` or ``event``.
+    Some status-only envelopes provide neither and identify terminal lifecycle
+    metadata through a scalar ``status`` value. An explicit ``type`` remains
+    authoritative, then ``event``; status is used only when its value contains
+    a recognized lifecycle/error/accounting token. In particular, an untyped
+    generated response with ``status=SUCCESS`` remains answer evidence.
+    """
+    for key in ("type", "event"):
+        discriminator = value.get(key)
+        if isinstance(discriminator, str) and discriminator.strip():
+            return _normalize_event_name(discriminator)
+
+    status = value.get("status")
+    if not isinstance(status, str):
+        return ""
+    normalized = _normalize_event_name(status)
+    if any(token in _METADATA_EVENT_TOKENS for token in normalized.split("_")):
+        return normalized
+    return ""
+
+
+def _is_answer_event(value: Mapping[str, Any]) -> bool:
+    """Whether an object explicitly identifies an assistant answer payload."""
+    role = value.get("role")
+    if isinstance(role, str) and role.strip().lower() in {"agent", "assistant"}:
+        return True
+    return _normalized_event_type(value) in _ANSWER_EVENT_TYPES
+
+
+def _is_generated_message_event(value: Mapping[str, Any]) -> bool:
+    """Whether a direct slotted object unambiguously identifies generated text."""
+    role = value.get("role")
+    if isinstance(role, str) and role.strip().lower() in {"agent", "assistant"}:
+        return True
+    if _normalized_event_type(value) in _GENERATED_MESSAGE_EVENT_TYPES:
+        return True
+    output_text = value.get("output_text")
+    return isinstance(output_text, str) and bool(output_text.strip())
+
+
+def _is_metadata_event(value: Mapping[str, Any]) -> bool:
+    """Whether an object identifies lifecycle, error, or accounting metadata."""
+    normalized = _normalized_event_type(value)
+    return bool(normalized) and any(
+        token in _METADATA_EVENT_TOKENS for token in normalized.split("_")
+    )
+
+
+def _is_blocking_metadata_event(value: Mapping[str, Any]) -> bool:
+    """Whether metadata context must remain authoritative for descendants."""
+    tokens = _normalized_event_type(value).split("_")
+    return any(token in _BLOCKING_METADATA_EVENT_TOKENS for token in tokens)
+
+
+def _grants_generated_message_slot(value: Mapping[str, Any]) -> bool:
+    """Whether this event may carry a direct generated-message child."""
+    tokens = _normalized_event_type(value).split("_")
+    return any(
+        token
+        in {
+            "complete",
+            "completed",
+            "completion",
+            "done",
+            "end",
+            "ended",
+            "finish",
+            "finished",
+        }
+        for token in tokens
+    ) and not _is_blocking_metadata_event(value)
+
+
+def _json_has_work_text(
+    value: Any,
+    *,
+    content_key: bool = False,
+    metadata_event: bool = False,
+    metadata_locked: bool = False,
+    generated_message_slot: bool = False,
+    event_root: bool = True,
+    root_string_array: bool = False,
+) -> bool:
+    """Whether a parsed JSON value carries a non-empty worker answer string.
+
+    Metadata context is inherited through generic nested containers, so status
+    prose cannot become work merely by moving under ``content`` or ``output``.
+    Error, status, and usage events lock that context before same-object role
+    or result hints are considered. A completion event can leave metadata
+    context only through its own direct generated-message slot (``message``,
+    ``item``, or ``response``) whose object explicitly identifies generated
+    assistant/agent text; generic descendants such as ``detail`` and ``payload``
+    cannot regrant that permission at a deeper generated-message key. Only a
+    top-level event object (including an event in a top-level array) can
+    originate the slot.
+    """
+    if isinstance(value, str):
+        return (
+            not metadata_event
+            and (content_key or root_string_array)
+            and bool(value.strip())
+        )
+    if isinstance(value, Mapping):
+        grants_generated_slot = event_root and _grants_generated_message_slot(value)
+        if _is_metadata_event(value):
+            metadata_event = True
+            if _is_blocking_metadata_event(value):
+                metadata_locked = True
+        elif not metadata_locked and (
+            (not metadata_event and _is_answer_event(value))
+            or (
+                metadata_event
+                and generated_message_slot
+                and _is_generated_message_event(value)
+            )
+        ):
+            metadata_event = False
+        for key, item in value.items():
+            normalized_key = key.lower() if isinstance(key, str) else ""
+            is_content = normalized_key in _WORK_TEXT_KEYS
+            if (
+                is_content
+                and not metadata_event
+                and isinstance(item, str)
+                and item.strip()
+            ):
+                return True
+            if _json_has_work_text(
+                item,
+                content_key=is_content,
+                metadata_event=metadata_event,
+                metadata_locked=metadata_locked,
+                generated_message_slot=(
+                    grants_generated_slot and normalized_key in _GENERATED_MESSAGE_KEYS
+                ),
+                event_root=False,
+            ):
+                return True
+        return False
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return any(
+            _json_has_work_text(
+                item,
+                content_key=content_key,
+                metadata_event=metadata_event,
+                metadata_locked=metadata_locked,
+                generated_message_slot=generated_message_slot,
+                event_root=event_root,
+                root_string_array=root_string_array,
+            )
+            for item in value
+        )
+    return False
+
+
+def stdout_has_work_evidence(stdout: str) -> bool:
+    """Whether captured worker stdout carries a substantive answer/result.
+
+    A terminal usage receipt (for example a codex ``turn.completed`` event or a
+    Pi ``message_end`` carrying only usage) is not work. Real work is a
+    non-empty answer string under a content-bearing key, or plain non-JSON
+    prose. The rule classifies output shape, never a harness id, and uses no
+    token or elapsed-time threshold.
+
+    Args:
+        stdout: The captured worker stdout.
+
+    Returns:
+        True when at least one substantive answer/result is present.
+    """
+    if not isinstance(stdout, str) or not stdout.strip():
+        return False
+    text = stdout.strip()
+    whole = _try_parse_json(text)
+    if whole is not _JSON_PARSE_FAILED:
+        if isinstance(whole, str):
+            return bool(whole.strip())
+        return _json_has_work_text(
+            whole,
+            root_string_array=isinstance(whole, Sequence)
+            and not isinstance(whole, (str, bytes)),
+        )
+    saw_json = False
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parsed = _try_parse_json(line)
+        if parsed is _JSON_PARSE_FAILED:
+            # Non-JSON worker text is itself substantive output.
+            return True
+        saw_json = True
+        if isinstance(parsed, str) and parsed.strip():
+            return True
+        if _json_has_work_text(parsed):
+            return True
+    return not saw_json
+
+
+def no_work_evidence(dispatch: DispatchOutcome, oracle: OracleOutcome | None) -> bool:
+    """Whether one completed dispatch produced no effective-work evidence.
+
+    A clean exit is not, by itself, work: the observed failure shape is a
+    terminal usage receipt (or no output at all) with no verification oracle
+    and no owned-path change. This predicate is harness-neutral and
+    content-based (no token or elapsed-time threshold, no packet-id or harness
+    special case): the worker must have exited 0 without a timeout, no oracle
+    may have run, the dispatch boundary must have positively measured the
+    owned paths as unchanged, and stdout must carry no substantive
+    answer/result (:func:`stdout_has_work_evidence`). An unmeasured owned-path
+    set (``None``) fails closed to "not no-work", never to a false accusation.
+
+    Args:
+        dispatch: The one completed worker dispatch.
+        oracle: The optional oracle outcome; a present oracle is verification
+            evidence and never counts as no work.
+
+    Returns:
+        True only when every no-work condition is positively evidenced.
+    """
+    if oracle is not None:
+        return False
+    if dispatch.timed_out or dispatch.exit_code != 0:
+        return False
+    if dispatch.owned_paths_changed is not False:
+        return False
+    return not stdout_has_work_evidence(dispatch.stdout)
 
 
 def parse_oracle_command(command: str) -> list[str]:
@@ -3108,6 +3583,11 @@ def run_summary_lines(
         + (" (ceiling timeout)" if dispatch.timed_out else "")
         + f", wall {dispatch.duration_seconds:.1f}s",
     ]
+    if no_work_evidence(dispatch, oracle):
+        lines.append(
+            "progress: no effective work (exit 0, no oracle, no owned-path "
+            "change, no result/answer); governed failure_class=platform_env"
+        )
     usage = dispatch.usage
     if usage.get("basis") == "unavailable":
         lines.append(f"usage: unavailable ({usage.get('unavailable_reason')})")

@@ -2464,7 +2464,7 @@ def test_run_dispatch_staged_credential_visible_to_harness(
                 str(packet),
             ]
         )
-    assert exc_info.value.code == 0
+    assert exc_info.value.code == 3
     assert len(launcher_pi.processes) == 1
     proc = launcher_pi.processes[0]
     child_env = proc.popen_kwargs.get("env")
@@ -2520,7 +2520,7 @@ def test_run_dispatch_staged_credential_visible_to_harness(
                 str(packet),
             ]
         )
-    assert exc_info.value.code == 0
+    assert exc_info.value.code == 3
     assert len(launcher_oc.processes) == 1
     proc_oc = launcher_oc.processes[0]
     child_env_oc = proc_oc.popen_kwargs.get("env")
@@ -2662,7 +2662,7 @@ def test_run_dispatch_single_instance_channel_unchanged_no_staging(
                 str(packet),
             ]
         )
-    assert exc_info.value.code == 0
+    assert exc_info.value.code == 3
     assert len(launcher.processes) == 1
     proc = launcher.processes[0]
     # No env keyword argument forced
