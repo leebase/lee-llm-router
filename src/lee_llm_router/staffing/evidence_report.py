@@ -67,6 +67,14 @@ def _route_id(record: Mapping[str, Any]) -> str | None:
     return None
 
 
+def _channel_instance(record: Mapping[str, Any]) -> str | None:
+    """Read the channel instance recorded on the route object."""
+    route = record.get("route")
+    if isinstance(route, Mapping):
+        return _string_or_none(route.get("channel_instance"))
+    return None
+
+
 def _class_key(record: Mapping[str, Any]) -> str | None:
     """Read the canonical class key without deriving or rewriting it."""
     class_record = record.get("class_record")
@@ -533,6 +541,7 @@ def _class_role(record: Mapping[str, Any]) -> str | None:
 def _enrich_group(
     route_id: str | None,
     class_key: str | None,
+    channel_instance: str | None,
     members: list[Mapping[str, Any]],
     all_records_index: dict[str, Mapping[str, Any]],
     source_ledger: str = "",
@@ -564,6 +573,7 @@ def _enrich_group(
     return {
         "route_id": route_id,
         "class_key": class_key,
+        "channel_instance": channel_instance,
         "source_ledger": source_ledger,
         "source_attempt_ids": source_attempt_ids,
         "attempts": attempts,
@@ -578,14 +588,18 @@ def _enrich_group(
     }
 
 
-def _group_sort_key(key: tuple[str | None, str | None]) -> tuple[int, str, int, str]:
+def _group_sort_key(
+    key: tuple[str | None, str | None, str | None],
+) -> tuple[int, str, int, str, int, str]:
     """Sort known string keys lexically, with unavailable keys first."""
-    route_id, class_key = key
+    route_id, class_key, channel_instance = key
     return (
         0 if route_id is None else 1,
         route_id or "",
         0 if class_key is None else 1,
         class_key or "",
+        0 if channel_instance is None else 1,
+        channel_instance or "",
     )
 
 
@@ -613,6 +627,7 @@ def _channel_headroom_rows(
     from lee_llm_router.availability import load_availability
 
     availability = load_availability(availability_file)
+    channels_by_id = {c.channel_id: c for c in catalog.channels.channels}
 
     rows: list[dict[str, Any]] = []
     for channel_id in CHANNEL_IDS:
@@ -630,6 +645,46 @@ def _channel_headroom_rows(
             inside = remaining_frac <= reserve_frac
             av_status = "inside reserve" if inside else "outside reserve"
 
+        channel = channels_by_id.get(channel_id)
+        if channel is not None:
+            instances = channel.effective_instances()
+        else:
+            from lee_llm_router.staffing.catalog import ChannelInstance
+
+            instances = (
+                ChannelInstance(
+                    instance_id=channel_id,
+                    credential_ref=channel_id,
+                    enabled=True,
+                ),
+            )
+
+        instance_rows: list[dict[str, Any]] = []
+        for inst in instances:
+            inst_id = inst.instance_id
+            inst_headroom = availability.instance_headroom(channel_id, inst_id)
+            inst_remaining = inst_headroom.remaining_fraction
+
+            if availability.problem is not None:
+                inst_inside = None
+                inst_status = f"snapshot problem: {availability.problem}"
+            elif inst_remaining is None:
+                inst_inside = None
+                inst_status = f"no remaining_fraction for {inst_id}"
+            else:
+                inst_inside = inst_remaining <= reserve_frac
+                inst_status = "inside reserve" if inst_inside else "outside reserve"
+
+            instance_rows.append(
+                {
+                    "instance_id": inst_id,
+                    "remaining_fraction": inst_remaining,
+                    "reserve_fraction": reserve_frac,
+                    "inside_reserve": inst_inside,
+                    "availability": inst_status,
+                }
+            )
+
         rows.append(
             {
                 "channel_id": channel_id,
@@ -637,6 +692,7 @@ def _channel_headroom_rows(
                 "reserve_fraction": reserve_frac,
                 "inside_reserve": inside,
                 "availability": av_status,
+                "instances": instance_rows,
             }
         )
 
@@ -653,6 +709,114 @@ def _default_catalog_dir() -> Path:
 # ---------------------------------------------------------------------------
 
 
+def _is_finite_number(value: object) -> bool:
+    """Return whether a value is a finite, non-boolean number."""
+    import math
+
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
+
+
+def _unavailable_cost_count(cost: Mapping[str, Any], verified_pass: int) -> int:
+    """Extract the missing-success count from a standard unavailable reason."""
+    reason = cost.get("unavailable")
+    if isinstance(reason, str):
+        parts = reason.split(" ", 2)
+        if len(parts) >= 2 and parts[0].isdigit() and parts[1] == "of":
+            return min(int(parts[0]), verified_pass)
+    return verified_pass
+
+
+def _combine_route_costs(
+    rows: list[dict[str, Any]], verified_pass: int
+) -> dict[str, Any]:
+    """Combine per-instance cost means into a route-level cost mean."""
+    if verified_pass == 0:
+        return {"unavailable": "no verified successes in group"}
+    if len(rows) == 1:
+        cost = rows[0].get("cost_per_verified_success")
+        if isinstance(cost, Mapping):
+            return dict(cost)
+        return {
+            "unavailable": (
+                f"{verified_pass} of {verified_pass} verified attempts "
+                "have no usable cost record"
+            )
+        }
+
+    list_sum = 0.0
+    marginal_sum = 0.0
+    usable_count = 0
+    missing_count = 0
+
+    for row in rows:
+        row_verified = row.get("verified_pass", 0)
+        if not isinstance(row_verified, int) or row_verified <= 0:
+            continue
+        cost = row.get("cost_per_verified_success")
+        if not isinstance(cost, Mapping):
+            missing_count += row_verified
+            continue
+        if "unavailable" in cost:
+            missing_count += _unavailable_cost_count(cost, row_verified)
+            continue
+
+        usd_list = cost.get("usd_list")
+        marginal = cost.get("usd_marginal")
+        if not _is_finite_number(usd_list) or not _is_finite_number(marginal):
+            missing_count += row_verified
+            continue
+
+        list_sum += float(usd_list) * row_verified
+        marginal_sum += float(marginal) * row_verified
+        usable_count += row_verified
+
+    if missing_count > 0 or usable_count != verified_pass:
+        return {
+            "unavailable": (
+                f"{missing_count or verified_pass - usable_count} of "
+                f"{verified_pass} verified attempts have no usable cost record"
+            )
+        }
+
+    return {
+        "usd_list": list_sum / verified_pass,
+        "usd_marginal": marginal_sum / verified_pass,
+    }
+
+
+def _aggregate_route_rows(
+    enriched: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Collapse per-instance evidence rows into one row per route and class."""
+    grouped: dict[tuple[Any, Any], list[dict[str, Any]]] = {}
+    for row in enriched:
+        key = (row.get("class_key"), row.get("route_id"))
+        grouped.setdefault(key, []).append(row)
+
+    aggregates: list[dict[str, Any]] = []
+    for (class_key, route_id), rows in grouped.items():
+        attempts = sum(row.get("attempts", 0) for row in rows)
+        verified_pass = sum(row.get("verified_pass", 0) for row in rows)
+        aggregates.append(
+            {
+                "class_key": class_key,
+                "route_id": route_id,
+                "attempts": attempts,
+                "verified_pass": verified_pass,
+                "pass_rate": round(
+                    verified_pass / attempts if attempts > 0 else 0.0, 4
+                ),
+                "comparison_eligible": attempts >= MINIMUM_SAMPLE_SIZE,
+                "cost_per_verified_success": _combine_route_costs(rows, verified_pass),
+            }
+        )
+    return aggregates
+
+
 def _route_changes(
     enriched: list[dict[str, Any]],
 ) -> dict[str, list[dict[str, Any]]]:
@@ -666,9 +830,10 @@ def _route_changes(
     This is a report line, not a catalog write; no ranking touches
     ``crews.yaml``/``routes.yaml``.
     """
-    # Group enriched rows by class_key
+    # Group route-level aggregates by class_key.  The public classes section
+    # remains per-instance; only recommendation comparisons are route-level.
     by_class: dict[str, list[dict[str, Any]]] = {}
-    for row in enriched:
+    for row in _aggregate_route_rows(enriched):
         ck = row.get("class_key")
         if ck is not None:
             by_class.setdefault(ck, []).append(row)
@@ -736,7 +901,10 @@ def _route_changes(
         cheapest_cost = cheapest["cost_per_verified_success"]["usd_marginal"]
         first_cost = first_route["cost_per_verified_success"]["usd_marginal"]
 
-        if first_cost <= cheapest_cost:
+        if (
+            cheapest["route_id"] == first_route["route_id"]
+            or first_cost <= cheapest_cost
+        ):
             not_recommended.append(
                 {"class_key": class_key, "reason": "cheapest route already first"}
             )
@@ -789,7 +957,7 @@ def build_evidence_report(
 
     Returns:
         A JSON-serialisable dict with ``report_for``, ``classes`` (list of
-        enriched per-route/per-class groups), ``channels`` (per-channel
+        enriched per-route/per-class/instance groups), ``channels`` (per-channel
         headroom), and ``route_changes`` (cheaper-route recommendations).
         A missing or empty ledger produces a valid report with zero groups.
     """
@@ -819,20 +987,27 @@ def build_evidence_report(
         if isinstance(aid, str):
             all_records_index[aid] = r
 
-    # Group materialized records by (route_id, class_key)
-    grouped: dict[tuple[str | None, str | None], list[Mapping[str, Any]]] = {}
+    # Group materialized records by (route_id, class_key, channel_instance)
+    grouped: dict[
+        tuple[str | None, str | None, str | None], list[Mapping[str, Any]]
+    ] = {}
     for record in materialized:
-        key = (_route_id(record), _class_key(record))
+        key = (_route_id(record), _class_key(record), _channel_instance(record))
         grouped.setdefault(key, []).append(record)
 
     # Build enriched groups
     enriched_groups: list[dict[str, Any]] = []
-    for route_id, class_key in sorted(grouped, key=_group_sort_key):
-        members = grouped[(route_id, class_key)]
+    for (
+        route_id,
+        class_key,
+        channel_instance,
+    ) in sorted(grouped, key=_group_sort_key):
+        members = grouped[(route_id, class_key, channel_instance)]
         enriched_groups.append(
             _enrich_group(
                 route_id,
                 class_key,
+                channel_instance,
                 members,
                 all_records_index,
                 source_ledger=str(ledger_path_resolved),
@@ -892,6 +1067,7 @@ def render_evidence_report(report: dict[str, Any]) -> str:
             route = group["route_id"] or "(none)"
             ck = group["class_key"] or "(none)"
             lines.append(f"  route: {route}")
+            lines.append(f"  instance: {group.get('channel_instance') or '(none)'}")
             lines.append(f"  class: {ck}")
 
             source_ledger = group.get("source_ledger") or "(none)"
@@ -983,6 +1159,17 @@ def render_evidence_report(report: dict[str, Any]) -> str:
             )
             if inside is not None:
                 lines.append(f"    inside_reserve: {inside}")
+            for inst in ch.get("instances", []):
+                irf = inst["remaining_fraction"]
+                irv = inst["reserve_fraction"]
+                irf_text = f"{irf:.4f}" if irf is not None else "N/A"
+                irv_text = f"{irv:.4f}" if irv is not None else "N/A"
+                lines.append(
+                    f"    instance {inst['instance_id']}: "
+                    f"remaining={irf_text}, "
+                    f"reserve={irv_text}, "
+                    f"status={inst['availability']}"
+                )
         lines.append("")
 
     changes = report.get("route_changes", [])

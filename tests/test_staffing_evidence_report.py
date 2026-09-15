@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -54,6 +55,7 @@ def _record(
     *,
     route_id: str = "codex-gpt-5-6-sol-low-openai-sub",
     class_key: str = "impl/deterministic/none/s/python",
+    channel_instance: str | None = None,
     captured_at: str = "2026-09-15T12:00:00Z",
     verified_success: bool = True,
     verdict: str = "pass",
@@ -90,6 +92,16 @@ def _record(
     if role is not None:
         class_record["role"] = role
 
+    route_dict: dict[str, Any] = {
+        "model": "test-model",
+        "effort": "low",
+        "harness": "codex",
+        "channel": "openai-sub",
+        "provider": "openai",
+    }
+    if channel_instance is not None:
+        route_dict["channel_instance"] = channel_instance
+
     record: dict = {
         "schema_version": 2,
         "attempt_id": aid,
@@ -99,13 +111,7 @@ def _record(
         "escalation_reason": escalation_reason,
         "captured_at": captured_at,
         "verified_success": verified_success,
-        "route": {
-            "model": "test-model",
-            "effort": "low",
-            "harness": "codex",
-            "channel": "openai-sub",
-            "provider": "openai",
-        },
+        "route": route_dict,
         "supervisor_route": {
             "model": "test-supervisor-model",
             "effort": "high",
@@ -891,6 +897,7 @@ def test_build_evidence_report_classes_json_is_unchanged_for_legacy_groups(
     expected_fields = [
         "route_id",
         "class_key",
+        "channel_instance",
         "source_ledger",
         "source_attempt_ids",
         "attempts",
@@ -904,6 +911,8 @@ def test_build_evidence_report_classes_json_is_unchanged_for_legacy_groups(
         "reviewer_fallbacks",
     ]
     assert [list(group) for group in classes] == [expected_fields, expected_fields]
+    assert classes[0]["channel_instance"] is None
+    assert classes[1]["channel_instance"] is None
     assert classes[0]["source_attempt_ids"] == ["legacy-json-1"]
     assert classes[1]["source_attempt_ids"] == ["routed-json-1"]
 
@@ -961,6 +970,52 @@ def test_route_change_recommendation(tmp_path, monkeypatch) -> None:
     # Should recommend route-cheaper (cheaper marginal)
     assert match[0]["recommended_route_id"] == "route-cheaper"
     assert "pass_rate=" in match[0]["evidence"]
+
+
+def test_route_changes_aggregate_instances_before_recommending(
+    tmp_path, monkeypatch
+) -> None:
+    """Route recommendations compare one aggregate row per route."""
+    from lee_llm_router.staffing.ledger import ATTEMPTS_FILE_ENV_VAR, append_attempt
+
+    ledger = tmp_path / "ledger.jsonl"
+    monkeypatch.setenv(ATTEMPTS_FILE_ENV_VAR, str(ledger))
+    ledger.write_text("", encoding="utf-8")
+
+    class_key = "impl/deterministic/none/s/python"
+    for instance in ("a", "b"):
+        for _ in range(5):
+            append_attempt(
+                _record(
+                    route_id="route-current",
+                    class_key=class_key,
+                    channel_instance=instance,
+                    cost_usd_marginal=0.06 if instance == "a" else 0.01,
+                ),
+                path=ledger,
+            )
+
+    for _ in range(5):
+        append_attempt(
+            _record(
+                route_id="route-z-alternate",
+                class_key=class_key,
+                cost_usd_marginal=0.03,
+            ),
+            path=ledger,
+        )
+
+    report = build_evidence_report("2026-09", catalog_dir=str(REPO_CONFIG_DIR))
+    matches = [
+        change for change in report["route_changes"] if change["class_key"] == class_key
+    ]
+    assert len(matches) == 1
+    assert matches[0]["recommended_route_id"] == "route-z-alternate"
+    assert matches[0]["recommended_route_id"] != "route-current"
+    assert (
+        "route-current: n=10, pass_rate=1.0, mean_marginal=0.0350"
+        in matches[0]["evidence"]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1155,3 +1210,350 @@ def test_reviewer_fallbacks_no_selection_reason_is_distinct() -> None:
     assert both["undecidable"] == 2
     assert _REVIEWER_FALLBACK_NO_SELECTION_REASON in both["unavailable_reason"]
     assert _REVIEWER_FALLBACK_UNAVAILABLE_REASON in both["unavailable_reason"]
+
+
+# ---------------------------------------------------------------------------
+# M5: Channel instance grouping and per-instance headroom
+# ---------------------------------------------------------------------------
+
+
+def test_evidence_groups_by_route_class_and_channel_instance(monkeypatch) -> None:
+    """Two records with same route_id and class_key but different channel_instance
+    split into two separate groups, each with its own attempts, pass rate, and cost.
+    """
+    rec_a = _record(
+        route_id="route-multi",
+        class_key="impl/deterministic/none/s/python",
+        channel_instance="a",
+        verified_success=True,
+        cost_usd_list=0.10,
+        cost_usd_marginal=0.04,
+        attempt_id="aid-inst-a",
+    )
+    rec_b = _record(
+        route_id="route-multi",
+        class_key="impl/deterministic/none/s/python",
+        channel_instance="b",
+        verified_success=False,
+        verdict="fail",
+        failure_class="syntax_error",
+        cost_usd_list=0.20,
+        cost_usd_marginal=0.08,
+        attempt_id="aid-inst-b",
+    )
+    monkeypatch.setattr(
+        "lee_llm_router.staffing.evidence_report.read_attempts",
+        lambda _path: [rec_a, rec_b],
+    )
+
+    report = build_evidence_report("2026-09", catalog_dir=str(REPO_CONFIG_DIR))
+    classes = report["classes"]
+    assert len(classes) == 2
+
+    group_a = next(c for c in classes if c["channel_instance"] == "a")
+    assert group_a["route_id"] == "route-multi"
+    assert group_a["class_key"] == "impl/deterministic/none/s/python"
+    assert group_a["channel_instance"] == "a"
+    assert group_a["attempts"] == 1
+    assert group_a["verified_pass"] == 1
+    assert group_a["pass_rate"] == 1.0
+    assert group_a["cost_per_verified_success"] == {
+        "usd_list": 0.10,
+        "usd_marginal": 0.04,
+    }
+    assert group_a["source_attempt_ids"] == ["aid-inst-a"]
+
+    group_b = next(c for c in classes if c["channel_instance"] == "b")
+    assert group_b["route_id"] == "route-multi"
+    assert group_b["class_key"] == "impl/deterministic/none/s/python"
+    assert group_b["channel_instance"] == "b"
+    assert group_b["attempts"] == 1
+    assert group_b["verified_pass"] == 0
+    assert group_b["pass_rate"] == 0.0
+    assert group_b["cost_per_verified_success"] == {
+        "unavailable": "no verified successes in group"
+    }
+    assert group_b["source_attempt_ids"] == ["aid-inst-b"]
+
+
+def test_build_render_round_trip_preserves_instance_groups(
+    monkeypatch,
+) -> None:
+    """A built instance-bearing report renders the same instance groups."""
+    records = [
+        _record(
+            route_id="route-round-trip",
+            class_key="impl/deterministic/none/s/python",
+            channel_instance="a",
+            attempt_id="round-trip-a",
+        ),
+        _record(
+            route_id="route-round-trip",
+            class_key="impl/deterministic/none/s/python",
+            channel_instance="b",
+            attempt_id="round-trip-b",
+        ),
+    ]
+    monkeypatch.setattr(
+        "lee_llm_router.staffing.evidence_report.read_attempts",
+        lambda _path: records,
+    )
+
+    report = build_evidence_report("2026-09", catalog_dir=str(REPO_CONFIG_DIR))
+    text = render_evidence_report(report)
+
+    groups = [
+        group for group in report["classes"] if group["route_id"] == "route-round-trip"
+    ]
+    assert [(group["channel_instance"], group["attempts"]) for group in groups] == [
+        ("a", 1),
+        ("b", 1),
+    ]
+    assert "  route: route-round-trip\n  instance: a\n" in text
+    assert "  route: route-round-trip\n  instance: b\n" in text
+    assert "round-trip-a" in text
+    assert "round-trip-b" in text
+
+
+def test_records_without_channel_instance_group_with_none(monkeypatch) -> None:
+    """Historical records without route.channel_instance group under
+    channel_instance=None.
+    """
+    rec = _record(
+        route_id="route-legacy",
+        class_key="impl/deterministic/none/s/python",
+        channel_instance=None,
+        attempt_id="aid-legacy",
+    )
+    # Ensure route dict does not even have channel_instance key
+    rec["route"].pop("channel_instance", None)
+    monkeypatch.setattr(
+        "lee_llm_router.staffing.evidence_report.read_attempts",
+        lambda _path: [rec],
+    )
+
+    report = build_evidence_report("2026-09", catalog_dir=str(REPO_CONFIG_DIR))
+    classes = report["classes"]
+    assert len(classes) == 1
+    assert classes[0]["channel_instance"] is None
+    assert classes[0]["route_id"] == "route-legacy"
+
+
+def test_render_evidence_report_classes_instance_line() -> None:
+    """render_evidence_report prints 'instance: ...' line after 'route: ...'."""
+    group_inst = _render_group_for_test("route-x", "class-x", "aid-x")
+    group_inst["channel_instance"] = "inst-1"
+
+    group_none = _render_group_for_test("route-y", "class-y", "aid-y")
+    group_none["channel_instance"] = None
+
+    text = render_evidence_report(
+        {
+            "report_for": "2026-09",
+            "classes": [group_inst, group_none],
+            "route_changes": [],
+        }
+    )
+    assert "  route: route-x\n  instance: inst-1\n  class: class-x" in text
+    assert "  route: route-y\n  instance: (none)\n  class: class-y" in text
+
+
+def test_channel_headroom_rows_multi_instance_and_implicit_instance(
+    tmp_path: Path,
+) -> None:
+    """Declared multi-instance channels report per-instance headroom from
+    availability.instance_headroom, while single-instance channels report
+    one implicit instance matching the channel aggregate.
+    """
+    import shutil
+
+    import yaml
+
+    from lee_llm_router.staffing import load_staffing_catalog
+    from lee_llm_router.staffing.evidence_report import _channel_headroom_rows
+
+    # Set up scratch catalog with multi-instance opencode-go
+    dest = tmp_path / "catalog"
+    shutil.copytree(
+        REPO_CONFIG_DIR,
+        dest,
+        ignore=shutil.ignore_patterns("schema", "pricing", "__pycache__"),
+    )
+    channels_path = dest / "channels.yaml"
+    data = yaml.safe_load(channels_path.read_text(encoding="utf-8"))
+    for ch in data["channels"]:
+        if ch["channel_id"] == "opencode-go":
+            ch["instances"] = [
+                {
+                    "instance_id": "a",
+                    "credential_ref": "opencode-go/a",
+                    "enabled": True,
+                },
+                {
+                    "instance_id": "b",
+                    "credential_ref": "opencode-go/b",
+                    "enabled": True,
+                },
+            ]
+    channels_path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    catalog = load_staffing_catalog(dest)
+
+    # Set up availability snapshot with instances a (75%) and b (10%) for opencode-go,
+    # and openai-sub at 90% (single instance)
+    av_file = tmp_path / "snapshot.json"
+    av_file.write_text(
+        json.dumps(
+            {
+                "host": "test-host",
+                "observed_at": datetime.now(timezone.utc).strftime(
+                    "%Y-%m-%dT%H:%M:%S+00:00"
+                ),
+                "subscriptions": [
+                    {
+                        "provider": "OpenAI/Codex",
+                        "bucket": "All",
+                        "status": "ON TRACK",
+                        "remaining_pct": 90,
+                    },
+                    {
+                        "provider": "OpenCode/Go",
+                        "bucket": "Weekly",
+                        "status": "ON TRACK",
+                        "remaining_pct": 75,
+                        "instance": "a",
+                    },
+                    {
+                        "provider": "OpenCode/Go",
+                        "bucket": "Weekly",
+                        "status": "ON TRACK",
+                        "remaining_pct": 10,
+                        "instance": "b",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rows = _channel_headroom_rows(catalog, av_file)
+
+    # 1. Multi-instance channel opencode-go
+    opencode = next(c for c in rows if c["channel_id"] == "opencode-go")
+    assert len(opencode["instances"]) == 2
+    inst_a = next(i for i in opencode["instances"] if i["instance_id"] == "a")
+    inst_b = next(i for i in opencode["instances"] if i["instance_id"] == "b")
+
+    # Instance a: 0.75, reserve 0.10
+    assert inst_a["remaining_fraction"] == 0.75
+    assert inst_a["reserve_fraction"] == 0.10
+    assert inst_a["inside_reserve"] is False
+    assert inst_a["availability"] == "outside reserve"
+
+    # Instance b: 0.10, reserve 0.10 (at the reserve floor)
+    assert inst_b["remaining_fraction"] == 0.10
+    assert inst_b["reserve_fraction"] == 0.10
+    assert inst_b["inside_reserve"] is True
+    assert inst_b["availability"] == "inside reserve"
+
+    # Sourced from instance_headroom, not channel aggregate
+    assert inst_a["remaining_fraction"] != inst_b["remaining_fraction"]
+
+    rendered = render_evidence_report(
+        {
+            "report_for": "2026-09",
+            "classes": [],
+            "channels": rows,
+            "route_changes": [],
+        }
+    )
+    assert (
+        "instance a: remaining=0.7500, reserve=0.1000, status=outside reserve"
+        in rendered
+    )
+    assert (
+        "instance b: remaining=0.1000, reserve=0.1000, status=inside reserve"
+        in rendered
+    )
+
+    # 2. Single-instance channel openai-sub
+    openai = next(c for c in rows if c["channel_id"] == "openai-sub")
+    assert len(openai["instances"]) == 1
+    inst_openai = openai["instances"][0]
+    assert inst_openai["instance_id"] == "openai-sub"
+    assert inst_openai["remaining_fraction"] == openai["remaining_fraction"] == 0.90
+    assert inst_openai["reserve_fraction"] == openai["reserve_fraction"] == 0.10
+    assert inst_openai["inside_reserve"] == openai["inside_reserve"] is False
+    assert inst_openai["availability"] == openai["availability"] == "outside reserve"
+
+
+def test_render_evidence_report_channels_instance_lines() -> None:
+    """render_evidence_report prints one '    instance ...:' line per entry in
+    channel instances.
+    """
+    report = {
+        "report_for": "2026-09",
+        "classes": [],
+        "channels": [
+            {
+                "channel_id": "opencode-go",
+                "remaining_fraction": 0.25,
+                "reserve_fraction": 0.10,
+                "inside_reserve": False,
+                "availability": "outside reserve",
+                "instances": [
+                    {
+                        "instance_id": "a",
+                        "remaining_fraction": 0.75,
+                        "reserve_fraction": 0.10,
+                        "inside_reserve": False,
+                        "availability": "outside reserve",
+                    },
+                    {
+                        "instance_id": "b",
+                        "remaining_fraction": 0.25,
+                        "reserve_fraction": 0.10,
+                        "inside_reserve": False,
+                        "availability": "outside reserve",
+                    },
+                ],
+            },
+            {
+                "channel_id": "local",
+                "remaining_fraction": None,
+                "reserve_fraction": 0.0,
+                "inside_reserve": None,
+                "availability": "no remaining_fraction for local",
+                "instances": [
+                    {
+                        "instance_id": "local",
+                        "remaining_fraction": None,
+                        "reserve_fraction": 0.0,
+                        "inside_reserve": None,
+                        "availability": "no remaining_fraction for local",
+                    },
+                ],
+            },
+        ],
+        "route_changes": [],
+    }
+    text = render_evidence_report(report)
+    assert (
+        "  opencode-go: remaining=0.2500, reserve=0.1000, status=outside reserve"
+        in text
+    )
+    assert (
+        "    instance a: remaining=0.7500, reserve=0.1000, status=outside reserve"
+        in text
+    )
+    assert (
+        "    instance b: remaining=0.2500, reserve=0.1000, status=outside reserve"
+        in text
+    )
+    assert (
+        "  local: remaining=N/A, reserve=0.0000, status=no remaining_fraction for local"
+        in text
+    )
+    assert (
+        "    instance local: remaining=N/A, reserve=0.0000, status=no"
+        " remaining_fraction for local" in text
+    )
