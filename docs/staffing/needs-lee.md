@@ -868,3 +868,11 @@ agent-orch rate table (`fbedba0`) with provenance. Two routes added, both `activ
 `opencode-opencode-go-deepseek-v4-1-flash-opencode-go` and `pi-deepseek-v4-1-flash-opencode-go`.
 Under D215 the prepaid Go routes outrank the metered `pi-deepseek-deepseek-v4-1-flash-openrouter`
 route. **Lee:** confirm the proxy, or name a different one; swap to the Zen row when published.
+
+## 2026-09-15 — Live crew `openai-multiharness-economy` has no router catalog record (filed)
+
+`tests/test_staffing_catalog_live.py::test_round13_live_crew_names_map_to_exactly_one_catalog_record`
+fails: `auto-orch/config/crews.yaml` now defines `openai-multiharness-economy` (missions repointed
+2026-09-14 ~20:45 CT by another lane) and the router catalog has no matching record. Not this
+lane's change; full suite otherwise 1922 passed / 6 skipped at `HEAD`. Owner of the crew change
+should add the catalog record (or the crew should map to an existing one).
