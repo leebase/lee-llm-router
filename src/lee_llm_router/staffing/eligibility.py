@@ -36,6 +36,17 @@ checks, each with a named reason string:
   both checks run and either can independently exclude an instance.
   A route is vetoed by health/reserve only when every enabled instance is
   vetoed (or no enabled instance exists);
+* model-scoped bucket veto (``availability.MODEL_SCOPED_BUCKETS``) — some
+  buckets ``ai-subs`` reports meter one model family inside a channel rather
+  than the channel as a whole (``Claude Fable — weekly`` beside ``Current
+  session`` and ``All models — weekly``). The availability reader keeps such
+  a bucket out of the channel- and instance-wide reduction, and this check
+  applies it per route: only routes whose ``model`` starts with the bucket's
+  mapped family token are constrained. The same two vetoes used for instance
+  headroom are applied (the health veto and the reserve floor), each naming
+  the bucket it came from — ``model bucket '<name>' exhausted`` and
+  ``model bucket '<name>' reserve: N% kept in the tank (D216)``. A model
+  sub-limit therefore stops gating sibling models while still gating its own;
 * dated terms at the requested date and the badge marginal multiplier —
   each route is priced at the badge derived from its own channel's record
   in the availability snapshot (the limiting bucket's raw status badge);
@@ -418,6 +429,51 @@ def _availability_badge(headroom: ChannelHeadroom) -> str | None:
     return None
 
 
+def _model_scoped_vetoes(
+    headroom: ChannelHeadroom, model: str, reserve: float
+) -> tuple[str, ...]:
+    """Veto reasons from model-scoped buckets that cover ``model``.
+
+    A bucket carrying a ``model_scope`` meters one model family inside its
+    channel (a provider's model *sub-limit*), so it is not part of the
+    channel- or instance-wide headroom the availability reader reduces —
+    applying it there is what let one exhausted sub-limit gate every route on
+    the channel. It is applied here instead, per route, and only to routes
+    whose model starts with the mapped family token.
+
+    The two vetoes are the instance vetoes verbatim: the subscription health
+    veto :data:`_SUBSCRIPTION_VETO_HEALTH` and the D216 reserve floor. Every
+    reason names the bucket that produced it, because a route excluded by a
+    sub-limit must be distinguishable from one excluded by the channel.
+
+    Args:
+        headroom: The route's channel headroom. Its ``buckets`` tuple keeps
+            model-scoped buckets even though the aggregate ignores them.
+        model: The route's model id (``route.model``).
+        reserve: The channel's configured ``reserve_fraction``.
+
+    Returns:
+        One reason per tripped veto, in bucket order; empty when no
+        model-scoped bucket covers ``model`` or none of them trips.
+    """
+    reasons: list[str] = []
+    for bucket in headroom.buckets:
+        scope = bucket.model_scope
+        if scope is None or not model.startswith(scope):
+            continue
+        if bucket.health in _SUBSCRIPTION_VETO_HEALTH:
+            reasons.append(f"model bucket {bucket.name!r} {bucket.health.value}")
+        if (
+            bucket.remaining_fraction is not None
+            and bucket.remaining_fraction <= reserve
+        ):
+            reasons.append(
+                f"model bucket {bucket.name!r} {_RESERVE_REASON}: "
+                f"{reserve * 100:.0f}% kept in the tank (D216)"
+            )
+    return tuple(reasons)
+
+
 def _instance_or_channel_headroom(
     availability: AvailabilitySnapshot,
     channel: str,
@@ -527,7 +583,9 @@ def evaluate_eligibility(
             Subscription channels evaluate headroom and reserve per enabled
             instance; a route is vetoed only when every enabled instance is
             vetoed (or no enabled instance exists). Metered and local channels
-            are never vetoed for missing quota records.
+            are never vetoed for missing quota records. Model-scoped buckets
+            (``model_scope``) are applied per route instead, only to routes
+            whose model starts with the bucket's family token.
         at_date: Requested date (ISO string or :class:`datetime.date`) for
             the dated-terms check.
         openrouter_snapshot_path: Injectable pinned OpenRouter snapshot path
@@ -664,6 +722,13 @@ def evaluate_eligibility(
                             for reason in inst.reasons
                             if reason != _INHERITED_CHANNEL_REASON
                         )
+
+                # A model sub-limit constrains only the routes for its own
+                # model family, so it is checked per route and never through
+                # the instance headroom above.
+                reasons.extend(
+                    _model_scoped_vetoes(headroom, route.model, reserve)
+                )
 
                 instance_headrooms = tuple(
                     sorted(

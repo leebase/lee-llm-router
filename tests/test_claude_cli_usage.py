@@ -91,6 +91,7 @@ def test_governed_command_includes_stream_json_and_safe_permission_flags():
         "-p",
         "--output-format",
         "stream-json",
+        "--verbose",
         "--permission-mode",
         "acceptEdits",
         "--permission-prompts",
@@ -130,6 +131,7 @@ def test_governed_command_keeps_model_and_effort_before_the_format_pair():
         "-p",
         "--output-format",
         "stream-json",
+        "--verbose",
         "--permission-mode",
         "acceptEdits",
         "--permission-prompts",
@@ -1441,3 +1443,41 @@ def test_final_gate_regressions_are_schema_valid():
         capture_claude_usage(_final_gate_receipt(totalTokens=135)),
     ):
         validator.validate(mapping)
+
+
+def test_stream_json_argv_carries_verbose_flag():
+    """`--print --output-format=stream-json` requires `--verbose`.
+
+    Without it the Claude CLI exits before emitting anything:
+    "Error: When using --print, --output-format=stream-json requires
+    --verbose", so every governed Claude dispatch failed instantly with empty
+    stdout and an unavailable usage record.
+    """
+    from lee_llm_router.providers.codex_cli import (
+        CLAUDE_GOVERNED_CONFIG,
+        ClaudeCodeCLIProvider,
+    )
+
+    provider = ClaudeCodeCLIProvider()
+    config = {
+        "command": "claude",
+        **CLAUDE_GOVERNED_CONFIG,
+    }
+    argv = provider.build_command(config)
+
+    assert "--output-format" in argv
+    assert argv[argv.index("--output-format") + 1] == "stream-json"
+    assert "--verbose" in argv, f"stream-json argv must carry --verbose: {argv}"
+    assert argv[-1] == "{prompt}", f"prompt must stay last: {argv}"
+
+
+def test_non_stream_json_output_format_does_not_add_verbose():
+    """Other output formats keep their existing argv contract unchanged."""
+    from lee_llm_router.providers.codex_cli import ClaudeCodeCLIProvider
+
+    provider = ClaudeCodeCLIProvider()
+    argv = provider.build_command(
+        {"command": "claude", "output_format": "json"}
+    )
+
+    assert "--verbose" not in argv, f"unexpected --verbose: {argv}"

@@ -13,6 +13,7 @@ from lee_llm_router.availability import (
     AVAILABILITY_FILE_ENV_VAR,
     CHANNELS,
     GEMINI_CHANNELS,
+    MODEL_SCOPED_BUCKETS,
     MAX_FUTURE_SKEW_MINUTES,
     OPENCODE_GO_PROVIDER,
     AvailabilityError,
@@ -26,6 +27,7 @@ from lee_llm_router.availability import (
     is_routable_bucket,
     is_single_channel,
     load_availability,
+    model_scope_for,
     parse_availability,
     resolve_availability_path,
 )
@@ -73,11 +75,19 @@ def test_live_sample_channel_healths() -> None:
     assert openai.limiting_bucket == "Weekly limit"
     assert openai.remaining_fraction == pytest.approx(0.48)
 
-    # Anthropic: the current session is TOO FAST -> degraded.
+    # Anthropic: the current session is TOO FAST -> degraded. The channel-wide
+    # reduction covers 'Current session' (73%) and 'All models — weekly' (66%);
+    # 'Claude Fable — weekly' (56%) is a model sub-limit, so it sets neither the
+    # health nor the fraction of the channel it sits on (see the model-scope
+    # tests at the end of this file for the case that mattered in production).
     anthropic = snapshot.headroom("anthropic-sub")
     assert anthropic.health is Health.DEGRADED
     assert anthropic.limiting_bucket == "Current session"
-    assert anthropic.remaining_fraction == pytest.approx(0.56)
+    assert anthropic.remaining_fraction == pytest.approx(0.66)
+    # The sub-limit is still reported, unchanged, in the buckets tuple.
+    fable = next(b for b in anthropic.buckets if b.name == "Claude Fable — weekly")
+    assert fable.remaining_fraction == pytest.approx(0.56)
+    assert fable.model_scope == "claude-fable"
 
     # Gemini's own models: weekly 44% ON TRACK, but the 5-hour bucket is HOT,
     # and a HOT badge is degraded regardless of the remaining percentage.
@@ -1061,10 +1071,15 @@ def test_microsecond_resets_at_timestamp_parsing() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_backward_compat_live_sample_carries_no_instance_and_aggregate_unchanged() -> (
+def test_backward_compat_live_sample_carries_no_instance_and_channel_healths() -> (
     None
 ):
-    """Live sample carries no 'instance' key; channel aggregate is unchanged."""
+    """Live sample carries no 'instance' key; channel aggregates stay channel-wide.
+
+    The per-channel numbers here are the channel-wide reduction: the Anthropic
+    model sub-limit ('Claude Fable — weekly') stays in the reported buckets but
+    sets neither the health nor the fraction of the channel aggregate.
+    """
     raw = json.loads(LIVE_SAMPLE.read_text(encoding="utf-8"))
     entries = raw.get("subscriptions", [])
     assert len(entries) > 0
@@ -1081,7 +1096,9 @@ def test_backward_compat_live_sample_carries_no_instance_and_aggregate_unchanged
     assert opencode.remaining_fraction == pytest.approx(0.89)
     assert opencode.instance is None
 
-    # All other channel aggregates remain identical and have instance is None
+    # Every other channel aggregate is the channel-wide reduction and carries
+    # instance is None (Anthropic's fraction is its channel-wide minimum — the
+    # Claude Fable sub-limit is excluded, see MODEL_SCOPED_BUCKETS).
     assert snapshot.headroom("openai-sub").health is Health.DEGRADED
     assert snapshot.headroom("openai-sub").limiting_bucket == "Weekly limit"
     assert snapshot.headroom("openai-sub").remaining_fraction == pytest.approx(0.48)
@@ -1089,7 +1106,7 @@ def test_backward_compat_live_sample_carries_no_instance_and_aggregate_unchanged
 
     assert snapshot.headroom("anthropic-sub").health is Health.DEGRADED
     assert snapshot.headroom("anthropic-sub").limiting_bucket == "Current session"
-    assert snapshot.headroom("anthropic-sub").remaining_fraction == pytest.approx(0.56)
+    assert snapshot.headroom("anthropic-sub").remaining_fraction == pytest.approx(0.66)
     assert snapshot.headroom("anthropic-sub").instance is None
 
     assert snapshot.headroom("gemini-sub").health is Health.DEGRADED
@@ -1438,3 +1455,309 @@ def test_stale_snapshot_degrades_instance_headroom() -> None:
     assert inst_a.stale is True
     assert inst_a.limiting_bucket is None
     assert inst_a.instance == "a"
+
+
+# --------------------------------------------------------------------------
+# Packet P2 — model-scoped buckets (model sub-limits)
+# --------------------------------------------------------------------------
+
+
+def _observed_2026_09_16_payload(*, fable_pct: float | None = 0.0) -> dict:
+    """Rebuild the Anthropic bucket shape the 2026-09-16 snapshot carried.
+
+    Current session 97%, All models — weekly 14%, Claude Fable — weekly 0%.
+    The observed snapshot file itself is evidence and is never read or edited
+    by a test; this rebuilds its shape from the numbers it reported.
+    """
+    subscriptions: list[dict[str, Any]] = [
+        {
+            "provider": "Anthropic/Claude",
+            "bucket": "Current session",
+            "status": "COLD",
+            "remaining_pct": 97.0,
+        },
+        {
+            "provider": "Anthropic/Claude",
+            "bucket": "All models — weekly",
+            "status": "ON TRACK",
+            "remaining_pct": 14.0,
+        },
+    ]
+    if fable_pct is not None:
+        subscriptions.append(
+            {
+                "provider": "Anthropic/Claude",
+                "bucket": "Claude Fable — weekly",
+                "status": "ON TRACK",
+                "remaining_pct": fable_pct,
+            }
+        )
+    return {
+        "observed_at": SYNTHETIC_OBSERVED_AT.isoformat(),
+        "subscriptions": subscriptions,
+    }
+
+
+def test_model_scope_table_is_explicit_and_exact() -> None:
+    """The family token comes from an exact-name table, never from prose."""
+    assert MODEL_SCOPED_BUCKETS == {"Claude Fable — weekly": "claude-fable"}
+    assert model_scope_for("Claude Fable — weekly") == "claude-fable"
+    assert model_scope_for("  Claude Fable — weekly  ") == "claude-fable"
+    # Everything else stays a channel-wide constraint, exactly as before.
+    for name in (
+        "All models — weekly",
+        "Current session",
+        "claude fable — weekly",
+        "Claude Fable — monthly",
+        "Weekly limit",
+        "",
+    ):
+        assert model_scope_for(name) is None
+
+
+def test_model_scoped_bucket_is_reported_but_not_aggregated() -> None:
+    """The 2026-09-16 shape: Fable 0% must not reduce the channel to zero."""
+    snapshot = parse_availability(
+        _observed_2026_09_16_payload(),
+        now=SYNTHETIC_OBSERVED_AT + timedelta(minutes=1),
+    )
+    anthropic = snapshot.headroom("anthropic-sub")
+
+    # Nothing is hidden: the sub-limit is still one of the reported buckets.
+    assert [bucket.name for bucket in anthropic.buckets] == [
+        "Current session",
+        "All models — weekly",
+        "Claude Fable — weekly",
+    ]
+    scoped = anthropic.buckets[-1]
+    assert scoped.model_scope == "claude-fable"
+    assert scoped.health is Health.EXHAUSTED
+    assert scoped.remaining_fraction == pytest.approx(0.0)
+    assert all(bucket.model_scope is None for bucket in anthropic.buckets[:2])
+
+    # Channel-wide: the sub-limit sets neither the health nor the fraction.
+    assert anthropic.health is Health.DEGRADED
+    assert anthropic.limiting_bucket == "All models — weekly"
+    assert anthropic.remaining_fraction == pytest.approx(0.14)
+
+    # Instance-wide: same reduction, same excluded bucket.
+    instance = snapshot.instance_headroom("anthropic-sub", "anthropic-sub")
+    assert instance.health is Health.DEGRADED
+    assert instance.limiting_bucket == "All models — weekly"
+    assert instance.remaining_fraction == pytest.approx(0.14)
+    assert len(instance.buckets) == 3
+
+    # The scope is serialised, so reporting can see why a bucket is special.
+    instance_json = instance.to_dict()
+    assert instance_json["buckets"][-1]["model_scope"] == "claude-fable"
+    assert instance_json["buckets"][0]["model_scope"] is None
+    assert json.dumps(anthropic.to_dict())
+
+
+def test_model_sub_limit_does_not_cloud_a_healthy_channel() -> None:
+    """An exhausted sub-limit beside healthy channel-wide windows stays local."""
+    payload = {
+        "observed_at": SYNTHETIC_OBSERVED_AT.isoformat(),
+        "subscriptions": [
+            {
+                "provider": "Anthropic/Claude",
+                "bucket": "Current session",
+                "status": "COLD",
+                "remaining_pct": 97.0,
+            },
+            {
+                "provider": "Anthropic/Claude",
+                "bucket": "All models — weekly",
+                "status": "COLD",
+                "remaining_pct": 66.0,
+            },
+            {
+                "provider": "Anthropic/Claude",
+                "bucket": "Claude Fable — weekly",
+                "status": "ON TRACK",
+                "remaining_pct": 0.0,
+            },
+        ],
+    }
+    snapshot = parse_availability(
+        payload, now=SYNTHETIC_OBSERVED_AT + timedelta(minutes=1)
+    )
+    anthropic = snapshot.headroom("anthropic-sub")
+    assert anthropic.health is Health.HEALTHY
+    assert anthropic.limiting_bucket == "Current session"
+    assert anthropic.remaining_fraction == pytest.approx(0.66)
+    assert anthropic.usable is True
+
+
+def test_a_second_table_row_needs_no_other_change(monkeypatch) -> None:
+    """Extending the table by one row scopes a further sub-limit."""
+    monkeypatch.setitem(MODEL_SCOPED_BUCKETS, "Claude Opus — weekly", "claude-opus")
+    payload = _observed_2026_09_16_payload()
+    payload["subscriptions"].append(
+        {
+            "provider": "Anthropic/Claude",
+            "bucket": "Claude Opus — weekly",
+            "status": "ON TRACK",
+            "remaining_pct": 0.0,
+        }
+    )
+    snapshot = parse_availability(
+        payload, now=SYNTHETIC_OBSERVED_AT + timedelta(minutes=1)
+    )
+    anthropic = snapshot.headroom("anthropic-sub")
+    assert [bucket.model_scope for bucket in anthropic.buckets] == [
+        None,
+        None,
+        "claude-fable",
+        "claude-opus",
+    ]
+    assert anthropic.health is Health.DEGRADED
+    assert anthropic.remaining_fraction == pytest.approx(0.14)
+    assert anthropic.limiting_bucket == "All models — weekly"
+
+
+def test_an_aggregate_of_only_model_scoped_buckets_reads_unknown() -> None:
+    """With no channel-wide window observed, the channel stays fail-closed."""
+    payload = {
+        "observed_at": SYNTHETIC_OBSERVED_AT.isoformat(),
+        "subscriptions": [
+            {
+                "provider": "Anthropic/Claude",
+                "bucket": "Claude Fable — weekly",
+                "status": "COLD",
+                "remaining_pct": 90.0,
+            }
+        ],
+    }
+    snapshot = parse_availability(
+        payload, now=SYNTHETIC_OBSERVED_AT + timedelta(minutes=1)
+    )
+    anthropic = snapshot.headroom("anthropic-sub")
+    assert [bucket.model_scope for bucket in anthropic.buckets] == ["claude-fable"]
+    assert anthropic.health is Health.UNKNOWN
+    assert anthropic.remaining_fraction is None
+    assert anthropic.limiting_bucket is None
+
+    instance = snapshot.instance_headroom("anthropic-sub", "anthropic-sub")
+    assert instance.health is Health.UNKNOWN
+    assert instance.remaining_fraction is None
+    assert instance.limiting_bucket is None
+
+
+_PRE_SCOPE_SEVERITY: dict[Health, int] = {
+    Health.HEALTHY: 0,
+    Health.UNKNOWN: 1,
+    Health.DEGRADED: 2,
+    Health.LIKELY_EXHAUSTED: 3,
+    Health.EXHAUSTED: 4,
+}
+
+
+def _pre_model_scope_reduction(
+    buckets: tuple[Bucket, ...], stale: bool
+) -> tuple[Health, float | None, str | None]:
+    """The reduction this reader performed before model scopes existed.
+
+    An independent oracle: worst health and smallest fraction across *every*
+    bucket in the group, whatever its ``model_scope``. Any group with no
+    model-scoped bucket must still reduce to exactly these numbers.
+    """
+    worst = max(_PRE_SCOPE_SEVERITY[bucket.health] for bucket in buckets)
+    limiting = next(
+        bucket for bucket in buckets if _PRE_SCOPE_SEVERITY[bucket.health] == worst
+    )
+    numbers = [
+        bucket.remaining_fraction
+        for bucket in buckets
+        if bucket.remaining_fraction is not None
+    ]
+    return (
+        Health.UNKNOWN if stale else limiting.health,
+        min(numbers) if numbers else None,
+        None if stale else limiting.name,
+    )
+
+
+SCOPELESS_FIXTURES = (
+    "healthy.json",
+    "exhausted.json",
+    "likely-exhausted.json",
+    "degraded-by-pct.json",
+    "degraded-by-status.json",
+    "unavailable.json",
+    "no-data.json",
+    "malformed-records.json",
+    "non-finite.json",
+    "unknown-provider.json",
+    "written-at-newer.json",
+    "future-timestamp.json",
+)
+
+
+@pytest.mark.parametrize("name", SCOPELESS_FIXTURES)
+def test_channel_with_no_model_scoped_buckets_aggregates_as_before(name: str) -> None:
+    """With no scoped bucket present, aggregation is byte-identical."""
+    snapshot = load_fixture(name)
+    checked = 0
+    groups = (*snapshot.channels.values(), *snapshot.instances.values())
+    for headroom in groups:
+        if not headroom.buckets:
+            continue
+        assert all(bucket.model_scope is None for bucket in headroom.buckets), name
+        assert (
+            headroom.health,
+            headroom.remaining_fraction,
+            headroom.limiting_bucket,
+        ) == _pre_model_scope_reduction(headroom.buckets, snapshot.stale), name
+        checked += 1
+    assert checked > 0, name
+
+
+def test_live_sample_unscoped_channels_match_the_old_reduction() -> None:
+    """The real sample reduces identically wherever no sub-limit is present."""
+    snapshot = load_availability(
+        LIVE_SAMPLE, now=LIVE_OBSERVED_AT + timedelta(minutes=2)
+    )
+    checked = 0
+    groups = (*snapshot.channels.values(), *snapshot.instances.values())
+    for headroom in groups:
+        if not headroom.buckets:
+            continue
+        if any(bucket.model_scope is not None for bucket in headroom.buckets):
+            continue
+        assert (
+            headroom.health,
+            headroom.remaining_fraction,
+            headroom.limiting_bucket,
+        ) == _pre_model_scope_reduction(headroom.buckets, snapshot.stale)
+        checked += 1
+    assert checked >= 5
+
+    # Anthropic is the one group carrying a sub-limit, and only there does the
+    # reduction differ: 0.66 is the channel-wide minimum, not Fable's 0.56.
+    anthropic = snapshot.headroom("anthropic-sub")
+    assert anthropic.remaining_fraction == pytest.approx(0.66)
+    assert _pre_model_scope_reduction(anthropic.buckets, False)[1] == pytest.approx(
+        0.56
+    )
+
+
+def test_sub_limit_that_is_neither_worst_nor_smallest_changes_nothing() -> None:
+    """A scoped bucket below the worst severity and above the minimum is inert."""
+    snapshot = load_fixture("mixed-worst-wins.json")
+    anthropic = snapshot.headroom("anthropic-sub")
+    assert [bucket.model_scope for bucket in anthropic.buckets] == [
+        None,
+        None,
+        "claude-fable",
+    ]
+    assert (
+        anthropic.health,
+        anthropic.remaining_fraction,
+        anthropic.limiting_bucket,
+    ) == _pre_model_scope_reduction(anthropic.buckets, False)
+    assert anthropic.health is Health.LIKELY_EXHAUSTED
+    assert anthropic.remaining_fraction == pytest.approx(0.04)
+    # The sub-limit keeps its own reading; it is excluded, not rewritten.
+    assert anthropic.buckets[-1].health is Health.DEGRADED
+    assert anthropic.buckets[-1].remaining_fraction == pytest.approx(0.60)
