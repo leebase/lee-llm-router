@@ -3,6 +3,35 @@
 # Route identity is the tuple (model, effort, harness, channel). Every row
 # below preserves that tuple explicitly.
 #
+# P1-1: every dispatch template below names its stage-worker script as
+#   python3 @STAGE_WORKER_DIR@/<name>_stage_worker.py, not as a hard-coded
+#   path. lee_llm_router.staffing.catalog is the one resolution point and
+#   substitutes the token at catalog load time: LEE_LLM_ROUTER_STAGE_WORKER_DIR
+#   when set and non-empty, otherwise /home/lee/projects/auto-orch/scripts
+#   (the historical value), so an unset environment loads these templates
+#   byte-identically to before. No other part of a template is rewritten,
+#   and no stage-worker script is moved, copied, or edited by this change.
+#   Comment lines below keep their original provenance citations verbatim.
+#
+# P1-2: every dispatch template below hands its harness binary to the stage
+#   worker as <PREFIX>_STAGE_WORKER_BINARY=@<HARNESS>_BINARY@, not as a
+#   hard-coded path — the same token convention and the same resolution
+#   point as P1-1. lee_llm_router.staffing.catalog substitutes each token
+#   at catalog load time in this order: the harness override variable
+#   LEE_LLM_ROUTER_<HARNESS>_BINARY (codex -> LEE_LLM_ROUTER_CODEX_BINARY,
+#   pi -> LEE_LLM_ROUTER_PI_BINARY, opencode -> LEE_LLM_ROUTER_OPENCODE_BINARY,
+#   claude -> LEE_LLM_ROUTER_CLAUDE_BINARY, agy -> LEE_LLM_ROUTER_AGY_BINARY)
+#   when set and non-empty; otherwise shutil.which(<binary name>); otherwise
+#   the bare binary name, deferring the lookup to the PATH of the process
+#   that finally executes the template. A token never resolves to another
+#   harness's binary, and an unresolvable binary never fails catalog loading.
+#   On a host that installs the five binaries at the paths these templates
+#   used to hard-code, an unset environment loads them byte-identically to
+#   before. No other part of a template is rewritten, and no harness binary
+#   is moved, copied, installed, or edited by this change. Two provenance
+#   comment lines below (P0-3d, P0-3f) still cite the historical binary
+#   paths: they are citations, not dispatch data, and are left unchanged.
+#
 # Source of truth for the seven live rows:
 #   /home/lee/projects/auto-orch/config/crews.yaml — codex_* workers
 #     (codex_sol_high, codex_sol_medium, codex_sol_low, codex_terra_high,
@@ -98,7 +127,7 @@ routes:
     effort: xhigh
     harness: codex
     channel: openai-sub
-    dispatch_template: "/usr/bin/env CODEX_STAGE_WORKER_BINARY=/home/lee/.local/bin/codex CODEX_STAGE_WORKER_MODEL=gpt-5.6-sol CODEX_STAGE_WORKER_REASONING_EFFORT=xhigh python3 /home/lee/projects/auto-orch/scripts/codex_stage_worker.py {stage} {prompt_path} {response_path}"
+    dispatch_template: "/usr/bin/env CODEX_STAGE_WORKER_BINARY=@CODEX_BINARY@ CODEX_STAGE_WORKER_MODEL=gpt-5.6-sol CODEX_STAGE_WORKER_REASONING_EFFORT=xhigh python3 @STAGE_WORKER_DIR@/codex_stage_worker.py {stage} {prompt_path} {response_path}"
     usage_capture: none
     status: active
 
@@ -107,7 +136,7 @@ routes:
     effort: high
     harness: codex
     channel: openai-sub
-    dispatch_template: "/usr/bin/env CODEX_STAGE_WORKER_BINARY=/home/lee/.local/bin/codex CODEX_STAGE_WORKER_MODEL=gpt-5.6-sol CODEX_STAGE_WORKER_REASONING_EFFORT=high python3 /home/lee/projects/auto-orch/scripts/codex_stage_worker.py {stage} {prompt_path} {response_path}"
+    dispatch_template: "/usr/bin/env CODEX_STAGE_WORKER_BINARY=@CODEX_BINARY@ CODEX_STAGE_WORKER_MODEL=gpt-5.6-sol CODEX_STAGE_WORKER_REASONING_EFFORT=high python3 @STAGE_WORKER_DIR@/codex_stage_worker.py {stage} {prompt_path} {response_path}"
     usage_capture: none
     status: active
 
@@ -116,7 +145,7 @@ routes:
     effort: medium
     harness: codex
     channel: openai-sub
-    dispatch_template: "/usr/bin/env CODEX_STAGE_WORKER_BINARY=/home/lee/.local/bin/codex CODEX_STAGE_WORKER_MODEL=gpt-5.6-sol CODEX_STAGE_WORKER_REASONING_EFFORT=medium python3 /home/lee/projects/auto-orch/scripts/codex_stage_worker.py {stage} {prompt_path} {response_path}"
+    dispatch_template: "/usr/bin/env CODEX_STAGE_WORKER_BINARY=@CODEX_BINARY@ CODEX_STAGE_WORKER_MODEL=gpt-5.6-sol CODEX_STAGE_WORKER_REASONING_EFFORT=medium python3 @STAGE_WORKER_DIR@/codex_stage_worker.py {stage} {prompt_path} {response_path}"
     usage_capture: none
     status: active
 
@@ -125,7 +154,7 @@ routes:
     effort: low
     harness: codex
     channel: openai-sub
-    dispatch_template: "/usr/bin/env CODEX_STAGE_WORKER_BINARY=/home/lee/.local/bin/codex CODEX_STAGE_WORKER_MODEL=gpt-5.6-sol CODEX_STAGE_WORKER_REASONING_EFFORT=low python3 /home/lee/projects/auto-orch/scripts/codex_stage_worker.py {stage} {prompt_path} {response_path}"
+    dispatch_template: "/usr/bin/env CODEX_STAGE_WORKER_BINARY=@CODEX_BINARY@ CODEX_STAGE_WORKER_MODEL=gpt-5.6-sol CODEX_STAGE_WORKER_REASONING_EFFORT=low python3 @STAGE_WORKER_DIR@/codex_stage_worker.py {stage} {prompt_path} {response_path}"
     usage_capture: none
     status: active
 
@@ -134,7 +163,7 @@ routes:
     effort: high
     harness: codex
     channel: openai-sub
-    dispatch_template: "/usr/bin/env CODEX_STAGE_WORKER_BINARY=/home/lee/.local/bin/codex CODEX_STAGE_WORKER_MODEL=gpt-5.6-terra CODEX_STAGE_WORKER_REASONING_EFFORT=high python3 /home/lee/projects/auto-orch/scripts/codex_stage_worker.py {stage} {prompt_path} {response_path}"
+    dispatch_template: "/usr/bin/env CODEX_STAGE_WORKER_BINARY=@CODEX_BINARY@ CODEX_STAGE_WORKER_MODEL=gpt-5.6-terra CODEX_STAGE_WORKER_REASONING_EFFORT=high python3 @STAGE_WORKER_DIR@/codex_stage_worker.py {stage} {prompt_path} {response_path}"
     usage_capture: none
     status: active
 
@@ -143,7 +172,7 @@ routes:
     effort: medium
     harness: codex
     channel: openai-sub
-    dispatch_template: "/usr/bin/env CODEX_STAGE_WORKER_BINARY=/home/lee/.local/bin/codex CODEX_STAGE_WORKER_MODEL=gpt-5.6-terra CODEX_STAGE_WORKER_REASONING_EFFORT=medium python3 /home/lee/projects/auto-orch/scripts/codex_stage_worker.py {stage} {prompt_path} {response_path}"
+    dispatch_template: "/usr/bin/env CODEX_STAGE_WORKER_BINARY=@CODEX_BINARY@ CODEX_STAGE_WORKER_MODEL=gpt-5.6-terra CODEX_STAGE_WORKER_REASONING_EFFORT=medium python3 @STAGE_WORKER_DIR@/codex_stage_worker.py {stage} {prompt_path} {response_path}"
     usage_capture: none
     status: active
 
@@ -152,7 +181,7 @@ routes:
     effort: max
     harness: codex
     channel: openai-sub
-    dispatch_template: "/usr/bin/env CODEX_STAGE_WORKER_BINARY=/home/lee/.local/bin/codex CODEX_STAGE_WORKER_MODEL=gpt-5.6-luna CODEX_STAGE_WORKER_REASONING_EFFORT=max python3 /home/lee/projects/auto-orch/scripts/codex_stage_worker.py {stage} {prompt_path} {response_path}"
+    dispatch_template: "/usr/bin/env CODEX_STAGE_WORKER_BINARY=@CODEX_BINARY@ CODEX_STAGE_WORKER_MODEL=gpt-5.6-luna CODEX_STAGE_WORKER_REASONING_EFFORT=max python3 @STAGE_WORKER_DIR@/codex_stage_worker.py {stage} {prompt_path} {response_path}"
     usage_capture: none
     status: active
 
@@ -161,7 +190,7 @@ routes:
     effort: xhigh
     harness: codex
     channel: openai-sub
-    dispatch_template: "/usr/bin/env CODEX_STAGE_WORKER_BINARY=/home/lee/.local/bin/codex CODEX_STAGE_WORKER_MODEL=gpt-5.6-luna CODEX_STAGE_WORKER_REASONING_EFFORT=xhigh python3 /home/lee/projects/auto-orch/scripts/codex_stage_worker.py {stage} {prompt_path} {response_path}"
+    dispatch_template: "/usr/bin/env CODEX_STAGE_WORKER_BINARY=@CODEX_BINARY@ CODEX_STAGE_WORKER_MODEL=gpt-5.6-luna CODEX_STAGE_WORKER_REASONING_EFFORT=xhigh python3 @STAGE_WORKER_DIR@/codex_stage_worker.py {stage} {prompt_path} {response_path}"
     usage_capture: none
     status: active
 
@@ -170,7 +199,7 @@ routes:
     effort: low
     harness: codex
     channel: openai-sub
-    dispatch_template: "/usr/bin/env CODEX_STAGE_WORKER_BINARY=/home/lee/.local/bin/codex CODEX_STAGE_WORKER_MODEL=gpt-6-astra CODEX_STAGE_WORKER_REASONING_EFFORT=low python3 /home/lee/projects/auto-orch/scripts/codex_stage_worker.py {stage} {prompt_path} {response_path}"
+    dispatch_template: "/usr/bin/env CODEX_STAGE_WORKER_BINARY=@CODEX_BINARY@ CODEX_STAGE_WORKER_MODEL=gpt-6-astra CODEX_STAGE_WORKER_REASONING_EFFORT=low python3 @STAGE_WORKER_DIR@/codex_stage_worker.py {stage} {prompt_path} {response_path}"
     usage_capture: none
     status: active
 
@@ -179,7 +208,7 @@ routes:
     effort: high
     harness: claude
     channel: anthropic-sub
-    dispatch_template: "/usr/bin/env CLAUDE_STAGE_WORKER_BINARY=/home/lee/.local/bin/claude CLAUDE_STAGE_WORKER_MODEL=claude-fable-5-1 CLAUDE_STAGE_WORKER_EFFORT=high python3 /home/lee/projects/auto-orch/scripts/claude_stage_worker.py {stage} {prompt_path} {response_path}"
+    dispatch_template: "/usr/bin/env CLAUDE_STAGE_WORKER_BINARY=@CLAUDE_BINARY@ CLAUDE_STAGE_WORKER_MODEL=claude-fable-5-1 CLAUDE_STAGE_WORKER_EFFORT=high python3 @STAGE_WORKER_DIR@/claude_stage_worker.py {stage} {prompt_path} {response_path}"
     usage_capture: none
     status: active
 
@@ -188,7 +217,7 @@ routes:
     effort: high
     harness: claude
     channel: anthropic-sub
-    dispatch_template: "/usr/bin/env CLAUDE_STAGE_WORKER_BINARY=/home/lee/.local/bin/claude CLAUDE_STAGE_WORKER_MODEL=claude-opus-5 CLAUDE_STAGE_WORKER_EFFORT=high python3 /home/lee/projects/auto-orch/scripts/claude_stage_worker.py {stage} {prompt_path} {response_path}"
+    dispatch_template: "/usr/bin/env CLAUDE_STAGE_WORKER_BINARY=@CLAUDE_BINARY@ CLAUDE_STAGE_WORKER_MODEL=claude-opus-5 CLAUDE_STAGE_WORKER_EFFORT=high python3 @STAGE_WORKER_DIR@/claude_stage_worker.py {stage} {prompt_path} {response_path}"
     usage_capture: none
     status: active
 
@@ -197,7 +226,7 @@ routes:
     effort: medium
     harness: claude
     channel: anthropic-sub
-    dispatch_template: "/usr/bin/env CLAUDE_STAGE_WORKER_BINARY=/home/lee/.local/bin/claude CLAUDE_STAGE_WORKER_MODEL=claude-opus-5 CLAUDE_STAGE_WORKER_EFFORT=medium python3 /home/lee/projects/auto-orch/scripts/claude_stage_worker.py {stage} {prompt_path} {response_path}"
+    dispatch_template: "/usr/bin/env CLAUDE_STAGE_WORKER_BINARY=@CLAUDE_BINARY@ CLAUDE_STAGE_WORKER_MODEL=claude-opus-5 CLAUDE_STAGE_WORKER_EFFORT=medium python3 @STAGE_WORKER_DIR@/claude_stage_worker.py {stage} {prompt_path} {response_path}"
     usage_capture: none
     status: active
 
@@ -206,7 +235,7 @@ routes:
     effort: high
     harness: claude
     channel: anthropic-sub
-    dispatch_template: "/usr/bin/env CLAUDE_STAGE_WORKER_BINARY=/home/lee/.local/bin/claude CLAUDE_STAGE_WORKER_MODEL=claude-sonnet-5 CLAUDE_STAGE_WORKER_EFFORT=high python3 /home/lee/projects/auto-orch/scripts/claude_stage_worker.py {stage} {prompt_path} {response_path}"
+    dispatch_template: "/usr/bin/env CLAUDE_STAGE_WORKER_BINARY=@CLAUDE_BINARY@ CLAUDE_STAGE_WORKER_MODEL=claude-sonnet-5 CLAUDE_STAGE_WORKER_EFFORT=high python3 @STAGE_WORKER_DIR@/claude_stage_worker.py {stage} {prompt_path} {response_path}"
     usage_capture: none
     status: active
 
@@ -215,7 +244,7 @@ routes:
     effort: medium
     harness: claude
     channel: anthropic-sub
-    dispatch_template: "/usr/bin/env CLAUDE_STAGE_WORKER_BINARY=/home/lee/.local/bin/claude CLAUDE_STAGE_WORKER_MODEL=claude-sonnet-5 CLAUDE_STAGE_WORKER_EFFORT=medium python3 /home/lee/projects/auto-orch/scripts/claude_stage_worker.py {stage} {prompt_path} {response_path}"
+    dispatch_template: "/usr/bin/env CLAUDE_STAGE_WORKER_BINARY=@CLAUDE_BINARY@ CLAUDE_STAGE_WORKER_MODEL=claude-sonnet-5 CLAUDE_STAGE_WORKER_EFFORT=medium python3 @STAGE_WORKER_DIR@/claude_stage_worker.py {stage} {prompt_path} {response_path}"
     usage_capture: none
     status: active
 
@@ -224,7 +253,7 @@ routes:
     effort: high
     harness: agy
     channel: gemini-sub
-    dispatch_template: "/usr/bin/env ANTIGRAVITY_STAGE_WORKER_BINARY=/home/lee/.local/bin/agy ANTIGRAVITY_STAGE_WORKER_MODEL=gemini-3.8-flash-high ANTIGRAVITY_STAGE_WORKER_EFFORT=high python3 /home/lee/projects/auto-orch/scripts/antigravity_stage_worker.py {stage} {prompt_path} {response_path}"
+    dispatch_template: "/usr/bin/env ANTIGRAVITY_STAGE_WORKER_BINARY=@AGY_BINARY@ ANTIGRAVITY_STAGE_WORKER_MODEL=gemini-3.8-flash-high ANTIGRAVITY_STAGE_WORKER_EFFORT=high python3 @STAGE_WORKER_DIR@/antigravity_stage_worker.py {stage} {prompt_path} {response_path}"
     usage_capture: none
     status: active
 
@@ -233,7 +262,7 @@ routes:
     effort: medium
     harness: agy
     channel: gemini-sub
-    dispatch_template: "/usr/bin/env ANTIGRAVITY_STAGE_WORKER_BINARY=/home/lee/.local/bin/agy ANTIGRAVITY_STAGE_WORKER_MODEL=gemini-3.8-flash-medium ANTIGRAVITY_STAGE_WORKER_EFFORT=medium python3 /home/lee/projects/auto-orch/scripts/antigravity_stage_worker.py {stage} {prompt_path} {response_path}"
+    dispatch_template: "/usr/bin/env ANTIGRAVITY_STAGE_WORKER_BINARY=@AGY_BINARY@ ANTIGRAVITY_STAGE_WORKER_MODEL=gemini-3.8-flash-medium ANTIGRAVITY_STAGE_WORKER_EFFORT=medium python3 @STAGE_WORKER_DIR@/antigravity_stage_worker.py {stage} {prompt_path} {response_path}"
     usage_capture: none
     status: active
 
@@ -242,7 +271,7 @@ routes:
     effort: low
     harness: agy
     channel: gemini-sub
-    dispatch_template: "/usr/bin/env ANTIGRAVITY_STAGE_WORKER_BINARY=/home/lee/.local/bin/agy ANTIGRAVITY_STAGE_WORKER_MODEL=gemini-3.8-flash-low ANTIGRAVITY_STAGE_WORKER_EFFORT=low python3 /home/lee/projects/auto-orch/scripts/antigravity_stage_worker.py {stage} {prompt_path} {response_path}"
+    dispatch_template: "/usr/bin/env ANTIGRAVITY_STAGE_WORKER_BINARY=@AGY_BINARY@ ANTIGRAVITY_STAGE_WORKER_MODEL=gemini-3.8-flash-low ANTIGRAVITY_STAGE_WORKER_EFFORT=low python3 @STAGE_WORKER_DIR@/antigravity_stage_worker.py {stage} {prompt_path} {response_path}"
     usage_capture: none
     status: active
 
@@ -251,7 +280,7 @@ routes:
     effort: null
     harness: agy
     channel: gemini-sub
-    dispatch_template: "/usr/bin/env ANTIGRAVITY_STAGE_WORKER_BINARY=/home/lee/.local/bin/agy ANTIGRAVITY_STAGE_WORKER_MODEL=gemini-3.1-pro python3 /home/lee/projects/auto-orch/scripts/antigravity_stage_worker.py {stage} {prompt_path} {response_path}"
+    dispatch_template: "/usr/bin/env ANTIGRAVITY_STAGE_WORKER_BINARY=@AGY_BINARY@ ANTIGRAVITY_STAGE_WORKER_MODEL=gemini-3.1-pro python3 @STAGE_WORKER_DIR@/antigravity_stage_worker.py {stage} {prompt_path} {response_path}"
     usage_capture: none
     status: active
 
@@ -260,7 +289,7 @@ routes:
     effort: null
     harness: opencode
     channel: opencode-go
-    dispatch_template: "/usr/bin/env OPENCODE_STAGE_WORKER_BINARY=/home/lee/.opencode/bin/opencode OPENCODE_STAGE_WORKER_MODEL=opencode-go/qwen3.7-plus OPENCODE_STAGE_WORKER_AGENT=build OPENCODE_STAGE_WORKER_DIR=/tmp python3 /home/lee/projects/auto-orch/scripts/opencode_stage_worker.py {stage} {prompt_path} {response_path}"
+    dispatch_template: "/usr/bin/env OPENCODE_STAGE_WORKER_BINARY=@OPENCODE_BINARY@ OPENCODE_STAGE_WORKER_MODEL=opencode-go/qwen3.7-plus OPENCODE_STAGE_WORKER_AGENT=build OPENCODE_STAGE_WORKER_DIR=/tmp python3 @STAGE_WORKER_DIR@/opencode_stage_worker.py {stage} {prompt_path} {response_path}"
     usage_capture: none
     status: active
 
@@ -269,7 +298,7 @@ routes:
     effort: null
     harness: opencode
     channel: opencode-go
-    dispatch_template: "/usr/bin/env OPENCODE_STAGE_WORKER_BINARY=/home/lee/.opencode/bin/opencode OPENCODE_STAGE_WORKER_MODEL=opencode-go/mimo-v2.5 OPENCODE_STAGE_WORKER_AGENT=build OPENCODE_STAGE_WORKER_DIR=/tmp python3 /home/lee/projects/auto-orch/scripts/opencode_stage_worker.py {stage} {prompt_path} {response_path}"
+    dispatch_template: "/usr/bin/env OPENCODE_STAGE_WORKER_BINARY=@OPENCODE_BINARY@ OPENCODE_STAGE_WORKER_MODEL=opencode-go/mimo-v2.5 OPENCODE_STAGE_WORKER_AGENT=build OPENCODE_STAGE_WORKER_DIR=/tmp python3 @STAGE_WORKER_DIR@/opencode_stage_worker.py {stage} {prompt_path} {response_path}"
     usage_capture: none
     status: unpriced
     status_reason: "Unpriced per D207 (chief-answers-2 §3, amended by chief-answers-6): the pinned Zen pricing snapshot (config/staffing/pricing/opencode-zen-20260909.mdx, commit 70b4ca8c181e4c1ac6d8993b86249d824487ec65, sha256 b5b08064e24cd68e28b76c3da7503c7bc361956cdc722bbea4359bc82d033a07, section ## Pricing) lists no opencode-go/mimo-v2.5 entry; its only MiMo row is the distinct mimo-v2.5-free id, which D207 forbids equating with the Go id without a documented identity. Recorded in needs-lee.md; excluded from eligible Phase 0 routes per answers-6."
@@ -279,7 +308,7 @@ routes:
     effort: null
     harness: opencode
     channel: opencode-go
-    dispatch_template: "/usr/bin/env OPENCODE_STAGE_WORKER_BINARY=/home/lee/.opencode/bin/opencode OPENCODE_STAGE_WORKER_MODEL=opencode-go/deepseek-v4-flash OPENCODE_STAGE_WORKER_AGENT=build OPENCODE_STAGE_WORKER_DIR=/tmp python3 /home/lee/projects/auto-orch/scripts/opencode_stage_worker.py {stage} {prompt_path} {response_path}"
+    dispatch_template: "/usr/bin/env OPENCODE_STAGE_WORKER_BINARY=@OPENCODE_BINARY@ OPENCODE_STAGE_WORKER_MODEL=opencode-go/deepseek-v4-flash OPENCODE_STAGE_WORKER_AGENT=build OPENCODE_STAGE_WORKER_DIR=/tmp python3 @STAGE_WORKER_DIR@/opencode_stage_worker.py {stage} {prompt_path} {response_path}"
     usage_capture: none
     status: active
 
@@ -294,7 +323,7 @@ routes:
     effort: null
     harness: opencode
     channel: opencode-go
-    dispatch_template: "/usr/bin/env OPENCODE_STAGE_WORKER_BINARY=/home/lee/.opencode/bin/opencode OPENCODE_STAGE_WORKER_MODEL=opencode-go/deepseek-v4.1-flash OPENCODE_STAGE_WORKER_AGENT=build OPENCODE_STAGE_WORKER_DIR=/tmp python3 /home/lee/projects/auto-orch/scripts/opencode_stage_worker.py {stage} {prompt_path} {response_path}"
+    dispatch_template: "/usr/bin/env OPENCODE_STAGE_WORKER_BINARY=@OPENCODE_BINARY@ OPENCODE_STAGE_WORKER_MODEL=opencode-go/deepseek-v4.1-flash OPENCODE_STAGE_WORKER_AGENT=build OPENCODE_STAGE_WORKER_DIR=/tmp python3 @STAGE_WORKER_DIR@/opencode_stage_worker.py {stage} {prompt_path} {response_path}"
     usage_capture: none
     status: active
 
@@ -303,7 +332,7 @@ routes:
     effort: null
     harness: opencode
     channel: opencode-go
-    dispatch_template: "/usr/bin/env OPENCODE_STAGE_WORKER_BINARY=/home/lee/.opencode/bin/opencode OPENCODE_STAGE_WORKER_MODEL=opencode-go/deepseek-v4-pro OPENCODE_STAGE_WORKER_AGENT=build OPENCODE_STAGE_WORKER_DIR=/tmp python3 /home/lee/projects/auto-orch/scripts/opencode_stage_worker.py {stage} {prompt_path} {response_path}"
+    dispatch_template: "/usr/bin/env OPENCODE_STAGE_WORKER_BINARY=@OPENCODE_BINARY@ OPENCODE_STAGE_WORKER_MODEL=opencode-go/deepseek-v4-pro OPENCODE_STAGE_WORKER_AGENT=build OPENCODE_STAGE_WORKER_DIR=/tmp python3 @STAGE_WORKER_DIR@/opencode_stage_worker.py {stage} {prompt_path} {response_path}"
     usage_capture: none
     status: active
 
@@ -312,7 +341,7 @@ routes:
     effort: null
     harness: opencode
     channel: opencode-go
-    dispatch_template: "/usr/bin/env OPENCODE_STAGE_WORKER_BINARY=/home/lee/.opencode/bin/opencode OPENCODE_STAGE_WORKER_MODEL=opencode-go/minimax-m2.7 OPENCODE_STAGE_WORKER_AGENT=build OPENCODE_STAGE_WORKER_DIR=/tmp python3 /home/lee/projects/auto-orch/scripts/opencode_stage_worker.py {stage} {prompt_path} {response_path}"
+    dispatch_template: "/usr/bin/env OPENCODE_STAGE_WORKER_BINARY=@OPENCODE_BINARY@ OPENCODE_STAGE_WORKER_MODEL=opencode-go/minimax-m2.7 OPENCODE_STAGE_WORKER_AGENT=build OPENCODE_STAGE_WORKER_DIR=/tmp python3 @STAGE_WORKER_DIR@/opencode_stage_worker.py {stage} {prompt_path} {response_path}"
     usage_capture: none
     status: active
 
@@ -354,7 +383,7 @@ routes:
     effort: xhigh
     harness: pi
     channel: openai-sub
-    dispatch_template: "/usr/bin/env PI_STAGE_WORKER_BINARY=/home/lee/.npm-global/bin/pi PI_STAGE_WORKER_PROVIDER=openai-codex PI_STAGE_WORKER_MODEL=gpt-5.6-luna PI_STAGE_WORKER_THINKING=xhigh python3 /home/lee/projects/auto-orch/scripts/pi_stage_worker.py {stage} {prompt_path} {response_path}"
+    dispatch_template: "/usr/bin/env PI_STAGE_WORKER_BINARY=@PI_BINARY@ PI_STAGE_WORKER_PROVIDER=openai-codex PI_STAGE_WORKER_MODEL=gpt-5.6-luna PI_STAGE_WORKER_THINKING=xhigh python3 @STAGE_WORKER_DIR@/pi_stage_worker.py {stage} {prompt_path} {response_path}"
     usage_capture: none
     status: active
 
@@ -363,7 +392,7 @@ routes:
     effort: null
     harness: pi
     channel: openrouter
-    dispatch_template: "/usr/bin/env PI_STAGE_WORKER_BINARY=/home/lee/.npm-global/bin/pi PI_STAGE_WORKER_PROVIDER=openrouter PI_STAGE_WORKER_MODEL=z-ai/glm-5.3-flash python3 /home/lee/projects/auto-orch/scripts/pi_stage_worker.py {stage} {prompt_path} {response_path}"
+    dispatch_template: "/usr/bin/env PI_STAGE_WORKER_BINARY=@PI_BINARY@ PI_STAGE_WORKER_PROVIDER=openrouter PI_STAGE_WORKER_MODEL=z-ai/glm-5.3-flash python3 @STAGE_WORKER_DIR@/pi_stage_worker.py {stage} {prompt_path} {response_path}"
     usage_capture: none
     status: active
 
@@ -372,7 +401,7 @@ routes:
     effort: null
     harness: pi
     channel: openrouter
-    dispatch_template: "/usr/bin/env PI_STAGE_WORKER_BINARY=/home/lee/.npm-global/bin/pi PI_STAGE_WORKER_PROVIDER=openrouter PI_STAGE_WORKER_MODEL=deepseek/deepseek-v4-flash python3 /home/lee/projects/auto-orch/scripts/pi_stage_worker.py {stage} {prompt_path} {response_path}"
+    dispatch_template: "/usr/bin/env PI_STAGE_WORKER_BINARY=@PI_BINARY@ PI_STAGE_WORKER_PROVIDER=openrouter PI_STAGE_WORKER_MODEL=deepseek/deepseek-v4-flash python3 @STAGE_WORKER_DIR@/pi_stage_worker.py {stage} {prompt_path} {response_path}"
     usage_capture: none
     status: active
 
@@ -388,7 +417,7 @@ routes:
     effort: null
     harness: pi
     channel: openrouter
-    dispatch_template: "/usr/bin/env PI_STAGE_WORKER_BINARY=/home/lee/.npm-global/bin/pi PI_STAGE_WORKER_PROVIDER=openrouter PI_STAGE_WORKER_MODEL=deepseek/deepseek-v4.1-flash python3 /home/lee/projects/auto-orch/scripts/pi_stage_worker.py {stage} {prompt_path} {response_path}"
+    dispatch_template: "/usr/bin/env PI_STAGE_WORKER_BINARY=@PI_BINARY@ PI_STAGE_WORKER_PROVIDER=openrouter PI_STAGE_WORKER_MODEL=deepseek/deepseek-v4.1-flash python3 @STAGE_WORKER_DIR@/pi_stage_worker.py {stage} {prompt_path} {response_path}"
     usage_capture: none
     status: active
 
@@ -397,7 +426,7 @@ routes:
     effort: null
     harness: pi
     channel: opencode-go
-    dispatch_template: "/usr/bin/env PI_STAGE_WORKER_BINARY=/home/lee/.npm-global/bin/pi PI_STAGE_WORKER_PROVIDER=opencode-go PI_STAGE_WORKER_MODEL=deepseek-v4.1-flash python3 /home/lee/projects/auto-orch/scripts/pi_stage_worker.py {stage} {prompt_path} {response_path}"
+    dispatch_template: "/usr/bin/env PI_STAGE_WORKER_BINARY=@PI_BINARY@ PI_STAGE_WORKER_PROVIDER=opencode-go PI_STAGE_WORKER_MODEL=deepseek-v4.1-flash python3 @STAGE_WORKER_DIR@/pi_stage_worker.py {stage} {prompt_path} {response_path}"
     usage_capture: none
     status: active
 
@@ -406,7 +435,7 @@ routes:
     effort: null
     harness: pi
     channel: opencode-go
-    dispatch_template: "/usr/bin/env PI_STAGE_WORKER_BINARY=/home/lee/.npm-global/bin/pi PI_STAGE_WORKER_PROVIDER=opencode-go PI_STAGE_WORKER_MODEL=deepseek-v4-pro python3 /home/lee/projects/auto-orch/scripts/pi_stage_worker.py {stage} {prompt_path} {response_path}"
+    dispatch_template: "/usr/bin/env PI_STAGE_WORKER_BINARY=@PI_BINARY@ PI_STAGE_WORKER_PROVIDER=opencode-go PI_STAGE_WORKER_MODEL=deepseek-v4-pro python3 @STAGE_WORKER_DIR@/pi_stage_worker.py {stage} {prompt_path} {response_path}"
     usage_capture: none
     status: active
 
@@ -415,6 +444,6 @@ routes:
     effort: null
     harness: pi
     channel: opencode-go
-    dispatch_template: "/usr/bin/env PI_STAGE_WORKER_BINARY=/home/lee/.npm-global/bin/pi PI_STAGE_WORKER_PROVIDER=opencode-go PI_STAGE_WORKER_MODEL=glm-5.3-flash python3 /home/lee/projects/auto-orch/scripts/pi_stage_worker.py {stage} {prompt_path} {response_path}"
+    dispatch_template: "/usr/bin/env PI_STAGE_WORKER_BINARY=@PI_BINARY@ PI_STAGE_WORKER_PROVIDER=opencode-go PI_STAGE_WORKER_MODEL=glm-5.3-flash python3 @STAGE_WORKER_DIR@/pi_stage_worker.py {stage} {prompt_path} {response_path}"
     usage_capture: none
     status: active

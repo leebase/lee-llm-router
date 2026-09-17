@@ -19,7 +19,9 @@ from __future__ import annotations
 import dataclasses
 import json
 import math
+import os
 import re
+import shutil
 import types
 from dataclasses import MISSING, dataclass, fields
 from pathlib import Path
@@ -51,8 +53,12 @@ __all__ = [
     "Crew",
     "CrewsCatalog",
     "CrewSupervisor",
+    "DEFAULT_STAGE_WORKER_DIR",
     "DenyPredicate",
     "FeeEntry",
+    "HARNESS_BINARY_ENV_VAR_PREFIX",
+    "HARNESS_BINARY_ENV_VAR_SUFFIX",
+    "HARNESS_BINARY_TOKENS",
     "NeverAutomaticRule",
     "PolicyCatalog",
     "ReserveFractionOverride",
@@ -63,6 +69,8 @@ __all__ = [
     "RoleScopedRule",
     "Route",
     "RoutesCatalog",
+    "STAGE_WORKER_DIR_ENV_VAR",
+    "STAGE_WORKER_DIR_TOKEN",
     "SpendCap",
     "StaffingCatalog",
     "StaffingCatalogError",
@@ -70,8 +78,13 @@ __all__ = [
     "TermsEntry",
     "ValueSets",
     "canonical_class_key",
+    "harness_binary_env_var",
     "load_staffing_catalog",
     "load_staffing_document",
+    "resolve_dispatch_template",
+    "resolve_harness_binaries",
+    "resolve_harness_binary",
+    "resolve_stage_worker_dir",
     "validate_class_block",
 ]
 
@@ -96,6 +109,161 @@ _SCHEMA_FILES: dict[str, str] = {
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_SCHEMA_DIR = _REPO_ROOT / "config" / "staffing" / "schema"
+
+# ---------------------------------------------------------------------------
+# Stage-worker directory resolution (P1-1)
+# ---------------------------------------------------------------------------
+# The committed ``routes.yaml`` dispatch templates name the five stage-worker
+# scripts (antigravity, claude, codex, opencode, pi) through the single
+# placeholder token :data:`STAGE_WORKER_DIR_TOKEN`:
+# ``python3 @STAGE_WORKER_DIR@/<name>_stage_worker.py ...``. This module is the
+# one resolution point that turns that token into a directory, at catalog load
+# time. The scripts themselves are owned by auto-orch: nothing here reads,
+# moves, executes, or validates them. A dispatch template is data.
+
+#: Environment variable naming the directory that holds the stage-worker
+#: scripts. When set and non-empty it wins over the default below.
+STAGE_WORKER_DIR_ENV_VAR = "LEE_LLM_ROUTER_STAGE_WORKER_DIR"
+
+#: Directory substituted when the environment variable is unset or empty.
+#: It is the historical hard-coded dispatch path, so an unset environment
+#: resolves every template byte-identically to the pre-P1-1 catalog.
+DEFAULT_STAGE_WORKER_DIR = "/home/lee/projects/auto-orch/scripts"
+
+#: Placeholder token carrying the stage-worker directory in ``routes.yaml``.
+#: Deliberately not shell-shaped (no ``$`` or ``${...}``) so the token can
+#: never be mistaken for, or read as, an environment expansion even though
+#: the surrounding template is shell-shaped argv text.
+STAGE_WORKER_DIR_TOKEN = "@STAGE_WORKER_DIR@"
+
+
+def resolve_stage_worker_dir() -> str:
+    """Return the directory substituted for :data:`STAGE_WORKER_DIR_TOKEN`.
+
+    Resolution order, exactly:
+
+    1. ``LEE_LLM_ROUTER_STAGE_WORKER_DIR`` when set and non-empty.
+    2. Otherwise :data:`DEFAULT_STAGE_WORKER_DIR`, so a machine that sets
+       nothing loads the same dispatch templates as before this change.
+
+    The value is returned verbatim: no normalisation, expansion, or
+    existence check. Dispatch templates are data, and the host that runs a
+    stage worker need not be the host that loaded the catalog.
+    """
+    from_env = os.environ.get(STAGE_WORKER_DIR_ENV_VAR)
+    if from_env:
+        return from_env
+    return DEFAULT_STAGE_WORKER_DIR
+
+
+# ---------------------------------------------------------------------------
+# Harness binary resolution (P1-2)
+# ---------------------------------------------------------------------------
+# Each committed dispatch template hands the stage worker its harness binary
+# through that harness's ``*_STAGE_WORKER_BINARY`` environment variable, for
+# example ``/usr/bin/env CODEX_STAGE_WORKER_BINARY=@CODEX_BINARY@ ...``. The
+# five binaries used to be named by absolute paths correct only on Lee's
+# machine; each is now one per-harness placeholder token from
+# :data:`HARNESS_BINARY_TOKENS`, resolved here at catalog load time by
+# :func:`resolve_harness_binary`. The binaries themselves are owned by their
+# toolchains: nothing here reads, moves, executes, or validates them. A
+# dispatch template is data.
+
+#: Placeholder token -> bare binary name, one explicit row per harness. The
+#: table is the single authority for which binary a token names, so a token
+#: can never resolve to a different harness's binary.
+HARNESS_BINARY_TOKENS: dict[str, str] = {
+    "@CODEX_BINARY@": "codex",
+    "@PI_BINARY@": "pi",
+    "@OPENCODE_BINARY@": "opencode",
+    "@CLAUDE_BINARY@": "claude",
+    "@AGY_BINARY@": "agy",
+}
+
+#: Affixes of the environment variable that overrides a token's binary:
+#: ``LEE_LLM_ROUTER_<BINARY NAME, UPPERCASED>_BINARY`` — for example
+#: ``LEE_LLM_ROUTER_CODEX_BINARY`` or ``LEE_LLM_ROUTER_AGY_BINARY``.
+HARNESS_BINARY_ENV_VAR_PREFIX = "LEE_LLM_ROUTER_"
+HARNESS_BINARY_ENV_VAR_SUFFIX = "_BINARY"
+
+
+def harness_binary_env_var(token: str) -> str:
+    """Return the override environment variable name for a binary token.
+
+    ``token`` is a key of :data:`HARNESS_BINARY_TOKENS`; an unknown token is
+    a programming error, not a host condition.
+    """
+    binary = HARNESS_BINARY_TOKENS[token]
+    return (
+        f"{HARNESS_BINARY_ENV_VAR_PREFIX}{binary.upper()}"
+        f"{HARNESS_BINARY_ENV_VAR_SUFFIX}"
+    )
+
+
+def resolve_harness_binary(token: str) -> str:
+    """Return the binary substituted for harness-binary ``token``.
+
+    Resolution order, exactly:
+
+    1. The token's override variable (:func:`harness_binary_env_var`) when
+       set and non-empty — the operator's explicit answer, so it wins.
+    2. Otherwise ``shutil.which(<bare binary name>)``, the binary of that
+       harness installed anywhere on the process PATH.
+    3. Otherwise the bare binary name, deferring the lookup to the PATH of
+       the process that finally executes the dispatch template.
+
+    Only the token's own binary is ever considered: step 3 returns the bare
+    name even when some other harness's binary is installed, so a token can
+    never be silently satisfied by a different harness. Resolution never
+    raises, so an uninstalled harness cannot fail catalog loading (and thus
+    ``staff``) for unrelated routes. The value is returned verbatim: no
+    normalisation, expansion, or existence check.
+    """
+    from_env = os.environ.get(harness_binary_env_var(token))
+    if from_env:
+        return from_env
+    binary = HARNESS_BINARY_TOKENS[token]
+    return shutil.which(binary) or binary
+
+
+def resolve_harness_binaries() -> dict[str, str]:
+    """Return the full token -> binary table resolved for this host.
+
+    One resolution per token per catalog load; order follows
+    :data:`HARNESS_BINARY_TOKENS`.
+    """
+    return {token: resolve_harness_binary(token) for token in HARNESS_BINARY_TOKENS}
+
+
+def resolve_dispatch_template(
+    template: str,
+    stage_worker_dir: str | None = None,
+    harness_binaries: Mapping[str, str] | None = None,
+) -> str:
+    """Return ``template`` with its placeholder tokens substituted.
+
+    ``stage_worker_dir`` defaults to :func:`resolve_stage_worker_dir` and
+    ``harness_binaries`` defaults to :func:`resolve_harness_binaries`. Both
+    are explicit so a caller (or a test) with a known installation can
+    render a template without consulting the process environment. A
+    harness-binary token that ``harness_binaries`` does not carry is
+    resolved individually; a template carrying no token is returned
+    unchanged. No other part of a template is interpreted.
+    """
+    directory = (
+        resolve_stage_worker_dir() if stage_worker_dir is None else stage_worker_dir
+    )
+    resolved = template.replace(STAGE_WORKER_DIR_TOKEN, directory)
+    for token in HARNESS_BINARY_TOKENS:
+        if token not in resolved:
+            continue
+        if harness_binaries is not None and token in harness_binaries:
+            binary = harness_binaries[token]
+        else:
+            binary = resolve_harness_binary(token)
+        resolved = resolved.replace(token, binary)
+    return resolved
+
 
 _FIELD_FROM_MESSAGE = re.compile(r"\('([^']+)' was unexpected\)")
 
@@ -646,9 +814,29 @@ def _build_tuple(cls: type, items: list[Any], path: str) -> tuple:
 
 
 def _build_routes(data: Mapping[str, Any]) -> RoutesCatalog:
-    return RoutesCatalog(
-        routes=_build_tuple(Route, data["routes"], "$.routes"),
+    """Build the routes catalog, resolving every placeholder once.
+
+    Resolution happens here, at load time (stage-worker directory P1-1,
+    harness binaries P1-2), so every :class:`Route` this catalog exposes
+    carries a fully resolved ``dispatch_template`` — the same string the
+    pre-P1-2 catalog carried on a host that installs the five harness
+    binaries at the paths those templates used to hard-code. Resolution
+    never raises: an unresolvable harness binary resolves to its bare name.
+    No other route field is read, rewritten, or validated differently.
+    """
+    stage_worker_dir = resolve_stage_worker_dir()
+    harness_binaries = resolve_harness_binaries()
+    routes = _build_tuple(Route, data["routes"], "$.routes")
+    resolved = tuple(
+        dataclasses.replace(
+            route,
+            dispatch_template=resolve_dispatch_template(
+                route.dispatch_template, stage_worker_dir, harness_binaries
+            ),
+        )
+        for route in routes
     )
+    return RoutesCatalog(routes=resolved)
 
 
 def _build_channels(data: Mapping[str, Any]) -> ChannelsCatalog:

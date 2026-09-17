@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import re
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -36,7 +38,21 @@ from lee_llm_router.staffing import (
     load_staffing_document,
     validate_class_block,
 )
-from lee_llm_router.staffing.catalog import ChannelInstance, CrewSupervisor
+from lee_llm_router.staffing.catalog import (
+    DEFAULT_STAGE_WORKER_DIR,
+    HARNESS_BINARY_ENV_VAR_PREFIX,
+    HARNESS_BINARY_ENV_VAR_SUFFIX,
+    HARNESS_BINARY_TOKENS,
+    STAGE_WORKER_DIR_ENV_VAR,
+    STAGE_WORKER_DIR_TOKEN,
+    ChannelInstance,
+    CrewSupervisor,
+    harness_binary_env_var,
+    resolve_dispatch_template,
+    resolve_harness_binaries,
+    resolve_harness_binary,
+    resolve_stage_worker_dir,
+)
 
 # ---------------------------------------------------------------------------
 # Handwritten valid fixture documents (minimal but schema-valid)
@@ -1173,3 +1189,627 @@ def test_validate_class_block_rejects_empty_tags_segment() -> None:
     with pytest.raises(StaffingCatalogError) as excinfo:
         validate_class_block(block)
     assert "plan/human/none/s/markdown" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# P1-1: stage-worker paths resolve from an installation root
+#
+# The committed routes.yaml names the five stage-worker scripts (antigravity,
+# claude, codex, opencode, pi) through the placeholder token
+# STAGE_WORKER_DIR_TOKEN; the loader substitutes it at load time from
+# LEE_LLM_ROUTER_STAGE_WORKER_DIR when set and non-empty, else from the
+# historical directory. Each test sets the variable explicitly so both
+# resolution branches are exercised regardless of the developer's shell.
+# ---------------------------------------------------------------------------
+
+#: The five stage-worker script basenames the committed templates name.
+STAGE_WORKER_SCRIPTS = ("antigravity", "claude", "codex", "opencode", "pi")
+
+#: The pre-P1-1 committed dispatch template for the sol-xhigh route: the
+#: value a loaded route must reproduce byte-for-byte while the environment
+#: variable is unset.
+SOL_XHIGH_DISPATCH_TEMPLATE = (
+    "/usr/bin/env CODEX_STAGE_WORKER_BINARY=/home/lee/.local/bin/codex "
+    "CODEX_STAGE_WORKER_MODEL=gpt-5.6-sol "
+    "CODEX_STAGE_WORKER_REASONING_EFFORT=xhigh "
+    "python3 /home/lee/projects/auto-orch/scripts/codex_stage_worker.py "
+    "{stage} {prompt_path} {response_path}"
+)
+
+
+def committed_config_dir() -> Path:
+    """Return the committed ``config/staffing`` directory."""
+    return Path(__file__).resolve().parents[1] / "config" / "staffing"
+
+
+def committed_routes() -> tuple[Route, ...]:
+    """Load the committed catalog and return its routes in catalog order."""
+    return load_staffing_catalog(committed_config_dir()).routes.routes
+
+
+def route_identity(route: Route) -> tuple[str | None, str | None, str, str]:
+    """Return a route's ``(model, effort, harness, channel)`` identity tuple."""
+    return (route.model, route.effort, route.harness, route.channel)
+
+
+def test_stage_worker_dir_defaults_without_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unset (and empty) environment resolves to the historical directory."""
+    monkeypatch.delenv(STAGE_WORKER_DIR_ENV_VAR, raising=False)
+    assert resolve_stage_worker_dir() == DEFAULT_STAGE_WORKER_DIR
+    assert DEFAULT_STAGE_WORKER_DIR == "/home/lee/projects/auto-orch/scripts"
+    monkeypatch.setenv(STAGE_WORKER_DIR_ENV_VAR, "")
+    assert resolve_stage_worker_dir() == DEFAULT_STAGE_WORKER_DIR
+
+
+def test_stage_worker_dir_prefers_nonempty_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A set, non-empty environment variable wins over the default."""
+    workers = tmp_path / "stage-workers"
+    monkeypatch.setenv(STAGE_WORKER_DIR_ENV_VAR, str(workers))
+    assert resolve_stage_worker_dir() == str(workers)
+
+
+def test_resolve_dispatch_template_substitutes_token() -> None:
+    """The token is the only thing substituted; the rest is untouched."""
+    template = (
+        f"python3 {STAGE_WORKER_DIR_TOKEN}/pi_stage_worker.py "
+        "{stage} {prompt_path} {response_path}"
+    )
+    expected = (
+        "python3 /opt/workers/pi_stage_worker.py "
+        "{stage} {prompt_path} {response_path}"
+    )
+    assert resolve_dispatch_template(template, "/opt/workers") == expected
+    without_token = "dispatch {prompt}"
+    assert resolve_dispatch_template(without_token, "/opt/workers") == without_token
+
+
+def test_resolve_dispatch_template_uses_environment_by_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Without an explicit directory the process environment decides."""
+    workers = tmp_path / "workers"
+    monkeypatch.setenv(STAGE_WORKER_DIR_ENV_VAR, str(workers))
+    template = f"python3 {STAGE_WORKER_DIR_TOKEN}/codex_stage_worker.py"
+    expected = f"python3 {workers}/codex_stage_worker.py"
+    assert resolve_dispatch_template(template) == expected
+
+
+def test_routes_document_substitutes_token_at_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A routes document is resolved when it is loaded, not when it is read."""
+    workers = "/opt/stage-workers"
+    monkeypatch.setenv(STAGE_WORKER_DIR_ENV_VAR, workers)
+    doc = routes_doc()
+    doc["routes"][0]["dispatch_template"] = (
+        f"python3 {STAGE_WORKER_DIR_TOKEN}/pi_stage_worker.py "
+        "{stage} {prompt_path} {response_path}"
+    )
+    write_docs(tmp_path, {"routes": doc})
+    routes = load_staffing_document("routes", tmp_path / "routes.yaml")
+    expected = (
+        f"python3 {workers}/pi_stage_worker.py " "{stage} {prompt_path} {response_path}"
+    )
+    assert routes.routes[0].dispatch_template == expected
+    # A template without the token is untouched by resolution.
+    assert routes.routes[1].dispatch_template == "dispatch {prompt}"
+
+
+def test_routes_document_default_substitution_uses_historical_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unset environment substitutes the historical path, not a blank."""
+    monkeypatch.delenv(STAGE_WORKER_DIR_ENV_VAR, raising=False)
+    doc = routes_doc()
+    doc["routes"][0][
+        "dispatch_template"
+    ] = f"python3 {STAGE_WORKER_DIR_TOKEN}/codex_stage_worker.py {{stage}}"
+    write_docs(tmp_path, {"routes": doc})
+    routes = load_staffing_document("routes", tmp_path / "routes.yaml")
+    expected = f"python3 {DEFAULT_STAGE_WORKER_DIR}/codex_stage_worker.py {{stage}}"
+    assert routes.routes[0].dispatch_template == expected
+
+
+def test_committed_dispatch_template_is_byte_identical_without_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Evidence 3: with the variable unset, the loaded template is
+    byte-identical to its pre-P1-1 committed value, and the route's identity
+    fields are unchanged."""
+    monkeypatch.delenv(STAGE_WORKER_DIR_ENV_VAR, raising=False)
+    route = next(
+        route for route in committed_routes() if route.route_id == SOL_XHIGH_ROUTE
+    )
+    assert route.dispatch_template == SOL_XHIGH_DISPATCH_TEMPLATE
+    assert STAGE_WORKER_DIR_TOKEN not in route.dispatch_template
+    assert route_identity(route) == ("gpt-5.6-sol", "xhigh", "codex", "openai-sub")
+
+
+def test_committed_templates_default_resolve_to_historical_dir(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every committed template resolves, with the variable unset, to the
+    historical directory, and each of the five scripts resolves there."""
+    monkeypatch.delenv(STAGE_WORKER_DIR_ENV_VAR, raising=False)
+    routes = committed_routes()
+    assert routes
+    prefix = f"python3 {DEFAULT_STAGE_WORKER_DIR}/"
+    for route in routes:
+        assert STAGE_WORKER_DIR_TOKEN not in route.dispatch_template
+        assert prefix in route.dispatch_template
+    for name in STAGE_WORKER_SCRIPTS:
+        path = f"python3 {DEFAULT_STAGE_WORKER_DIR}/{name}_stage_worker.py"
+        assert any(path in route.dispatch_template for route in routes), name
+
+
+def test_committed_templates_resolve_to_environment_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Evidence 4: with the variable set to a temporary directory the loaded
+    templates contain that directory and no occurrence of the legacy
+    auto-orch path."""
+    workers = tmp_path / "installed-stage-workers"
+    monkeypatch.setenv(STAGE_WORKER_DIR_ENV_VAR, str(workers))
+    routes = committed_routes()
+    assert routes
+    prefix = f"python3 {workers}/"
+    for route in routes:
+        assert STAGE_WORKER_DIR_TOKEN not in route.dispatch_template
+        assert "/home/lee/projects/auto-orch" not in route.dispatch_template
+        assert prefix in route.dispatch_template
+    for name in STAGE_WORKER_SCRIPTS:
+        path = f"python3 {workers}/{name}_stage_worker.py"
+        assert any(path in route.dispatch_template for route in routes), name
+
+
+def test_stage_worker_dir_changes_only_dispatch_paths(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The override rewrites exactly the stage-worker directory: route order,
+    identity fields, usage_capture, and status are unchanged, and each
+    template equals its default resolution with the directory swapped."""
+    monkeypatch.delenv(STAGE_WORKER_DIR_ENV_VAR, raising=False)
+    default_routes = committed_routes()
+    workers = tmp_path / "workers"
+    monkeypatch.setenv(STAGE_WORKER_DIR_ENV_VAR, str(workers))
+    env_routes = committed_routes()
+
+    assert len(env_routes) == len(default_routes)
+    for default_route, env_route in zip(default_routes, env_routes):
+        assert env_route.route_id == default_route.route_id
+        assert route_identity(env_route) == route_identity(default_route)
+        assert env_route.usage_capture == default_route.usage_capture
+        assert env_route.status == default_route.status
+        assert env_route.status_reason == default_route.status_reason
+        swapped = default_route.dispatch_template.replace(
+            DEFAULT_STAGE_WORKER_DIR, str(workers)
+        )
+        assert env_route.dispatch_template == swapped
+
+
+# ---------------------------------------------------------------------------
+# P1-2: harness binaries resolve from PATH or LEE_LLM_ROUTER_<HARNESS>_BINARY
+#
+# The committed routes.yaml now hands each stage worker its harness binary
+# through a per-harness placeholder token (@CODEX_BINARY@ and friends,
+# following the P1-1 @STAGE_WORKER_DIR@ convention) instead of the absolute
+# path that used to be hard-coded there. The loader substitutes the token at
+# load time: LEE_LLM_ROUTER_<HARNESS>_BINARY when set and non-empty, else
+# shutil.which(<binary name>), else the bare binary name. On this host the
+# five binaries are installed at exactly the paths the pre-P1-2 templates
+# hard-coded, so an unset environment reproduces those templates
+# byte-for-byte. Each test sets the environment explicitly so every
+# resolution branch is exercised regardless of the developer's shell.
+# ---------------------------------------------------------------------------
+
+#: Harness -> the override variable's harness id, i.e. the environment
+#: variable LEE_LLM_ROUTER_<ID>_BINARY.
+HARNESS_OVERRIDE_IDS = {
+    "codex": "CODEX",
+    "pi": "PI",
+    "opencode": "OPENCODE",
+    "claude": "CLAUDE",
+    "agy": "AGY",
+}
+
+#: Harness -> the token its dispatch template carries. The module's table is
+#: asserted to be exactly this mapping reversed, so the expectation here is
+#: an independent statement of which binary each token names.
+HARNESS_BINARY_TOKENS_EXPECTED = {
+    "codex": "@CODEX_BINARY@",
+    "pi": "@PI_BINARY@",
+    "opencode": "@OPENCODE_BINARY@",
+    "claude": "@CLAUDE_BINARY@",
+    "agy": "@AGY_BINARY@",
+}
+
+#: The absolute binary paths the pre-P1-2 committed templates hard-coded,
+#: per harness. On a host that installs each binary at its historical path,
+#: PATH resolution must reproduce these exactly.
+PRE_P1_2_HARNESS_BINARY_PATHS = {
+    "codex": "/home/lee/.local/bin/codex",
+    "pi": "/home/lee/.npm-global/bin/pi",
+    "opencode": "/home/lee/.opencode/bin/opencode",
+    "claude": "/home/lee/.local/bin/claude",
+    "agy": "/home/lee/.local/bin/agy",
+}
+
+#: The directories holding those paths, PATH-prepended by the byte-identity
+#: test so its lookup is the historical lookup rather than whatever PATH the
+#: test runner happens to inherit.
+PRE_P1_2_HARNESS_BINARY_DIRS = tuple(
+    dict.fromkeys(
+        path.rsplit("/", 1)[0] for path in PRE_P1_2_HARNESS_BINARY_PATHS.values()
+    )
+)
+
+#: The two provenance comment lines that still cite a historical binary
+#: path by design (P0-3d agy, P0-3f pi). They are citations, not dispatch
+#: data, and this packet leaves them byte-for-byte.
+PROVENANCE_BINARY_CITATIONS = (
+    "(/home/lee/.npm-global/bin/pi)",
+    "/home/lee/.local/bin/agy).",
+)
+
+#: The number of routes (and therefore dispatch templates) in the committed
+#: catalog.
+COMMITTED_ROUTE_COUNT = 31
+
+
+def harness_override_env_var(harness: str) -> str:
+    """Return the literal override variable name for ``harness``."""
+    return f"LEE_LLM_ROUTER_{HARNESS_OVERRIDE_IDS[harness]}_BINARY"
+
+
+def clear_binary_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unset the stage-worker directory and every binary override."""
+    monkeypatch.delenv(STAGE_WORKER_DIR_ENV_VAR, raising=False)
+    for harness in HARNESS_OVERRIDE_IDS:
+        monkeypatch.delenv(harness_override_env_var(harness), raising=False)
+
+
+def committed_routes_document() -> dict:
+    """Return the committed routes.yaml as raw (unresolved) text data."""
+    text = (committed_config_dir() / "routes.yaml").read_text(encoding="utf-8")
+    return yaml.safe_load(text)
+
+
+def committed_raw_templates() -> dict[str, str]:
+    """Return route_id -> the dispatch template exactly as committed."""
+    return {
+        row["route_id"]: row["dispatch_template"]
+        for row in committed_routes_document()["routes"]
+    }
+
+
+def sentinel_binaries(tmp_path: Path) -> dict[str, str]:
+    """One distinct sentinel binary path per harness (never a real path)."""
+    return {
+        harness: str(tmp_path / "sentinels" / harness / f"{harness}-sentinel")
+        for harness in HARNESS_BINARY_TOKENS_EXPECTED
+    }
+
+
+def make_executable(directory: Path, name: str) -> Path:
+    """Create an executable file ``name`` inside ``directory`` and return it."""
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / name
+    path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def test_harness_binary_token_table_is_the_five_harnesses() -> None:
+    """One explicit, documented token row per harness, P1-1-shaped."""
+    assert HARNESS_BINARY_TOKENS == {
+        token: harness for harness, token in HARNESS_BINARY_TOKENS_EXPECTED.items()
+    }
+    for harness, token in HARNESS_BINARY_TOKENS_EXPECTED.items():
+        assert token == f"@{HARNESS_OVERRIDE_IDS[harness]}_BINARY@"
+        # Not shell-shaped (no $ or ${...}) so the token can never be read as
+        # an environment expansion, exactly as for @STAGE_WORKER_DIR@.
+        assert "$" not in token
+        assert "{" not in token
+
+
+@pytest.mark.parametrize(
+    ("harness", "env_var"),
+    [
+        ("codex", "LEE_LLM_ROUTER_CODEX_BINARY"),
+        ("pi", "LEE_LLM_ROUTER_PI_BINARY"),
+        ("opencode", "LEE_LLM_ROUTER_OPENCODE_BINARY"),
+        ("claude", "LEE_LLM_ROUTER_CLAUDE_BINARY"),
+        ("agy", "LEE_LLM_ROUTER_AGY_BINARY"),
+    ],
+)
+def test_harness_binary_env_var_names(harness: str, env_var: str) -> None:
+    """The override variable is LEE_LLM_ROUTER_<HARNESS>_BINARY."""
+    assert HARNESS_BINARY_ENV_VAR_PREFIX == "LEE_LLM_ROUTER_"
+    assert HARNESS_BINARY_ENV_VAR_SUFFIX == "_BINARY"
+    assert harness_binary_env_var(HARNESS_BINARY_TOKENS_EXPECTED[harness]) == env_var
+
+
+def test_resolve_harness_binary_prefers_nonempty_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Resolution 1 wins over 2; an empty variable falls through to PATH."""
+    clear_binary_environment(monkeypatch)
+    on_path = make_executable(tmp_path / "path-bin", "codex")
+    monkeypatch.setenv("PATH", str(on_path.parent))
+    assert resolve_harness_binary("@CODEX_BINARY@") == str(on_path)
+
+    sentinel = str(tmp_path / "override" / "codex")
+    monkeypatch.setenv("LEE_LLM_ROUTER_CODEX_BINARY", sentinel)
+    assert resolve_harness_binary("@CODEX_BINARY@") == sentinel
+
+    monkeypatch.setenv("LEE_LLM_ROUTER_CODEX_BINARY", "")
+    assert resolve_harness_binary("@CODEX_BINARY@") == str(on_path)
+
+
+def test_resolve_harness_binary_uses_path_then_bare_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Resolution 2 then 3, and never another harness's binary."""
+    clear_binary_environment(monkeypatch)
+    empty = tmp_path / "empty-path"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    assert resolve_harness_binaries() == HARNESS_BINARY_TOKENS
+
+    # Only agy is installed: every other harness keeps its own bare name.
+    agy = make_executable(tmp_path / "path-bin", "agy")
+    monkeypatch.setenv("PATH", str(agy.parent))
+    assert resolve_harness_binary("@AGY_BINARY@") == str(agy)
+    for token, binary in HARNESS_BINARY_TOKENS.items():
+        if token != "@AGY_BINARY@":
+            assert resolve_harness_binary(token) == binary
+
+
+def test_resolve_dispatch_template_substitutes_both_token_kinds() -> None:
+    """The explicit table renders both placeholders; nothing else changes."""
+    template = (
+        "/usr/bin/env AGY_STAGE_WORKER_BINARY=@AGY_BINARY@ "
+        "python3 @STAGE_WORKER_DIR@/antigravity_stage_worker.py {stage}"
+    )
+    expected = (
+        "/usr/bin/env AGY_STAGE_WORKER_BINARY=/opt/bin/agy "
+        "python3 /opt/workers/antigravity_stage_worker.py {stage}"
+    )
+    assert (
+        resolve_dispatch_template(
+            template, "/opt/workers", {"@AGY_BINARY@": "/opt/bin/agy"}
+        )
+        == expected
+    )
+
+
+def test_routes_document_resolves_binary_tokens_at_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A routes document resolves binary tokens when it is loaded, from the
+    override when set and from the bare name when nothing can be found."""
+    clear_binary_environment(monkeypatch)
+    empty = tmp_path / "empty-path"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    workers = "/opt/stage-workers"
+    monkeypatch.setenv(STAGE_WORKER_DIR_ENV_VAR, workers)
+    monkeypatch.setenv("LEE_LLM_ROUTER_CODEX_BINARY", "/opt/bin/codex")
+
+    doc = routes_doc()
+    doc["routes"][0]["dispatch_template"] = (
+        "/usr/bin/env CODEX_STAGE_WORKER_BINARY=@CODEX_BINARY@ "
+        "python3 @STAGE_WORKER_DIR@/codex_stage_worker.py {stage}"
+    )
+    doc["routes"][1]["dispatch_template"] = (
+        "/usr/bin/env PI_STAGE_WORKER_BINARY=@PI_BINARY@ "
+        "python3 @STAGE_WORKER_DIR@/pi_stage_worker.py {stage}"
+    )
+    write_docs(tmp_path, {"routes": doc})
+
+    routes = load_staffing_document("routes", tmp_path / "routes.yaml")
+    assert routes.routes[0].dispatch_template == (
+        "/usr/bin/env CODEX_STAGE_WORKER_BINARY=/opt/bin/codex "
+        f"python3 {workers}/codex_stage_worker.py {{stage}}"
+    )
+    assert routes.routes[1].dispatch_template == (
+        "/usr/bin/env PI_STAGE_WORKER_BINARY=pi "
+        f"python3 {workers}/pi_stage_worker.py {{stage}}"
+    )
+
+
+def test_committed_templates_are_byte_identical_without_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Evidence 3: with no override set, every one of the committed templates
+    loads byte-identically to its pre-P1-2 value — the token replaced by the
+    historical absolute path PATH resolution finds — and no route's identity
+    fields differ from the committed YAML."""
+    clear_binary_environment(monkeypatch)
+    monkeypatch.setenv(
+        "PATH",
+        os.pathsep.join([*PRE_P1_2_HARNESS_BINARY_DIRS, os.environ.get("PATH", "")]),
+    )
+    raw = committed_raw_templates()
+    rows = committed_routes_document()["routes"]
+    routes = committed_routes()
+    assert len(routes) == COMMITTED_ROUTE_COUNT == len(raw) == len(rows)
+
+    for route, row in zip(routes, rows):
+        assert route.route_id == row["route_id"]
+        assert route.model == row["model"]
+        assert route.effort == row["effort"]
+        assert route.harness == row["harness"]
+        assert route.channel == row["channel"]
+        assert route.status == row["status"]
+
+        token = HARNESS_BINARY_TOKENS_EXPECTED[route.harness]
+        historical = PRE_P1_2_HARNESS_BINARY_PATHS[route.harness]
+        status = shutil.which(HARNESS_BINARY_TOKENS[token])
+        assert status == historical, (
+            f"{HARNESS_BINARY_TOKENS[token]} is not installed at {historical}; "
+            "PATH resolution cannot reproduce the pre-P1-2 template"
+        )
+        expected = (
+            raw[route.route_id]
+            .replace(STAGE_WORKER_DIR_TOKEN, DEFAULT_STAGE_WORKER_DIR)
+            .replace(token, historical)
+        )
+        assert route.dispatch_template == expected
+        assert token not in route.dispatch_template
+        assert not re.search(r"@[A-Z_]+@", route.dispatch_template)
+
+
+def test_committed_templates_carry_explicit_binary_overrides(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Evidence 4: with each override set to a distinct sentinel, every
+    template carries its own sentinel, and no historical binary path and no
+    unresolved token remains."""
+    clear_binary_environment(monkeypatch)
+    sentinels = sentinel_binaries(tmp_path)
+    for harness, path in sentinels.items():
+        monkeypatch.setenv(harness_override_env_var(harness), path)
+    workers = str(tmp_path / "installed-stage-workers")
+    monkeypatch.setenv(STAGE_WORKER_DIR_ENV_VAR, workers)
+
+    raw = committed_raw_templates()
+    routes = committed_routes()
+    assert len(routes) == COMMITTED_ROUTE_COUNT
+    for route in routes:
+        token = HARNESS_BINARY_TOKENS_EXPECTED[route.harness]
+        expected = (
+            raw[route.route_id]
+            .replace(STAGE_WORKER_DIR_TOKEN, workers)
+            .replace(token, sentinels[route.harness])
+        )
+        assert route.dispatch_template == expected
+        assert sentinels[route.harness] in route.dispatch_template
+        assert not re.search(r"@[A-Z_]+@", route.dispatch_template)
+        for other_token in HARNESS_BINARY_TOKENS_EXPECTED.values():
+            if other_token != token:
+                assert other_token not in route.dispatch_template
+        for historical in PRE_P1_2_HARNESS_BINARY_PATHS.values():
+            assert historical not in route.dispatch_template
+        for other, path in sentinels.items():
+            if other != route.harness:
+                assert path not in route.dispatch_template
+
+
+def test_harness_binary_overrides_change_only_the_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An override rewrites exactly the binary: route order, identity fields,
+    usage_capture, and status are unchanged, and each template equals the
+    committed template with only its own binary token resolved."""
+    clear_binary_environment(monkeypatch)
+    raw_rows = committed_routes_document()["routes"]
+    sentinels = sentinel_binaries(tmp_path)
+    for harness, path in sentinels.items():
+        monkeypatch.setenv(harness_override_env_var(harness), path)
+    routes = committed_routes()
+
+    assert [route.route_id for route in routes] == [row["route_id"] for row in raw_rows]
+    for route, row in zip(routes, raw_rows):
+        assert route.model == row["model"]
+        assert route.effort == row["effort"]
+        assert route.harness == row["harness"]
+        assert route.channel == row["channel"]
+        assert route.usage_capture == row["usage_capture"]
+        assert route.status == row["status"]
+        assert route.status_reason == row.get("status_reason")
+        expected = (
+            row["dispatch_template"]
+            .replace(STAGE_WORKER_DIR_TOKEN, DEFAULT_STAGE_WORKER_DIR)
+            .replace(
+                HARNESS_BINARY_TOKENS_EXPECTED[route.harness],
+                sentinels[route.harness],
+            )
+        )
+        assert route.dispatch_template == expected
+        assert route.dispatch_template != row["dispatch_template"]
+
+
+def test_unresolvable_binary_resolves_to_bare_name_without_raising(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Evidence 5: a token whose binary is neither overridden nor on PATH
+    loads as the bare binary name — no raise, no other harness's binary, and
+    no collateral damage to unrelated routes."""
+    clear_binary_environment(monkeypatch)
+    empty = tmp_path / "empty-path"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    sentinels = sentinel_binaries(tmp_path)
+    for harness, path in sentinels.items():
+        if harness != "codex":
+            monkeypatch.setenv(harness_override_env_var(harness), path)
+
+    routes = committed_routes()
+    assert len(routes) == COMMITTED_ROUTE_COUNT
+    codex_routes = [route for route in routes if route.harness == "codex"]
+    assert len(codex_routes) == 9
+    for route in codex_routes:
+        assert "CODEX_STAGE_WORKER_BINARY=codex " in route.dispatch_template
+        for path in sentinels.values():
+            assert path not in route.dispatch_template
+        for historical in PRE_P1_2_HARNESS_BINARY_PATHS.values():
+            assert historical not in route.dispatch_template
+    for route in routes:
+        if route.harness == "codex":
+            continue
+        sentinel = sentinels[route.harness]
+        assert f"BINARY={sentinel} " in route.dispatch_template, route.route_id
+
+    # Nothing installed and nothing overridden: loading still succeeds for
+    # every route, each template carrying its own harness's bare name.
+    for harness in sentinels:
+        monkeypatch.delenv(harness_override_env_var(harness), raising=False)
+    bare_routes = committed_routes()
+    assert len(bare_routes) == COMMITTED_ROUTE_COUNT
+    for route in bare_routes:
+        token = HARNESS_BINARY_TOKENS_EXPECTED[route.harness]
+        binary = HARNESS_BINARY_TOKENS[token]
+        assert f"BINARY={binary} " in route.dispatch_template, route.route_id
+
+
+def test_committed_routes_yaml_carries_tokens_not_binary_paths() -> None:
+    """Every committed template names its own harness's token exactly once,
+    no other harness's token, and no absolute harness path."""
+    raw = committed_raw_templates()
+    rows = committed_routes_document()["routes"]
+    assert len(raw) == COMMITTED_ROUTE_COUNT == len(rows)
+    for row in rows:
+        token = HARNESS_BINARY_TOKENS_EXPECTED[row["harness"]]
+        template = row["dispatch_template"]
+        assert template.count(token) == 1, row["route_id"]
+        assert STAGE_WORKER_DIR_TOKEN in template
+        for harness, other_token in HARNESS_BINARY_TOKENS_EXPECTED.items():
+            if harness != row["harness"]:
+                assert other_token not in template, row["route_id"]
+        for historical in PRE_P1_2_HARNESS_BINARY_PATHS.values():
+            assert historical not in template, row["route_id"]
+
+
+def test_committed_routes_yaml_keeps_provenance_binary_citations() -> None:
+    """The two comment lines citing a historical binary path are provenance
+    and stay put (with the P1-1 and P1-2 change notes); no template line
+    carries an absolute harness path."""
+    text = (committed_config_dir() / "routes.yaml").read_text(encoding="utf-8")
+    assert "# P1-1:" in text
+    assert "# P1-2:" in text
+    for citation in PROVENANCE_BINARY_CITATIONS:
+        matching = [line for line in text.splitlines() if citation in line]
+        assert len(matching) == 1, citation
+        assert matching[0].lstrip().startswith("#")
+    template_lines = [
+        line for line in text.splitlines() if "dispatch_template:" in line
+    ]
+    assert len(template_lines) == COMMITTED_ROUTE_COUNT
+    for line in template_lines:
+        for historical in PRE_P1_2_HARNESS_BINARY_PATHS.values():
+            assert historical not in line
