@@ -83,6 +83,7 @@ No probability, ladder, model choice, or ranking lives in this module
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -466,12 +467,55 @@ def _model_scoped_vetoes(
         if (
             bucket.remaining_fraction is not None
             and bucket.remaining_fraction <= reserve
+            and not _reserve_waived(bucket.resets_in_hours)
         ):
             reasons.append(
                 f"model bucket {bucket.name!r} {_RESERVE_REASON}: "
                 f"{reserve * 100:.0f}% kept in the tank (D216)"
             )
     return tuple(reasons)
+
+
+#: Hours before a quota window resets within which the D216 reserve stops
+#: applying to that window. The reserve exists to preserve capacity for later
+#: work *inside the current window*; quota that expires before that work could
+#: be done cannot serve it, so holding it back is pure waste. Lee, 2026-09-17:
+#: "we are close to roll over so it's use it or lose it". This waives only the
+#: reserve floor — an exhausted or unhealthy bucket is still vetoed on health.
+RESERVE_WAIVER_HORIZON_HOURS = 2.0
+
+
+def _reserve_waived(hours_to_reset: float | None) -> bool:
+    """Return True when a window resets too soon for the reserve to mean anything.
+
+    Args:
+        hours_to_reset: Hours until the window resets, or ``None`` when the
+            snapshot did not report it.
+
+    Returns:
+        ``True`` only for a reported, finite, non-negative horizon strictly
+        inside :data:`RESERVE_WAIVER_HORIZON_HOURS`. An unreported horizon is
+        never waived: the reserve holds when the reset time is unknown.
+    """
+    if hours_to_reset is None:
+        return False
+    if not math.isfinite(hours_to_reset):
+        return False
+    return 0.0 <= hours_to_reset < RESERVE_WAIVER_HORIZON_HOURS
+
+
+def _instance_hours_to_reset(headroom: ChannelHeadroom) -> float | None:
+    """Return the limiting bucket's hours-to-reset for an instance headroom."""
+    limiting = headroom.limiting_bucket
+    for bucket in headroom.buckets:
+        if limiting is not None and bucket.name == limiting:
+            return bucket.resets_in_hours
+    horizons = [
+        bucket.resets_in_hours
+        for bucket in headroom.buckets
+        if bucket.resets_in_hours is not None
+    ]
+    return min(horizons) if horizons else None
 
 
 def _instance_or_channel_headroom(
@@ -690,6 +734,7 @@ def evaluate_eligibility(
                     if (
                         inst_headroom.remaining_fraction is not None
                         and inst_headroom.remaining_fraction <= reserve
+                        and not _reserve_waived(_instance_hours_to_reset(inst_headroom))
                     ):
                         inst_vetoes.append(
                             f"{_RESERVE_REASON}: {reserve * 100:.0f}% kept in "
@@ -726,9 +771,7 @@ def evaluate_eligibility(
                 # A model sub-limit constrains only the routes for its own
                 # model family, so it is checked per route and never through
                 # the instance headroom above.
-                reasons.extend(
-                    _model_scoped_vetoes(headroom, route.model, reserve)
-                )
+                reasons.extend(_model_scoped_vetoes(headroom, route.model, reserve))
 
                 instance_headrooms = tuple(
                     sorted(

@@ -1449,3 +1449,37 @@ def test_second_table_row_needs_no_other_change(catalog, monkeypatch) -> None:
     assert sonnet.eligible is True
     assert sonnet.reasons == ()
     assert sonnet.availability_health == "healthy"
+
+
+def test_reserve_is_waived_when_the_window_is_about_to_reset():
+    """D216's reserve preserves capacity for later work inside the window.
+
+    Quota that expires before that work could happen cannot serve it, so
+    holding it back is waste. Lee, 2026-09-17, with 53 minutes left on the
+    weekly window and 10% unspent: "we are close to roll over so it's use it
+    or lose it."
+    """
+    from lee_llm_router.staffing.eligibility import (
+        RESERVE_WAIVER_HORIZON_HOURS,
+        _reserve_waived,
+    )
+
+    # Inside the horizon: the window is ending, so the floor stops applying.
+    assert _reserve_waived(0.0) is True
+    assert _reserve_waived(0.88) is True
+    assert _reserve_waived(RESERVE_WAIVER_HORIZON_HOURS - 0.01) is True
+
+    # At or beyond the horizon the reserve holds normally.
+    assert _reserve_waived(RESERVE_WAIVER_HORIZON_HOURS) is False
+    assert _reserve_waived(12.0) is False
+    assert _reserve_waived(168.0) is False
+
+
+def test_reserve_holds_when_the_reset_horizon_is_unknown_or_nonsense():
+    """Fail closed: an unreported or non-finite horizon never waives."""
+    from lee_llm_router.staffing.eligibility import _reserve_waived
+
+    assert _reserve_waived(None) is False
+    assert _reserve_waived(float("nan")) is False
+    assert _reserve_waived(float("inf")) is False
+    assert _reserve_waived(-1.0) is False
