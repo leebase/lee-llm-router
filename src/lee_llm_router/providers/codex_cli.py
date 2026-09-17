@@ -488,6 +488,15 @@ class ClaudeCodeCLIProvider(CodexCLIProvider):
         tail: list[str] = []
         if output_format:
             tail.extend(["--output-format", output_format])
+            if output_format == "stream-json":
+                # The Claude CLI refuses `--print --output-format=stream-json`
+                # without `--verbose` ("Error: When using --print,
+                # --output-format=stream-json requires --verbose"), exiting
+                # before it emits anything. Without this flag every governed
+                # Claude dispatch fails instantly with empty stdout and no
+                # usage record. Emitted only for stream-json so other output
+                # formats keep their existing argv contract.
+                tail.append("--verbose")
         tail.extend(permission_args)
         if tail:
             if cmd and cmd[-1] == PROMPT_PLACEHOLDER:

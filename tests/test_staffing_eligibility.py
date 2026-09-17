@@ -14,7 +14,11 @@ from pathlib import Path
 
 import pytest
 
-from lee_llm_router.availability import parse_availability
+from lee_llm_router.availability import (
+    MODEL_SCOPED_BUCKETS,
+    AvailabilitySnapshot,
+    parse_availability,
+)
 from lee_llm_router.staffing import (
     EligibilityRow,
     StaffingEligibilityError,
@@ -1270,3 +1274,178 @@ def test_missing_instance_and_channel_record_remains_unknown(catalog) -> None:
         "inherited channel record" not in instance.reasons
         for instance in row.instance_headrooms
     )
+
+
+# ---------------------------------------------------------------------------
+# Packet P2: a model sub-limit gates only its own model family
+# ---------------------------------------------------------------------------
+
+FABLE_BUCKET = "Claude Fable — weekly"
+"""The one ``ai-subs`` bucket the reader knows is a model sub-limit (P2)."""
+
+FABLE_HEALTH_REASON = f"model bucket {FABLE_BUCKET!r} exhausted"
+FABLE_RESERVE_REASON = (
+    f"model bucket {FABLE_BUCKET!r} reserve: 10% kept in the tank (D216)"
+)
+
+
+def _anthropic_2026_09_16(*, fable_pct: float | None = 0.0) -> AvailabilitySnapshot:
+    """The observed 2026-09-16 Anthropic shape: session 97%, all-models 14%, Fable 0%.
+
+    The observed snapshot itself is evidence and is never read or edited here;
+    this rebuilds its shape. ``fable_pct=None`` drops the sub-limit entirely,
+    which is the scope-free control every other route must match.
+    """
+    entries: list[dict] = [
+        {
+            "provider": "Anthropic/Claude",
+            "bucket": "Current session",
+            "status": "COLD",
+            "remaining_pct": 97,
+        },
+        {
+            "provider": "Anthropic/Claude",
+            "bucket": "All models — weekly",
+            "status": "ON TRACK",
+            "remaining_pct": 14,
+        },
+    ]
+    if fable_pct is not None:
+        entries.append(
+            {
+                "provider": "Anthropic/Claude",
+                "bucket": FABLE_BUCKET,
+                "status": "ON TRACK",
+                "remaining_pct": fable_pct,
+            }
+        )
+    return _snapshot(*entries)
+
+
+def test_exhausted_model_sub_limit_stops_gating_its_siblings(catalog) -> None:
+    """Fable at 0% must not exclude Sonnet or Opus while the channel holds 14%."""
+    rows = _evaluate(catalog, _anthropic_2026_09_16())
+
+    sonnet = _by_route(rows, _SONNET_HIGH_ROUTE)
+    assert sonnet.eligible is True
+    assert sonnet.reasons == ()
+    assert sonnet.availability_health == "degraded"
+    assert sonnet.availability_headroom == pytest.approx(0.14)
+    assert sonnet.pricing is not None and sonnet.pricing.badge == "ON TRACK"
+
+    # Opus carries its own model-level rule and picks up nothing from Fable.
+    assert _by_route(rows, OPUS_ROUTE).reasons == ("never_automatic",)
+
+
+def test_exhausted_model_sub_limit_still_gates_its_own_model(catalog) -> None:
+    """Fable at 0% must still exclude Fable, citing its own bucket — not the channel."""
+    rows = _evaluate(catalog, _anthropic_2026_09_16())
+    fable = _by_route(rows, FABLE_ROUTE)
+
+    assert fable.eligible is False
+    assert fable.reasons == (
+        "never_automatic",
+        FABLE_HEALTH_REASON,
+        FABLE_RESERVE_REASON,
+    )
+    # The exclusion names the sub-limit that actually ran out. The channel did
+    # not: it still held 14%, and reading it as exhausted was the defect.
+    assert FABLE_HEALTH_REASON in fable.reasons
+    assert "channel exhausted" not in fable.reasons
+    assert fable.availability_health == "degraded"
+
+
+def test_healthy_model_sub_limit_adds_no_reason(catalog) -> None:
+    """A sub-limit with headroom contributes nothing to its own route either."""
+    rows = _evaluate(catalog, _anthropic_2026_09_16(fable_pct=56))
+    fable = _by_route(rows, FABLE_ROUTE)
+    assert fable.reasons == ("never_automatic",)
+    assert not any("model bucket" in reason for reason in fable.reasons)
+
+
+def test_model_sub_limit_reserve_veto_is_isolated(catalog) -> None:
+    """Exactly at the reserve only the reserve veto fires, and it names the bucket."""
+    rows = _evaluate(catalog, _anthropic_2026_09_16(fable_pct=10))
+    fable = _by_route(rows, FABLE_ROUTE)
+    assert fable.reasons == ("never_automatic", FABLE_RESERVE_REASON)
+    assert FABLE_HEALTH_REASON not in fable.reasons
+    # Sonnet is untouched by its sibling's reserve floor.
+    assert _by_route(rows, _SONNET_HIGH_ROUTE).eligible is True
+
+
+def test_model_sub_limit_health_veto_covers_unknown(catalog) -> None:
+    """The health veto is the subscription veto set, ``unknown`` included."""
+    snapshot = _snapshot(
+        {
+            "provider": "Anthropic/Claude",
+            "bucket": "Current session",
+            "status": "COLD",
+            "remaining_pct": 97,
+        },
+        {
+            "provider": "Anthropic/Claude",
+            "bucket": "All models — weekly",
+            "status": "ON TRACK",
+            "remaining_pct": 66,
+        },
+        {
+            "provider": "Anthropic/Claude",
+            "bucket": FABLE_BUCKET,
+            "status": "NO DATA",
+            "remaining_pct": 90,
+        },
+    )
+    rows = _evaluate(catalog, snapshot)
+    fable = _by_route(rows, FABLE_ROUTE)
+    assert fable.reasons == (
+        "never_automatic",
+        f"model bucket {FABLE_BUCKET!r} unknown",
+    )
+    assert _by_route(rows, _SONNET_HIGH_ROUTE).eligible is True
+
+
+def test_sub_limit_presence_changes_no_other_route(catalog) -> None:
+    """Byte-identical rows: only Fable's own row differs from the scope-free run."""
+    with_sub_limit = _evaluate(catalog, _anthropic_2026_09_16(fable_pct=0))
+    without = _evaluate(catalog, _anthropic_2026_09_16(fable_pct=None))
+
+    for scoped, plain in zip(with_sub_limit, without):
+        assert scoped.route_id == plain.route_id
+        if scoped.route_id == FABLE_ROUTE:
+            assert scoped != plain
+            continue
+        assert scoped == plain
+
+
+def test_second_table_row_needs_no_other_change(catalog, monkeypatch) -> None:
+    """Extending the reader's table by one row scopes a further family."""
+    monkeypatch.setitem(MODEL_SCOPED_BUCKETS, "Claude Opus — weekly", "claude-opus")
+    snapshot = _snapshot(
+        {
+            "provider": "Anthropic/Claude",
+            "bucket": "Current session",
+            "status": "COLD",
+            "remaining_pct": 97,
+        },
+        {
+            "provider": "Anthropic/Claude",
+            "bucket": "All models — weekly",
+            "status": "ON TRACK",
+            "remaining_pct": 66,
+        },
+        {
+            "provider": "Anthropic/Claude",
+            "bucket": "Claude Opus — weekly",
+            "status": "ON TRACK",
+            "remaining_pct": 0,
+        },
+    )
+    rows = _evaluate(catalog, snapshot)
+
+    opus = _by_route(rows, OPUS_ROUTE)
+    assert "model bucket 'Claude Opus — weekly' exhausted" in opus.reasons
+    # Sonnet is a different family: untouched, and the channel is not exhausted.
+    sonnet = _by_route(rows, _SONNET_HIGH_ROUTE)
+    assert sonnet.eligible is True
+    assert sonnet.reasons == ()
+    assert sonnet.availability_health == "healthy"

@@ -63,6 +63,32 @@ GEMINI_BUCKET_PREFIXES: tuple[tuple[str, str], ...] = (
 OPENCODE_GO_PROVIDER = "OpenCode/Go"
 """Provider label ``ai-subs`` emits for OpenCode Go."""
 
+MODEL_SCOPED_BUCKETS: Mapping[str, str] = {
+    "Claude Fable — weekly": "claude-fable",
+}
+"""Exact ``ai-subs`` bucket name -> model-family token (model sub-limits).
+
+Some buckets ``ai-subs`` reports are *model sub-limits*: they meter one
+model family inside a funding channel, not the channel's whole quota.
+Anthropic reports ``Claude Fable — weekly`` beside ``Current session`` and
+``All models — weekly``; when the Fable sub-limit empties, only Fable is
+out of quota — Sonnet and Opus still draw on the channel-wide windows. Read
+as a channel-wide constraint, as it was before this table existed, that one
+sub-limit gated every Anthropic route.
+
+This table is the only place that mapping lives, and it is keyed by the
+exact bucket label: the family is *stated*, never parsed out of the prose
+of the name. A heuristic over words like ``weekly`` or ``models`` would
+silently re-scope a renamed or newly coined bucket, which is the failure
+mode this table exists to avoid. A bucket name absent from this table is a
+channel-wide constraint and behaves exactly as it always has.
+
+Extending it: add one ``"<exact ai-subs bucket name>": "<family token>"``
+row when a provider starts reporting another model sub-limit. The token is
+matched against a route's model by ``route.model.startswith(family)`` in
+:mod:`lee_llm_router.staffing.eligibility`.
+"""
+
 
 DEGRADED_STATUSES: frozenset[str] = frozenset({"TOO FAST", "HOT"})
 """Raw ``ai-subs`` status badges that mean "burning too fast" regardless of pct."""
@@ -151,6 +177,13 @@ class Bucket:
         pace_ratio: Burn pace relative to the window, as reported.
         raw_status: The raw status badge (``COLD``, ``HOT``, ``TOO FAST``, ...).
         instance: The instance id within the channel, or ``None`` if unspecified.
+        model_scope: Model family this bucket meters, or ``None`` when the
+            bucket constrains the channel as a whole. A model-scoped bucket is
+            a provider's model *sub-limit*: it contributes to neither the
+            channel-wide nor the instance-wide health/fraction reduction, and
+            constrains only the routes for its family (see
+            :data:`MODEL_SCOPED_BUCKETS`). It stays in the reported
+            ``buckets`` tuple so no reading is hidden from reporting.
     """
 
     channel: str
@@ -163,6 +196,7 @@ class Bucket:
     pace_ratio: float | None
     raw_status: str
     instance: str | None = None
+    model_scope: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serialisable view of this bucket."""
@@ -177,6 +211,7 @@ class Bucket:
             "pace_ratio": self.pace_ratio,
             "raw_status": self.raw_status,
             "instance": self.instance,
+            "model_scope": self.model_scope,
         }
 
 
@@ -574,6 +609,21 @@ def is_known_status(raw_status: str) -> bool:
     return _STATUS_ALIASES.get(text, text) in KNOWN_STATUSES
 
 
+def model_scope_for(bucket_name: str) -> str | None:
+    """Return the model family a bucket name is scoped to, when it is one.
+
+    Args:
+        bucket_name: The raw ``ai-subs`` bucket label.
+
+    Returns:
+        The family token from :data:`MODEL_SCOPED_BUCKETS` for an exact
+        (whitespace-stripped) label match, else ``None`` — which means the
+        bucket constrains the whole channel, the behaviour every bucket had
+        before the table existed.
+    """
+    return MODEL_SCOPED_BUCKETS.get(bucket_name.strip())
+
+
 def is_wellformed_quota(entry: Mapping[str, Any]) -> bool:
     """Return True when a quota record carries every field health needs.
 
@@ -669,6 +719,7 @@ def _buckets_from_entries(
                     pace_ratio=_number(entry.get("pace_ratio")),
                     raw_status=raw_status,
                     instance=instance,
+                    model_scope=model_scope_for(name),
                 )
             )
     return buckets, ignored, malformed
@@ -677,6 +728,52 @@ def _buckets_from_entries(
 def _effective_instance(bucket: Bucket, channel: str) -> str:
     """Return the bucket's instance, or the channel name as the default instance."""
     return bucket.instance if bucket.instance is not None else channel
+
+
+def _reduce_channel_wide(
+    buckets: tuple[Bucket, ...], stale: bool
+) -> tuple[Health, float | None, str | None]:
+    """Reduce one group to ``(health, remaining_fraction, limiting_bucket)``.
+
+    Only channel-wide buckets take part: a bucket carrying a ``model_scope``
+    meters one model family inside the channel, so it belongs to neither the
+    ``min()`` nor the ``limiting`` health of the channel or instance it sits
+    on. It is reported through ``ChannelHeadroom.buckets`` unchanged.
+
+    An aggregate with no channel-wide bucket left — every bucket on it is
+    model-scoped — reads ``unknown`` with no fraction and no limiting bucket:
+    the snapshot observed no channel-wide constraint, and the reader invents
+    none. That is the fail-closed reading, matching ``_unknown_channel``.
+
+    Args:
+        buckets: Every bucket aggregated into this channel or instance, in
+            snapshot order.
+        stale: Whether the snapshot is stale, which degrades any derived
+            health to ``unknown``.
+
+    Returns:
+        The worst channel-wide health (``unknown`` when stale), the smallest
+        numeric remaining fraction among channel-wide buckets, and the name of
+        the bucket that set the health.
+    """
+    channel_wide = [bucket for bucket in buckets if bucket.model_scope is None]
+    if not channel_wide:
+        return Health.UNKNOWN, None, None
+
+    worst = max(_SEVERITY[bucket.health] for bucket in channel_wide)
+    limiting = next(
+        bucket for bucket in channel_wide if _SEVERITY[bucket.health] == worst
+    )
+    numbers = [
+        bucket.remaining_fraction
+        for bucket in channel_wide
+        if bucket.remaining_fraction is not None
+    ]
+    return (
+        Health.UNKNOWN if stale else limiting.health,
+        min(numbers) if numbers else None,
+        None if stale else limiting.name,
+    )
 
 
 def _instances_from_buckets(
@@ -693,16 +790,12 @@ def _instances_from_buckets(
     instances: dict[tuple[str, str], ChannelHeadroom] = {}
     for (channel, instance), group_buckets in groups.items():
         owned = tuple(group_buckets)
-        worst = max(_SEVERITY[b.health] for b in owned)
-        limiting = next(b for b in owned if _SEVERITY[b.health] == worst)
-        numbers = [
-            b.remaining_fraction for b in owned if b.remaining_fraction is not None
-        ]
+        health, remaining, limiting_bucket = _reduce_channel_wide(owned, stale)
         instances[(channel, instance)] = ChannelHeadroom(
             channel=channel,
-            health=Health.UNKNOWN if stale else limiting.health,
-            remaining_fraction=min(numbers) if numbers else None,
-            limiting_bucket=None if stale else limiting.name,
+            health=health,
+            remaining_fraction=remaining,
+            limiting_bucket=limiting_bucket,
             observed_at=observed_at,
             stale=stale,
             buckets=owned,
@@ -724,18 +817,12 @@ def _channels_from_buckets(
             channels[channel] = _unknown_channel(channel, observed_at, stale)
             continue
 
-        worst = max(_SEVERITY[bucket.health] for bucket in owned)
-        limiting = next(bucket for bucket in owned if _SEVERITY[bucket.health] == worst)
-        numbers = [
-            bucket.remaining_fraction
-            for bucket in owned
-            if bucket.remaining_fraction is not None
-        ]
+        health, remaining, limiting_bucket = _reduce_channel_wide(owned, stale)
         channels[channel] = ChannelHeadroom(
             channel=channel,
-            health=Health.UNKNOWN if stale else limiting.health,
-            remaining_fraction=min(numbers) if numbers else None,
-            limiting_bucket=None if stale else limiting.name,
+            health=health,
+            remaining_fraction=remaining,
+            limiting_bucket=limiting_bucket,
             observed_at=observed_at,
             stale=stale,
             buckets=owned,
