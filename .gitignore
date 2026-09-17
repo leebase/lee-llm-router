@@ -10,6 +10,10 @@ build/
 .lee-llm-router/
 *.json
 !tests/fixtures/*.json
+# Test fixtures live in subdirectories too; the shallow negation above misses them,
+# which hid tests/fixtures/staffing/attempt-record-benchmark-v6-run.json from every
+# fresh clone and failed 14 tests that pass on a long-lived working tree.
+!tests/fixtures/**/*.json
 /.venv-linux/
 
 # local harness state / macOS residue (estate sweep 2026-09-04)

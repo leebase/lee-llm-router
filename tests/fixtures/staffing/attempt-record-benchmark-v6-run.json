@@ -1,0 +1,92 @@
+{
+  "schema_version": 2,
+  "attempt_id": "benchmark:scratch-run-1",
+  "record_kind": "benchmark_run",
+  "captured_at": "2026-09-09T12:05:00Z",
+  "verified_success": false,
+  "class_record": {
+    "class_key": "impl/deterministic/none/m/python",
+    "role": "impl",
+    "oracle_type": "deterministic",
+    "domain_tags": [],
+    "size_band": "m",
+    "language": "python"
+  },
+  "verdict": "pass",
+  "failure_class": null,
+  "usage": {
+    "basis": "provider_reported",
+    "source": "benchmark v6 CSV usage_*_tokens",
+    "input_tokens": 101,
+    "output_tokens": 202,
+    "cached_input_tokens": 33,
+    "reasoning_tokens": null,
+    "total_tokens": 303
+  },
+  "cost": {
+    "basis": [
+      "unavailable"
+    ]
+  },
+  "wall_clock_ms": 290000,
+  "benchmark_run": {
+    "schema_version": "benchmark.staffing-evidence/2",
+    "sidecar_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "source_csv": {
+      "path": "benchmark-v6-runs.csv",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "generated_at": "2026-09-09T15:00:00Z",
+    "run_id": "scratch-run-1",
+    "task_key": "scratch-task-1",
+    "class": {
+      "class_key": "impl/deterministic/none/m/python",
+      "role": "impl",
+      "oracle_type": "deterministic",
+      "domain_tags": [],
+      "size_band": "m",
+      "language": "python"
+    },
+    "worker": {
+      "model": "scratch-model",
+      "harness": "claude_code",
+      "effort": "medium",
+      "model_family": "scratch-family"
+    },
+    "usage": {
+      "usage_status": "known",
+      "usage_input_tokens": 101,
+      "usage_output_tokens": 202,
+      "usage_cached_input_tokens": 33,
+      "usage_reasoning_tokens": null,
+      "usage_total_tokens": 303
+    },
+    "acceptance": "accepted",
+    "elapsed_ms": 290000,
+    "source_timestamps": {
+      "run_created_at": "2026-09-09T12:00:00Z",
+      "launch_created_at": "2026-09-09T12:00:05Z",
+      "started_at": "2026-09-09T12:00:05Z",
+      "finished_at": "2026-09-09T12:04:55Z",
+      "captured_at": "2026-09-09T12:05:00Z"
+    }
+  },
+  "provenance": {
+    "source": "benchmark",
+    "recorded_by": "lee-llm-router evidence import",
+    "source_refs": [
+      "tests/fixtures/staffing/benchmark-v6-sidecar.fixture",
+      "tests/fixtures/staffing/benchmark-v6-runs.csv",
+      "docs/staffing/phase1-contracts.md \u00a7Attempt record v2 placement, \u00a7Usage evidence taxonomy"
+    ],
+    "notes": [
+      "Scratch example of the raw benchmarkV6Run payload written by the current evidence import; every payload fact is copied from the verified v6 sidecar/source-CSV join.",
+      "No crew_name and no crews_file_sha256 exist anywhere in the record: the v6 sidecar provides neither a crew name nor a crews-file identity, and the sidecar digest is carried as sidecar_sha256 only.",
+      "The payload worker carries the four join-verified fields; the sidecar's provider/vendor worker labels are not carried because they would imply route semantics the source does not assert.",
+      "usage.basis is 'provider_reported' from the exact 'benchmark v6 CSV usage_*_tokens' evidence string; the raw payload preserves the source column names, including the null reasoning component (never zero).",
+      "No route, provider, supervisor_route, stage, role composition, or canonical cost is asserted because the source records none; cost.basis is ['unavailable'] and no figure is estimated.",
+      "verdict 'pass' is the canonical v2 verdict mapped from acceptance 'accepted'; the acceptance vocabulary remains in the embedded payload.",
+      "verified_success is false because the run lacks complete route, supervisor-route, class-record provenance gate, oracle, and cost evidence; nothing is invented."
+    ]
+  }
+}
