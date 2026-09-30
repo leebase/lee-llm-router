@@ -87,9 +87,6 @@ STAFF_MODES: tuple[str, ...] = (MODE_AUTO, MODE_CREW, MODE_BIND)
 NEVER_AUTOMATIC_REASON = "never_automatic"
 """The exact eligibility reason marking the never-automatic boundary."""
 
-_RESERVE_REASON_PREFIX = "reserve:"
-"""The exact prefix for the subscription-channel reserve exclusion reason (D216)."""
-
 BIND_AUTHORIZED_BY = "lee"
 """The only ``--authorized-by`` value that binds a never-automatic or reserved route."""
 
@@ -778,7 +775,7 @@ def _staff_bind(
             f"--authorized-by {BIND_AUTHORIZED_BY!r}, got {authorized_by!r}",
             kind="never_automatic",
         )
-    reserved = any(r.startswith(_RESERVE_REASON_PREFIX) for r in row.reasons)
+    reserved = row.reserved
     if reserved and authorized_by != BIND_AUTHORIZED_BY:
         raise StaffServiceError(
             f"route {bind_route!r} is on a reserved channel; it binds only with "

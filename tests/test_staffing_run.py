@@ -16,6 +16,7 @@ paths and the ledger/events env overrides only.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shlex
@@ -2141,6 +2142,74 @@ def test_build_dispatch_command_claude_governed_permission_flags() -> None:
     assert argv[-1] == "{prompt}"
 
 
+def test_build_dispatch_command_claude_normalizes_and_deduplicates_grants(
+    tmp_path: Path,
+) -> None:
+    route = StaffingRoute(
+        route_id="claude-grant-fixture",
+        model="claude-sonnet-5",
+        effort="high",
+        harness="claude",
+        channel="anthropic-sub",
+        dispatch_template="claude {prompt}",
+        usage_capture="claude_stream_json",
+        status="active",
+    )
+    shared = tmp_path / "shared"
+    assignment = tmp_path / "assignment"
+    shared.mkdir()
+    assignment.mkdir()
+
+    argv = build_dispatch_command(
+        route,
+        additional_dirs=(shared, shared / ".", assignment),
+        control_plane="lee-llm-router",
+    )
+
+    add_dir_values = [
+        argv[index + 1] for index, item in enumerate(argv) if item == "--add-dir"
+    ]
+    assert add_dir_values == [str(shared.resolve()), str(assignment.resolve())]
+    assert argv[argv.index("--allowedTools") + 1] == "Bash(lee-llm-router:*)"
+    assert argv[-1] == "{prompt}"
+    assert "--dangerously-skip-permissions" not in argv
+
+
+@pytest.mark.parametrize(
+    ("harness", "additional_dirs", "control_plane", "message"),
+    [
+        ("claude", ("missing",), None, "additional directory is not a directory"),
+        ("claude", (), "unknown-router", "unknown control plane"),
+        ("codex", (), "lee-llm-router", "does not support"),
+    ],
+)
+def test_build_dispatch_command_grants_fail_closed(
+    tmp_path: Path,
+    harness: str,
+    additional_dirs: tuple[str, ...],
+    control_plane: str | None,
+    message: str,
+) -> None:
+    route = StaffingRoute(
+        route_id=f"{harness}-grant-fixture",
+        model="fixture-model",
+        effort=None,
+        harness=harness,
+        channel="anthropic-sub" if harness == "claude" else "openai-sub",
+        dispatch_template="unused {prompt}",
+        usage_capture="fixture",
+        status="active",
+    )
+    dirs = tuple(tmp_path / directory for directory in additional_dirs)
+
+    with pytest.raises(run_module.RunDispatchError, match=message):
+        build_dispatch_command(
+            route,
+            additional_dirs=dirs,
+            control_plane=control_plane,
+        )
+
+
 def test_build_dispatch_command_agy_governed_json_flag() -> None:
     """Astra blocker 3: agy dispatch carries the accepted governed JSON flags.
 
@@ -2731,6 +2800,223 @@ def test_run_workdir_validation(
     # The refused first attempt launched nothing; only the valid run did.
     assert len(launcher.processes) == 1
     assert launcher.processes[0].popen_kwargs.get("cwd") == str(workdir)
+
+
+def test_run_claude_employee_home_assignment_and_router_grants(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, tmp_path, scratch_state
+):
+    employee_home = tmp_path / "employee-home"
+    shared_employee_base = tmp_path / "employees"
+    assignment_repo = tmp_path / "assignment"
+    shared_identity = tmp_path / "shared-AGENTS.md"
+    role_identity = tmp_path / "role-AGENTS.md"
+    employee_home.mkdir()
+    shared_employee_base.mkdir()
+    assignment_repo.mkdir()
+    shared_bytes = b"shared foundation\nexact bytes"
+    role_bytes = b"role identity without trailing newline"
+    shared_identity.write_bytes(shared_bytes)
+    role_identity.write_bytes(role_bytes)
+    launcher = LaunchRecorder(chunks=[(CLAUDE_RESULT_STDOUT + "\n").encode("utf-8")])
+
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CLAUDE_ROUTE,
+        workdir=employee_home,
+        extra=(
+            "--add-dir",
+            str(shared_employee_base),
+            "--add-dir",
+            str(assignment_repo),
+            "--add-dir",
+            str(shared_employee_base / "."),
+            "--control-plane",
+            "lee-llm-router",
+            "--identity-file",
+            str(shared_identity),
+            "--identity-file",
+            str(role_identity),
+            "--identity-file",
+            str(shared_identity / ".." / shared_identity.name),
+        ),
+        launcher=launcher,
+    )
+
+    assert code == 3
+    process = launcher.processes[0]
+    assert process.popen_kwargs["cwd"] == str(employee_home)
+    argv = process.argv
+    add_dir_values = [
+        argv[index + 1] for index, item in enumerate(argv) if item == "--add-dir"
+    ]
+    assert add_dir_values == [
+        str(shared_employee_base.resolve()),
+        str(assignment_repo.resolve()),
+    ]
+    assert argv[argv.index("--allowedTools") + 1] == "Bash(lee-llm-router:*)"
+    denied = [
+        argv[index + 1]
+        for index, item in enumerate(argv)
+        if item == "--disallowedTools"
+    ]
+    assert denied == [
+        "Bash(claude:*)",
+        "Bash(codex:*)",
+        "Bash(agy:*)",
+        "Bash(opencode:*)",
+        "Bash(omp:*)",
+        "Bash(pi:*)",
+    ]
+    identity_prompt = argv[argv.index("--append-system-prompt") + 1]
+    assert identity_prompt.count("BEGIN IDENTITY FILE") == 2
+    assert identity_prompt.count("END IDENTITY FILE") == 2
+    assert str(shared_identity.resolve()) in identity_prompt
+    assert str(role_identity.resolve()) in identity_prompt
+    assert shared_bytes.decode() in identity_prompt
+    assert role_bytes.decode() in identity_prompt
+    assert argv[argv.index("--permission-prompts") + 1] == "none"
+    assert "Bash" not in argv
+    assert argv[-1] == PACKET_TEXT
+    assert "--dangerously-skip-permissions" not in argv
+    payload = json.loads(captured.out)
+    grant_notes = [
+        note
+        for note in payload["provenance"]["notes"]
+        if note.startswith("launch inputs and requested capabilities:")
+    ]
+    assert len(grant_notes) == 1
+    assert str(shared_employee_base.resolve()) in grant_notes[0]
+    assert str(assignment_repo.resolve()) in grant_notes[0]
+    assert "lee-llm-router" in grant_notes[0]
+    assert hashlib.sha256(shared_bytes).hexdigest() in grant_notes[0]
+    assert hashlib.sha256(role_bytes).hexdigest() in grant_notes[0]
+    assert "effective grants" not in grant_notes[0]
+
+
+def test_run_grants_reject_unsupported_harness_before_launch(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, tmp_path, scratch_state
+):
+    assignment = tmp_path / "assignment"
+    assignment.mkdir()
+    launcher = LaunchRecorder()
+
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        extra=("--add-dir", str(assignment)),
+        launcher=launcher,
+    )
+
+    assert code == 3
+    assert launcher.processes == []
+    assert "does not support" in captured.err
+
+
+def test_run_identity_rejects_unsupported_harness_before_launch(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, tmp_path, scratch_state
+):
+    identity = tmp_path / "identity.md"
+    identity.write_text("identity", encoding="utf-8")
+    launcher = LaunchRecorder()
+
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CODEX_ROUTE,
+        extra=("--identity-file", str(identity)),
+        launcher=launcher,
+    )
+
+    assert code == 3
+    assert launcher.processes == []
+    assert "does not support" in captured.err
+
+
+def test_run_missing_identity_file_refuses_before_launch(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, tmp_path, scratch_state
+):
+    launcher = LaunchRecorder()
+
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CLAUDE_ROUTE,
+        extra=("--identity-file", str(tmp_path / "missing.md")),
+        launcher=launcher,
+    )
+
+    assert code == 3
+    assert launcher.processes == []
+    assert "identity file is not a regular file" in captured.err
+
+
+def test_run_non_utf8_identity_file_refuses_before_launch(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, tmp_path, scratch_state
+):
+    identity = tmp_path / "identity.bin"
+    identity.write_bytes(b"\xff\xfe")
+    launcher = LaunchRecorder()
+
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=CLAUDE_ROUTE,
+        extra=("--identity-file", str(identity)),
+        launcher=launcher,
+    )
+
+    assert code == 3
+    assert launcher.processes == []
+    assert "cannot be read as UTF-8" in captured.err
+
+
+def test_run_unknown_control_plane_is_argparse_refusal_before_launch(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state
+):
+    launcher = LaunchRecorder()
+    monkeypatch.setattr("lee_llm_router.staffing.run._DEFAULT_POPEN", launcher)
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli_main(
+            [
+                "run",
+                "--role",
+                IMPL_ROLE,
+                "--class",
+                IMPL_CLASS,
+                "--packet",
+                str(packet),
+                "--owned-paths",
+                str(packet),
+                "--catalog-dir",
+                str(catalog_dir),
+                "--availability-file",
+                str(snapshot),
+                "--control-plane",
+                "unknown-router",
+            ]
+        )
+
+    assert exc_info.value.code == 2
+    assert launcher.processes == []
+    assert "invalid choice" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------

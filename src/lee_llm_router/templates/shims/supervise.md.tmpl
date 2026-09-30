@@ -50,7 +50,12 @@ schema-v2 attempt record to the per-host ledger.
 
 1. **Read the plan.** Read the plan at the bound plan path in full before any
    other action. Use only facts the plan establishes; never fabricate task
-   facts. If the plan is missing or unreadable, stop and ask the user.
+   facts. If the path is missing, inspect recoverable path/setup defects within
+   scope; proceed only with a uniquely verifiable intended source. Ambiguous
+   consequential intent requires a concrete clarification; never invent a plan.
+   Reconcile current conversation authority, waivers, exact pins, review gates
+   and inherited parent limits before staffing. Missing numeric caps alone
+   do not require an ask or authorize an invented budget.
 
 2. **Packetize under Rule B.** Split the plan into small bounded work
    packets. Every packet states: objective; exact files or resources owned;
@@ -108,12 +113,23 @@ schema-v2 attempt record to the per-host ledger.
    Either way, also read the block's selection basis, reason, exclusions,
    and reviewer disclosures before dispatching.
 
+   A user-named worker route that is not the selected route in a saved crew
+   does not erase the fallback ladder. First obtain the auto block for the
+   derived role/class and retain its same-role `escalation` list. Record the
+   user's exact primary-route override and authority separately; check the
+   primary against the same eligibility path at dispatch. Remove that primary
+   from the fallback list if present. If no eligible fallback remains, stop
+   before dispatch and report the staffing gap. A manual primary is one
+   authorized start plus at most one narrowed same-route repair, not a
+   permanent same-route pin.
+
 6. **Dispatch the packet with the block's chosen route.** Run exactly:
 
        lee-llm-router run --role <role> --class <class> --packet <packet-path> --route <chosen-route-id> --supervisor-route <supervisor-route-id> --owned-paths <owned-path> [--owned-paths <owned-path> ...] --class-derivation <derivation-json-path> --oracle <oracle-cmd> --timeout <bound×60> --stall-minutes 10 --progress-minutes 20 --json
 
-   `--route` is exactly step 5's chosen route — never omitted, and never a
-   different route than the block chose. `run` never re-selects inside a
+   `--route` is exactly step 5's chosen route, or the separately recorded
+   user-authorized primary override for its first start — never omitted.
+   `run` never re-selects inside a
    supervised loop: an omitted `--route` lets `run` auto-select its own
    cheapest-eligible route, silently discarding the crew or auto-mode
    choice the block just made. `--supervisor-route` attests your own route
@@ -151,7 +167,14 @@ schema-v2 attempt record to the per-host ledger.
 
    then exactly:
 
-       lee-llm-router next-action --input <classify-json-path>
+       lee-llm-router next-action --input <classify-json-path> --repair-count <completed-same-route-repairs>
+
+   Pass the actual completed same-route repair count from the parent record:
+   0 on first rejection; 1 after the failed repair. `supervisor_judgment`
+   and `return_to_planner` belong to the supervising AI: inspect the evidence
+   and perform bounded diagnosis/planning inside existing authority. They
+   are not automatic requests to Lee. Mapping advice never overrides the
+   parent method prohibition, accounting or remaining limits.
 
    `spec_rejected` and `capability_rejected` enter only through an explicit
    `--judgment` after your review; never infer them from prose. A
@@ -162,12 +185,32 @@ schema-v2 attempt record to the per-host ledger.
    or pass a smaller `--timeout`; then dispatch once; if it times out
    again for any kind, escalate up the ladder immediately.
 
+   Count every started worker that fails to return a verified candidate,
+   including claim collisions, stalls, ceiling timeouts, and attempts whose
+   ledger append fails. A missing record is an accounting/control failure:
+   preserve its command, timestamps, log and exit evidence, stop that packet's
+   retry loop, and repair the ledger path before another dispatch. Do not
+   relabel operational noncompletion as cognitive inability; it still counts
+   against route reliability.
+
 9. **Repair once, then escalate.** Remediation follows `next-action`: one
    same-route capability repair precedes escalation. If that repair fails,
    escalate using the staffing block's ladder, reviewer, and authority
    disclosures: stop the worker, audit the actual repository state,
    preserve useful work, write a handoff of verified facts only, and move
    up a tier. A replacement inherits facts, not the failed worker's story.
+   Across parallel packets in the same transaction, two terminal
+   noncompletions (as counted in step 8) on one route require re-staffing:
+   exclude that route from the saved same-role fallback ladder for the rest
+   of this transaction, even if a fresh auto block selects it again. A new
+   user authorization is required to restore it. Step 6's no-re-staff rule
+   applies only to a single exit-3 eligibility-refusal loop, not to this
+   post-failure decision. After one narrowed same-route repair fails within a stable
+   packet, dispatch the next eligible same-role route with `--parent` and
+   `--escalation-reason`. The supervisor may make an emergency bounded edit
+   only if no eligible worker can be dispatched; record why, then obtain the
+   required independent review. Reviewer-directed repair is still author
+   work and does not exempt the worker escalation decision.
 
 10. **Ledger every attempt.** Every dispatch — work, repair, escalation,
     review — is an attempt record in the per-host ledger. Never edit or
@@ -214,11 +257,17 @@ schema-v2 attempt record to the per-host ledger.
     including untracked files. A worker that leaves any file outside its
     owned paths has violated scope, however harmless.
 
-13. **Continue to convergence.** Ordinary review findings are work, not
-    permission to stop: keep fixing and independently re-reviewing until
-    0 High / 0 Medium. After each review round, loop back to step 6 with
-    the remediation packet. Never end while a worker is running or at a
-    packet boundary.
+13. **Complete one bounded review transaction.** Author, independent review,
+    up to two reviewer-directed remediation rounds, then final independent
+    review of the final material candidate. All packets, children, alternate
+    methods, reviewers, probes and resumed sessions consume the same parent
+    allowance and supplied envelope. Stop sooner at acceptance or economic
+    nonconvergence; two rounds are a ceiling, not a quota or acceptance.
+    Required correctness/security gates and 0 High / 0 Medium still apply
+    after supervisor triage against the frozen DoD. No third author repair
+    round or successor transaction silently renews authority. If final review
+    still blocks, preserve the best candidate and report truthful incomplete
+    state. Never end while anything you started remains running.
 
 14. **Report.** Finish with the staffing block for every packet plus exact
     ledger evidence: attempt ids, routes, selection basis and reason, usage
@@ -230,7 +279,121 @@ schema-v2 attempt record to the per-host ledger.
 Do not stop at packet boundaries or while a worker is running. A genuine
 stop requires an authority boundary, unresolved contradiction, missing
 credential, material irreversible risk, or an external dependency that
-makes useful progress impossible, after reconciling D204–D213.
+makes useful progress impossible, after reconciling D204–D213. Also stop
+truthfully incomplete at a supplied execution limit or economic nonconvergence.
+Before a task stop, reassess permitted alternatives and preserve useful state;
+stop the failed method promptly, continue useful authorized recovery or disjoint
+work, and stop the task only when no useful permitted path remains. A definitive
+capability/permission denial permits zero equivalent-syntax retries. An already
+authorized alternative interactive capability may satisfy the unchanged DoD;
+verify the grant and use it without ritual continuation approval.
+
+## Parent acceptance and method record — superseding contract 2026-09-29
+
+This dated contract supersedes indefinite convergence and the *exclusive* stop
+condition in the historical Rule J quotation below. Retain that quotation as
+history; apply this bounded contract on the supported consuming path.
+
+Use the existing parent WORK/STATE artifact, one stable identity and one
+supervisor-owned ledger inherited by children and resumed sessions. Before the
+first substantive start freeze the DoD, minimum useful result, early value
+checkpoint, required actual consuming journey, and a required independent-review
+row (kind: independent_review). Freeze the entire gap ID/proposition/source set
+at inception; findings map to those rows, never create fresh method history or
+unrelated scope. Governing scope changes require attributed authority and a
+recorded handoff retaining counters; this transaction cannot silently widen. Run the smallest actual
+journey early and again for final acceptance. Green leaves, proxy tests, logs,
+file edits and review text alone do not prove parent delivery.
+
+Each acceptance row records stable requirement ID, precise proposition and
+frozen source; OPEN, BLOCKED, PROVED, WAIVED or NOT_REQUIRED; inspected evidence,
+observation time and candidate revision/hash; remaining gap and next finite
+falsifier; scoped authority source/conditions; and retained transition history,
+attempts, methods and invalidated proofs. BLOCKED names the real dependency,
+not necessarily a Lee decision. PROVED needs the row's actual oracle, including
+required human/consuming evidence. WAIVED and NOT_REQUIRED are never PROVED.
+Respect a task waiver's scope; preserve final-release gates. Resume reconciles
+current authority. A stale reviewer cannot resurrect a waiver; governing
+changes require attributed authority and a history transition. Material changes
+reopen affected proofs only, retaining old evidence.
+
+Before every substantive author/reviewer/repair/planner/diagnostic dispatch,
+name OPEN/BLOCKED target rows, the proposition, expected evidence, finite oracle
+and falsifier, bound, causal method (capability path, hypothesis and known
+limitation), and why this action could advance the gap. A review targets the frozen
+independent-review gap and may also target a reopened affected proof. Keep that
+review row OPEN until final material source is reviewed; reopen it with retained
+evidence/history whenever material repairs invalidate its coverage. With no relevant gap, do
+not dispatch engineering/review; closure/accounting/shutdown stay bounded.
+Unknown failure can justify one finite diagnostic question, not generic churn.
+
+At every failure, blocking review, missed value checkpoint, or proposed stop,
+record owed parent outcome and revision/best artifact; evidence of movement;
+failure hypothesis, alternatives considered, next action and falsifier/bound;
+cumulative starts (including failures, reviews, children and probes), directed
+repair rounds and resources/remaining authority; and disposition. Keep usage
+reported/calculated/unavailable distinct; log pre-provider refusals separately.
+Unavailable start/time accounting blocks a new start until reconciled; unavailable token
+usage stays unavailable. This is supervisor work, not a Lee paperwork gate.
+
+Method history follows the gap and causal capability/hypothesis, never worker,
+packet/hash, route or finding ID. Two consecutive evidence-bearing attempts or
+checkpoints without meaningful proposition movement prohibit that method
+unchanged. Definitive denial prohibits it immediately. Renaming is no change;
+require a concrete authorized causal alternative, expected result and finite
+bound. Discovery eliminating an unworkable path counts once. Repeated edits,
+tests or alternating blockers with no net advance do not reset value time.
+Interactive approval/recall setup can be intermediate movement while full recall
+remains OPEN. Retain first useful result time, last meaningful movement across
+resume, earned criteria, offsetting regressions and next checkpoint. Remaining
+quota never justifies useless execution; progress never exceeds a supplied cap.
+
+Version-1 mechanical admission on new supervised starts uses existing `run`:
+append `--unit-id <stable-parent> --unit-state <absolute-parent-STATE.jsonl>
+--unit-decision <decision.json>` to **every** worker/reviewer/child start. Read
+the pinned router source's `docs/staffing/supervise-parent-admission.md` for
+schema/examples; locate that source if the consuming workspace lacks the doc.
+The decision JSON carries `version: 1`, `unit_id`, actual `completed_starts`,
+`previous` (null initially, then SHA256 of the last journal decision encoded by
+`json.dumps(decision, sort_keys=True).encode()`), unchanged `limits` (empty when
+none supplied), the authoritative `gaps`, and one retained `assessments` entry
+per start (`start`, boolean `advanced`, boolean `denied`, inspected `evidence`).
+`dispatch` names `targets`, stable causal `method`, `capability`, `hypothesis`,
+`proposition`, `oracle`, `falsifier`, `alternatives`, `why`, `revision`, `phase`
+(author/diagnose/repair/review/final_review), and cumulative `repair_round` 0–2.
+The existing finite `--timeout` is its bound. Keep the
+journal path constant through resume; do not truncate, copy a fresh journal or
+reset counts. Legacy runs remain compatible, but are not this opted-in contract.
+Version 1 serializes opted-in starts within one parent, including disjoint
+packets: finish/reconcile and assess each before the next start. Earlier parallel
+instructions and Rules H/I describe legacy or genuinely independent authorized
+work. Do not split this parent into new units or omit flags to bypass inherited
+accounting. Schedule its disjoint useful work serially within the same grant.
+This seam enforces continuity, accounting, two-round allowance, recorded method
+prohibitions and supplied limits before provider launch; it cannot verify the
+truth of progress narratives. Review after repair closes that directed round;
+a further blocking review requires the next round, not reuse of round 1. Multiple
+repair packets before that review share the active round. After round 2 only
+final review remains; no review/diagnosis cycling or author restart. A failed
+review execution permits one finite recovery, retaining consumed starts and
+unknown outcome. If initial review covers unchanged final source, close without
+a duplicate review. Required final acceptance evidence is never inferred from
+phase labels or attempt records. Reserve final verification/shutdown capacity when
+an outer cap is supplied. No supplied numeric cap means economical checkpoints,
+not a fabricated Lee budget. Record actual admission refusals in WORK.
+
+For a genuine human escalation, name: exact decision/action only Lee can take;
+why this gap requires it now; permitted alternatives considered/tried and why
+insufficient; recommendation with evidence; consequences for outcome, scope,
+risk and resources. No "May I continue?" inside an existing grant. Credentials,
+consent and real human acceptance remain human actions. Do not widen a product
+promise or irreversible risk. Continue independent useful authorized work while
+that action is pending. Economic stops report incomplete state and business
+choices without requesting an operational rubber stamp.
+
+At closure required applicable rows must be PROVED, with authorized WAIVED or
+NOT_REQUIRED rows distinguished, required independent review and parent journey
+satisfied. Router success and completed children do not establish acceptance.
 
 ## Operating rules (D209)
 
@@ -274,3 +437,11 @@ quoted exactly, not paraphrased, and labeled with its rule.
 This command supervises through the router only. It never dispatches a
 provider directly, never reports usage the ledger did not record, and ends
 only with the staffing blocks and ledger evidence above.
+
+Review assessments include review_outcome: passed, blocking or incomplete,
+with inspected evidence. A record proves accounting, never review success.
+Incomplete execution permits one bounded recovery within the same round; a
+completed blocking review requires the next directed repair round. Multiple
+targets name advanced_targets explicitly; movement on another row never resets
+the failed target’s method streak. Labels/capability claims remain subject to
+independent evidence inspection.

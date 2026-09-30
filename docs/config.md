@@ -315,3 +315,14 @@ lee-llm-router shims diff [--harness TAG] [--project PATH]
 
 Each generated file has a SHA-256 marker. Apply refuses unmanaged or modified
 files unless `--force` is explicit; `diff` exits 1 for drift or a missing target.
+
+
+## Opt-in supervise parent admission (2026-09-29 candidate)
+
+The additive `run --unit-id --unit-state --unit-decision` flags enable version-1
+parent continuity without changing YAML configuration or legacy v2 attempts. See
+[the admission contract](staffing/supervise-parent-admission.md). Adoption is
+separate from rendering/testing; existing active runs are unaffected.
+
+For accepted rollout usage, exact-route authority and SSH binding, see
+[supervise rollout and CLI use](supervise-rollout.md).

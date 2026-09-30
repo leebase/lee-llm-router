@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "unit_id": "parent",
+  "previous": null,
+  "completed_starts": 0,
+  "limits": {},
+  "gaps": [
+    {
+      "id": "recall",
+      "proposition": "actual owner approves and recalls saved item",
+      "source": "frozen DoD R1",
+      "state": "OPEN",
+      "next_falsifier": "recall fails in consuming journey",
+      "history": [
+        {
+          "state": "OPEN",
+          "reason": "frozen DoD"
+        }
+      ]
+    },
+    {
+      "id": "review-gate",
+      "kind": "independent_review",
+      "proposition": "independent review covers final material candidate",
+      "source": "frozen DoD review",
+      "state": "OPEN",
+      "next_falsifier": "blocking findings on final source",
+      "history": [
+        {
+          "state": "OPEN",
+          "reason": "required at inception"
+        }
+      ]
+    }
+  ],
+  "assessments": [],
+  "dispatch": {
+    "targets": [
+      "recall"
+    ],
+    "method": "routed-no-approval",
+    "capability": "noninteractive routed harness",
+    "hypothesis": "can expose owner approval",
+    "proposition": "approval and recall are observable",
+    "oracle": "finite approval/recall journey",
+    "falsifier": "approval cannot be exposed",
+    "alternatives": "authorized interactive harness if routed lacks approval",
+    "why": "establish actual consuming requirement",
+    "revision": "candidate-1",
+    "phase": "author",
+    "repair_round": 0
+  }
+}

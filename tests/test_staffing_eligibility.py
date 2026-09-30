@@ -31,6 +31,9 @@ from lee_llm_router.staffing.catalog import (
 )
 from lee_llm_router.staffing.eligibility import (
     EligibilityInstance,
+    _reserve_coverage,
+    _reserve_finding,
+    _reserve_reason,
     resolve_route_family,
 )
 
@@ -61,7 +64,20 @@ def _snapshot(*subscriptions: dict):
 
 @pytest.fixture(scope="module")
 def catalog():
-    return load_staffing_catalog(REPO_CONFIG_DIR)
+    # D333 test policy is explicit; publication does not change live catalog data.
+    from lee_llm_router.staffing.catalog import ReserveFractionOverride
+
+    loaded = load_staffing_catalog(REPO_CONFIG_DIR)
+    reserve = replace(
+        loaded.policy.reserve_fraction,
+        overrides=tuple(
+            override
+            for override in loaded.policy.reserve_fraction.overrides
+            if override.channel_id != "opencode-go"
+        )
+        + (ReserveFractionOverride(channel_id="opencode-go", reserve_fraction=0.0),),
+    )
+    return replace(loaded, policy=replace(loaded.policy, reserve_fraction=reserve))
 
 
 @pytest.fixture
@@ -140,8 +156,8 @@ def test_fable_reason_is_never_automatic_then_channel_exhausted(catalog) -> None
     row = _by_route(_evaluate(catalog, snapshot), FABLE_ROUTE)
     assert row.eligible is False
     assert (
-        "; ".join(row.reasons)
-        == "never_automatic; channel exhausted; reserve: 10% kept in the tank (D216)"
+        "; ".join(row.reasons) == "never_automatic; channel exhausted; "
+        "bucket 'Current session' reserve: 10% kept in the tank (D216)"
     )
     assert row.availability_health == "exhausted"
 
@@ -383,7 +399,9 @@ def test_reserve_at_or_below_excludes_with_reserve_reason(catalog) -> None:
     )
     row = _by_route(_evaluate(catalog, snapshot), _SONNET_HIGH_ROUTE)
     assert row.eligible is False
-    assert "reserve: 10% kept in the tank (D216)" in row.reasons
+    assert (
+        "bucket 'Current session' reserve: 10% kept in the tank (D216)" in row.reasons
+    )
 
 
 def test_reserve_above_remains_eligible(catalog) -> None:
@@ -416,7 +434,9 @@ def test_reserve_and_health_both_exclude_independently(catalog) -> None:
         },
     )
     row = _by_route(_evaluate(catalog, snapshot), _SONNET_HIGH_ROUTE)
-    assert "reserve: 10% kept in the tank (D216)" in row.reasons
+    assert (
+        "bucket 'Current session' reserve: 10% kept in the tank (D216)" in row.reasons
+    )
     assert "channel exhausted" in row.reasons
 
 
@@ -804,14 +824,34 @@ def test_prose_role_author_route_is_not_applicable(catalog, healthy_snapshot) ->
 
 # ---------------------------------------------------------------------------
 # Packet M3-1: per-instance D216 reserve and health check
+#
+# D250 (2026-09-15) / D333 rule 1 (2026-09-17): opencode-go carries
+# reserve_fraction 0.0 — Go is drained, not reserved — so it can no longer be
+# the worked example of a *reserve* veto (it is still the only channel in
+# channels.yaml declaring instances, which is why the instance fixtures live
+# here). The D216 floor's test is ``remaining_fraction <= reserve``, so at 0.0
+# it reads ``0.0 <= 0.0``: the floor can only trip on a fully drained
+# instance, and its degenerate ``reserve: 0% kept in the tank (D216)`` reason
+# rides *alongside* — never instead of — the exhaustion veto. That is the
+# intended reading of the override (packet A: "At 0.0 it therefore fires only
+# on a genuinely exhausted bucket, which is the intent: drain it, then stop").
+# No 10% hold-back reason can be emitted for opencode-go; the reserve-veto
+# example moved to anthropic-sub (reserve 0.10).
 # ---------------------------------------------------------------------------
+
+_GO_ZERO_FLOOR_REASON = "bucket 'Weekly' reserve: 0% kept in the tank (D216)"
+"""The only reserve reason a 0.0-reserve channel can ever emit (D250/D333).
+
+Named for the bucket that produced it, exactly as every other reserve reason is.
+"""
 
 
 def test_channel_with_no_declared_instances_behaves_byte_identically(
     catalog,
 ) -> None:
     """(a) Anthropic has no declared instances: reduces to one implicit instance
-    and behaves byte-identically to before for eligible, at-reserve, and exhausted."""
+    and yields the same eligible/at-reserve/exhausted outcomes as before (the
+    reserve reason now names the bucket it came from)."""
     # 1. Healthy / above reserve
     healthy = _snapshot(
         {
@@ -845,12 +885,13 @@ def test_channel_with_no_declared_instances_behaves_byte_identically(
     )
     row_reserve = _by_route(_evaluate(catalog, at_reserve), _SONNET_HIGH_ROUTE)
     assert row_reserve.eligible is False
-    assert row_reserve.reasons == ("reserve: 10% kept in the tank (D216)",)
+    named_d216 = "bucket 'Current session' reserve: 10% kept in the tank (D216)"
+    assert row_reserve.reasons == (named_d216,)
     assert len(row_reserve.instance_headrooms) == 1
     inst_res = row_reserve.instance_headrooms[0]
     assert inst_res.instance_id == "anthropic-sub"
     assert inst_res.eligible is False
-    assert inst_res.reasons == ("reserve: 10% kept in the tank (D216)",)
+    assert inst_res.reasons == (named_d216,)
     assert inst_res.remaining_fraction == pytest.approx(0.10)
 
     # 3. Exhausted (0%)
@@ -864,28 +905,28 @@ def test_channel_with_no_declared_instances_behaves_byte_identically(
     )
     row_ex = _by_route(_evaluate(catalog, exhausted), _SONNET_HIGH_ROUTE)
     assert row_ex.eligible is False
-    assert row_ex.reasons == (
-        "channel exhausted",
-        "reserve: 10% kept in the tank (D216)",
-    )
+    named_d216 = "bucket 'Current session' reserve: 10% kept in the tank (D216)"
+    assert row_ex.reasons == ("channel exhausted", named_d216)
     assert len(row_ex.instance_headrooms) == 1
     inst_ex = row_ex.instance_headrooms[0]
     assert inst_ex.instance_id == "anthropic-sub"
     assert inst_ex.eligible is False
-    assert inst_ex.reasons == (
-        "channel exhausted",
-        "reserve: 10% kept in the tank (D216)",
-    )
+    assert inst_ex.reasons == ("channel exhausted", named_d216)
     assert inst_ex.remaining_fraction == pytest.approx(0.0)
     assert inst_ex.health == "exhausted"
     assert inst_ex.badge == "HOT"
 
 
-def test_opencode_go_one_instance_at_reserve_one_above_route_eligible(
+def test_opencode_go_one_instance_low_but_nonzero_one_above_route_eligible(
     catalog,
 ) -> None:
-    """(b) opencode-go has instances a/b: instance a at reserve, instance b above.
-    Route remains eligible with instance b ordered first in instance_headrooms."""
+    """(b) opencode-go has instances a/b: instance a at 10%, instance b above.
+
+    Restated for D250/D333: "at reserve" no longer exists on Go (its reserve
+    is 0.0), so what this proves is that low-but-nonzero headroom is not
+    vetoed there — the route stays eligible and both instances appear, with
+    the ordering assertion below unchanged.
+    """
     snapshot = _snapshot(
         {
             "provider": "OpenCode/Go",
@@ -916,21 +957,27 @@ def test_opencode_go_one_instance_at_reserve_one_above_route_eligible(
     assert first.health == "healthy"
     assert first.badge == "ON TRACK"
 
-    # a is at reserve (10%) and sorts second, marked ineligible
+    # a is at 10% — low, but nonzero, and Go holds nothing back (D250/D333):
+    # it is *not* vetoed and sorts second. Its health is still degraded, which
+    # changes nothing here: only exhausted/likely_exhausted/unknown veto.
     second = row.instance_headrooms[1]
     assert second.instance_id == "a"
-    assert second.eligible is False
-    assert second.reasons == ("reserve: 10% kept in the tank (D216)",)
+    assert second.eligible is True
+    assert second.reasons == ()
     assert second.remaining_fraction == pytest.approx(0.10)
     assert second.health == "degraded"
     assert second.badge == "ON TRACK"
+    assert {inst.instance_id for inst in row.instance_headrooms} == {"a", "b"}
 
 
 def test_opencode_go_one_instance_exhausted_one_clear_route_eligible(
     catalog,
 ) -> None:
     """(b symmetric) instance a is clear (75%), instance b is exhausted (0%).
-    Route remains eligible with instance a ordered first in instance_headrooms."""
+
+    Route remains eligible with instance a ordered first in instance_headrooms;
+    b is vetoed by its health, exactly as it was under Go's old 10% reserve.
+    """
     snapshot = _snapshot(
         {
             "provider": "OpenCode/Go",
@@ -962,18 +1009,28 @@ def test_opencode_go_one_instance_exhausted_one_clear_route_eligible(
     second = row.instance_headrooms[1]
     assert second.instance_id == "b"
     assert second.eligible is False
-    assert second.reasons == (
-        "channel exhausted",
-        "reserve: 10% kept in the tank (D216)",
-    )
+    # The veto is the health/exhaustion veto. The reserve reason beside it is
+    # the degenerate 0% floor of Go's 0.0 reserve (0.0 <= 0.0): it names a
+    # hold-back of nothing and is reachable only on a drained instance, which
+    # is precisely "drained, not reserved" (D250/D333). Go can never carry a
+    # 10% hold-back reason.
+    assert second.reasons == ("channel exhausted", _GO_ZERO_FLOOR_REASON)
+    assert "reserve: 10% kept in the tank (D216)" not in second.reasons
     assert second.remaining_fraction == pytest.approx(0.0)
     assert second.health == "exhausted"
 
 
-def test_opencode_go_both_instances_at_or_under_reserve_vetoes_route(
+def test_opencode_go_both_instances_low_but_nonzero_route_still_eligible(
     catalog,
 ) -> None:
-    """(c) Both opencode-go instances at/under reserve makes the route ineligible."""
+    """(c) Inverted by D250/D333: opencode-go has ``reserve_fraction: 0.0``, so
+    two instances at 10% hold nothing worth reserving and the route is
+    eligible.
+
+    10% is low but nonzero and sits above the reader's own 10%
+    ``likely_exhausted`` fail-safe, so neither the reserve (0.0) nor the health
+    veto applies to either instance.
+    """
     snapshot = _snapshot(
         {
             "provider": "OpenCode/Go",
@@ -991,20 +1048,31 @@ def test_opencode_go_both_instances_at_or_under_reserve_vetoes_route(
         },
     )
     row = _by_route(_evaluate(catalog, snapshot), GLM_OPENCODE_ROUTE)
-    assert row.eligible is False
-    assert row.reasons == ("reserve: 10% kept in the tank (D216)",)
+    assert row.eligible is True
+    assert row.reasons == ()
+    assert not any(reason.startswith("reserve:") for reason in row.reasons)
     assert len(row.instance_headrooms) == 2
     for inst in row.instance_headrooms:
-        assert inst.eligible is False
-        assert inst.reasons == ("reserve: 10% kept in the tank (D216)",)
+        assert inst.eligible is True
+        assert inst.reasons == ()
         assert inst.remaining_fraction == pytest.approx(0.10)
+        assert inst.health == "degraded"
 
 
 def test_opencode_go_both_instances_exhausted_vetoes_route_with_reasons(
     catalog,
 ) -> None:
-    """(c) Both opencode-go instances exhausted vetoes route with health
-    and reserve reasons."""
+    """(c) Both opencode-go instances exhausted vetoes the route on health.
+
+    The exhaustion veto — not a reserve — is what excludes the route. The one
+    reserve reason Go can carry is the degenerate 0% floor of its 0.0 reserve
+    (``0.0 <= 0.0``): it names a hold-back of nothing and fires only on a
+    drained instance, so it rides beside the health veto rather than replacing
+    it. The assertion that "no reserve reason is present" therefore cannot be
+    made truly at 0%; the exact tuple is pinned instead, together with an
+    explicit assertion that the 10% hold-back reason — the one D250/D333
+    removed — never appears for Go.
+    """
     snapshot = _snapshot(
         {
             "provider": "OpenCode/Go",
@@ -1023,8 +1091,71 @@ def test_opencode_go_both_instances_exhausted_vetoes_route_with_reasons(
     )
     row = _by_route(_evaluate(catalog, snapshot), GLM_OPENCODE_ROUTE)
     assert row.eligible is False
-    assert "channel exhausted" in row.reasons
-    assert "reserve: 10% kept in the tank (D216)" in row.reasons
+    assert row.reasons == ("channel exhausted", _GO_ZERO_FLOOR_REASON)
+    assert "reserve: 10% kept in the tank (D216)" not in row.reasons
+    assert len(row.instance_headrooms) == 2
+    for inst in row.instance_headrooms:
+        assert inst.eligible is False
+        assert "channel exhausted" in inst.reasons
+        assert inst.remaining_fraction == pytest.approx(0.0)
+        assert inst.health == "exhausted"
+
+
+def test_zero_reserve_channel_low_headroom_survives_where_anthropic_floor_bites(
+    catalog,
+) -> None:
+    """D250/D333 at the eligibility layer: same headroom, two channels.
+
+    10% is low-but-nonzero *and* not health-vetoed (the reader's own
+    ``likely_exhausted`` fail-safe starts below 10%), so it is the one
+    headroom that both trips a 10% floor and isolates that floor from the
+    health veto. On anthropic-sub (reserve 0.10) the Sonnet route is excluded
+    with the D216 reserve reason; on opencode-go (reserve 0.0) the same
+    headroom vetoes nothing. This is the behavioral half of packet A2: the
+    override is data, and the engine honours it per channel.
+    """
+    snapshot = _snapshot(
+        {
+            "provider": "OpenCode/Go",
+            "bucket": "Weekly",
+            "status": "ON TRACK",
+            "remaining_pct": 10,
+            "instance": "a",
+        },
+        {
+            "provider": "OpenCode/Go",
+            "bucket": "Weekly",
+            "status": "ON TRACK",
+            "remaining_pct": 10,
+            "instance": "b",
+        },
+        {
+            "provider": "Anthropic/Claude",
+            "bucket": "Current session",
+            "status": "ON TRACK",
+            "remaining_pct": 10,
+        },
+    )
+    rows = _evaluate(catalog, snapshot)
+
+    # opencode-go: the same 10% is not a reserve veto, on the route or on
+    # either of its instances.
+    go = _by_route(rows, GLM_OPENCODE_ROUTE)
+    assert go.eligible is True
+    assert go.reasons == ()
+    assert not any(reason.startswith("reserve:") for reason in go.reasons)
+    assert [inst.instance_id for inst in go.instance_headrooms] == ["a", "b"]
+    for instance in go.instance_headrooms:
+        assert instance.remaining_fraction == pytest.approx(0.10)
+        assert instance.eligible is True
+        assert not any(reason.startswith("reserve:") for reason in instance.reasons)
+
+    # anthropic-sub: the identical headroom trips the D216 floor.
+    anthropic = _by_route(rows, _SONNET_HIGH_ROUTE)
+    assert anthropic.eligible is False
+    assert anthropic.reasons == (
+        "bucket 'Current session' reserve: 10% kept in the tank (D216)",
+    )
 
 
 def test_disabled_instance_excluded_from_instance_headrooms(catalog) -> None:
@@ -1078,8 +1209,15 @@ def test_disabled_instance_excluded_from_instance_headrooms(catalog) -> None:
 
 
 def test_disabled_instance_does_not_rescue_route(catalog) -> None:
-    """(d) When the only enabled instance is at reserve, a disabled instance
-    with ample headroom does not rescue the route."""
+    """(d) When the only enabled instance is exhausted, a disabled instance
+    with ample headroom does not rescue the route.
+
+    The trigger moved from the reserve to exhaustion because Go's reserve is
+    now 0.0 (D250/D333) and can no longer exclude anything above total
+    exhaustion. The property under test is unchanged: a disabled instance is
+    not an instance for evaluation purposes, so it can neither veto nor
+    rescue.
+    """
     test_catalog = replace(
         catalog,
         channels=replace(
@@ -1104,8 +1242,8 @@ def test_disabled_instance_does_not_rescue_route(catalog) -> None:
         {
             "provider": "OpenCode/Go",
             "bucket": "Weekly",
-            "status": "ON TRACK",
-            "remaining_pct": 5,
+            "status": "HOT",
+            "remaining_pct": 0,
             "instance": "a",
         },
         {
@@ -1118,8 +1256,12 @@ def test_disabled_instance_does_not_rescue_route(catalog) -> None:
     )
     row = _by_route(_evaluate(test_catalog, snapshot), GLM_OPENCODE_ROUTE)
     assert row.eligible is False
-    assert "reserve: 10% kept in the tank (D216)" in row.reasons
+    assert "channel exhausted" in row.reasons
+    # The disabled instance b (95%) is not part of the evaluation at all, so it
+    # cannot rescue the route: only the enabled, exhausted instance remains,
+    # and it is the one that carries the veto.
     assert len(row.instance_headrooms) == 1
+    assert all(inst.instance_id != "b" for inst in row.instance_headrooms)
     assert row.instance_headrooms[0].instance_id == "a"
     assert row.instance_headrooms[0].eligible is False
 
@@ -1205,6 +1347,12 @@ def test_instance_headrooms_none_remaining_fraction_sorts_last(catalog) -> None:
 def test_declared_instances_inherit_untagged_channel_record(
     catalog, remaining_pct: int, eligible: bool
 ) -> None:
+    """Inheritance is the property; the reserve was incidental to the fixture.
+
+    At 80% both instances inherit an eligible record. At 8% they inherit an
+    ineligible one — vetoed by the reader's ``likely_exhausted`` health veto,
+    which sits below 10%, not by Go's 0.0 reserve (D250/D333).
+    """
     snapshot = _snapshot(
         {
             "provider": "OpenCode/Go",
@@ -1225,9 +1373,14 @@ def test_declared_instances_inherit_untagged_channel_record(
         assert instance.badge == "ON TRACK"
     if eligible:
         assert "inherited channel record" in row.reasons
+        assert not any(reason.startswith("reserve:") for reason in row.reasons)
     else:
         assert all(
-            "reserve: 10% kept in the tank (D216)" in instance.reasons
+            "channel likely_exhausted" in instance.reasons
+            for instance in row.instance_headrooms
+        )
+        assert all(
+            not any(r.startswith("reserve:") for r in instance.reasons)
             for instance in row.instance_headrooms
         )
 
@@ -1261,7 +1414,11 @@ def test_tagged_instance_wins_while_missing_instance_inherits_channel_record(
     assert instances["b"].eligible is False
     assert instances["b"].remaining_fraction == pytest.approx(0.08)
     assert "inherited channel record" in instances["b"].reasons
-    assert "reserve: 10% kept in the tank (D216)" in instances["b"].reasons
+    # The inherited 8% record vetoes on health (below the reader's 10%
+    # ``likely_exhausted`` fail-safe), not on Go's reserve, which is 0.0
+    # (D250/D333) and cannot fire above total exhaustion.
+    assert "channel likely_exhausted" in instances["b"].reasons
+    assert not any(r.startswith("reserve:") for r in instances["b"].reasons)
 
 
 def test_missing_instance_and_channel_record_remains_unknown(catalog) -> None:
@@ -1451,35 +1608,433 @@ def test_second_table_row_needs_no_other_change(catalog, monkeypatch) -> None:
     assert sonnet.availability_health == "healthy"
 
 
-def test_reserve_is_waived_when_the_window_is_about_to_reset():
-    """D216's reserve preserves capacity for later work inside the window.
+# ---------------------------------------------------------------------------
+# Packet D334-C — the time-scaled coverage reserve replaces the fixed waiver
+# ---------------------------------------------------------------------------
 
-    Quota that expires before that work could happen cannot serve it, so
-    holding it back is waste. Lee, 2026-09-17, with 53 minutes left on the
-    weekly window and 10% unspent: "we are close to roll over so it's use it
-    or lose it."
-    """
-    from lee_llm_router.staffing.eligibility import (
-        RESERVE_WAIVER_HORIZON_HOURS,
-        _reserve_waived,
+ANTHROPIC_WEEKLY_HOURS = 168.0
+"""Anthropic's channel-wide weekly window, per the snapshot."""
+
+ANTHROPIC_RESERVE = 0.10
+"""The committed Anthropic ``reserve_fraction`` (D216)."""
+
+TEN_PERCENT_LEFT = 0.10
+"""Lee's D334 figure: 10% of the weekly window still unspent."""
+
+
+@pytest.mark.parametrize(
+    ("hours_to_reset", "coverage", "reserved", "expiring_surplus"),
+    [
+        (108.0, 0.16, True, False),  # Monday, six days before Friday midnight
+        (60.0, 0.28, True, False),  # Wednesday
+        (30.0, 0.56, False, False),  # Thursday
+        (12.0, 1.40, False, True),  # Friday morning
+    ],
+    ids=["monday-108h", "wednesday-60h", "thursday-30h", "friday-morning-12h"],
+)
+def test_d334_lee_cases_reproduce_the_stated_coverage(
+    hours_to_reset: float, coverage: float, reserved: bool, expiring_surplus: bool
+) -> None:
+    """Lee's four weekly cases at 10% remaining, Anthropic weekly (168h)."""
+    finding = _reserve_finding(
+        TEN_PERCENT_LEFT, hours_to_reset, ANTHROPIC_WEEKLY_HOURS, ANTHROPIC_RESERVE
+    )
+    assert finding.coverage == pytest.approx(coverage, abs=5e-3)
+    assert finding.reserved is reserved
+    assert finding.expiring_surplus is expiring_surplus
+
+
+def test_d334_reserved_reason_names_the_coverage_and_cites_d334() -> None:
+    """A reserved window names its coverage figure and cites D334."""
+    finding = _reserve_finding(0.10, 108.0, ANTHROPIC_WEEKLY_HOURS, ANTHROPIC_RESERVE)
+    assert _reserve_reason(finding, ANTHROPIC_RESERVE) == (
+        "reserve: coverage 0.16 < 0.50 (D334)"
     )
 
-    # Inside the horizon: the window is ending, so the floor stops applying.
-    assert _reserve_waived(0.0) is True
-    assert _reserve_waived(0.88) is True
-    assert _reserve_waived(RESERVE_WAIVER_HORIZON_HOURS - 0.01) is True
 
-    # At or beyond the horizon the reserve holds normally.
-    assert _reserve_waived(RESERVE_WAIVER_HORIZON_HOURS) is False
-    assert _reserve_waived(12.0) is False
-    assert _reserve_waived(168.0) is False
+# ---------------------------------------------------------------------------
+# Band boundaries: <0.5 reserved, [0.5, 1.0) usable, >=1.0 expiring surplus
+# ---------------------------------------------------------------------------
 
 
-def test_reserve_holds_when_the_reset_horizon_is_unknown_or_nonsense():
-    """Fail closed: an unreported or non-finite horizon never waives."""
-    from lee_llm_router.staffing.eligibility import _reserve_waived
+@pytest.mark.parametrize(
+    ("remaining", "hours_to_reset", "coverage", "reserved", "expiring_surplus"),
+    [
+        (0.25, 84.0, 0.5, False, False),  # exactly at the reserve floor
+        (0.24, 84.0, 0.48, True, False),  # just below the floor
+        (0.50, 84.0, 1.0, False, True),  # exactly at expiring surplus
+        (0.49, 84.0, 0.98, False, False),  # just below expiring surplus
+    ],
+    ids=["floor-0.5", "below-floor", "surplus-1.0", "below-surplus"],
+)
+def test_d334_band_boundaries(
+    remaining: float,
+    hours_to_reset: float,
+    coverage: float,
+    reserved: bool,
+    expiring_surplus: bool,
+) -> None:
+    """The bands meet where the packet says: 0.5 inclusive, 1.0 inclusive."""
+    finding = _reserve_finding(
+        remaining, hours_to_reset, ANTHROPIC_WEEKLY_HOURS, ANTHROPIC_RESERVE
+    )
+    assert finding.coverage == pytest.approx(coverage)
+    assert finding.reserved is reserved
+    assert finding.expiring_surplus is expiring_surplus
 
-    assert _reserve_waived(None) is False
-    assert _reserve_waived(float("nan")) is False
-    assert _reserve_waived(float("inf")) is False
-    assert _reserve_waived(-1.0) is False
+
+# ---------------------------------------------------------------------------
+# Fail closed: coverage uncomputable -> plain D216 floor, never admit
+# ---------------------------------------------------------------------------
+
+_D216_RESERVE_REASON = "reserve: 10% kept in the tank (D216)"
+
+_WEEKLY_D216_RESERVE_REASON = (
+    "bucket 'All models — weekly' reserve: 10% kept in the tank (D216)"
+)
+"""The named D216 fall-back for the single weekly-window Anthropic fixture."""
+
+
+@pytest.mark.parametrize(
+    "window_hours",
+    [None, 0.0, -1.0, float("nan"), float("inf"), float("-inf")],
+    ids=["absent", "zero", "negative", "nan", "inf", "-inf"],
+)
+def test_unusable_window_hours_falls_back_to_the_d216_floor(
+    window_hours: float | None,
+) -> None:
+    """An absent/zero/negative/non-finite window never computes coverage."""
+    assert _reserve_coverage(0.10, 10.0, window_hours) is None
+    finding = _reserve_finding(0.10, 10.0, window_hours, ANTHROPIC_RESERVE)
+    assert finding.coverage is None
+    assert finding.reserved is True
+    assert finding.expiring_surplus is False
+    assert _reserve_reason(finding, ANTHROPIC_RESERVE) == _D216_RESERVE_REASON
+
+
+@pytest.mark.parametrize(
+    "hours_to_reset",
+    [None, -1.0, float("nan"), float("inf"), float("-inf")],
+    ids=["absent", "negative", "nan", "inf", "-inf"],
+)
+def test_unusable_hours_to_reset_falls_back_to_the_d216_floor(
+    hours_to_reset: float | None,
+) -> None:
+    """An absent/negative/non-finite horizon never computes coverage."""
+    assert _reserve_coverage(0.10, hours_to_reset, ANTHROPIC_WEEKLY_HOURS) is None
+    finding = _reserve_finding(
+        0.10, hours_to_reset, ANTHROPIC_WEEKLY_HOURS, ANTHROPIC_RESERVE
+    )
+    assert finding.coverage is None
+    assert finding.reserved is True
+    assert _reserve_reason(finding, ANTHROPIC_RESERVE) == _D216_RESERVE_REASON
+
+
+def test_fail_closed_above_the_floor_stays_usable() -> None:
+    """The D216 fall-back is a floor, not a veto: above it the window stands."""
+    finding = _reserve_finding(0.11, None, None, ANTHROPIC_RESERVE)
+    assert finding.coverage is None
+    assert finding.reserved is False
+    assert _reserve_reason(finding, ANTHROPIC_RESERVE) is None
+
+
+def test_none_remaining_fraction_keeps_its_current_behaviour() -> None:
+    """``remaining_fraction`` of ``None`` is never reserved by this check."""
+    assert _reserve_coverage(None, 10.0, ANTHROPIC_WEEKLY_HOURS) is None
+    finding = _reserve_finding(None, 10.0, ANTHROPIC_WEEKLY_HOURS, ANTHROPIC_RESERVE)
+    assert finding.coverage is None
+    assert finding.reserved is False
+    assert _reserve_reason(finding, ANTHROPIC_RESERVE) is None
+
+
+def test_a_window_resetting_now_is_expiring_surplus_not_reserved() -> None:
+    """Zero hours left is use-it-or-lose-it, the old 2h waiver's last moment."""
+    finding = _reserve_finding(0.10, 0.0, ANTHROPIC_WEEKLY_HOURS, ANTHROPIC_RESERVE)
+    assert finding.coverage == float("inf")
+    assert finding.reserved is False
+    assert finding.expiring_surplus is True
+
+
+def _anthropic_weekly(
+    *,
+    remaining_pct: float = 10.0,
+    resets_in_hours: float | None = 108.0,
+    window_hours: float | None = 168.0,
+) -> AvailabilitySnapshot:
+    """A one-bucket Anthropic weekly snapshot with the given window facts."""
+    entry: dict = {
+        "provider": "Anthropic/Claude",
+        "bucket": "All models — weekly",
+        "status": "ON TRACK",
+        "remaining_pct": remaining_pct,
+    }
+    if resets_in_hours is not None:
+        entry["resets_in_hours"] = resets_in_hours
+    if window_hours is not None:
+        entry["window_hours"] = window_hours
+    return _snapshot(entry)
+
+
+@pytest.mark.parametrize(
+    ("hours_to_reset", "eligible", "reasons", "expiring_surplus"),
+    [
+        (
+            108.0,
+            False,
+            ("bucket 'All models — weekly' reserve: coverage 0.16 < 0.50 (D334)",),
+            False,
+        ),
+        (
+            60.0,
+            False,
+            ("bucket 'All models — weekly' reserve: coverage 0.28 < 0.50 (D334)",),
+            False,
+        ),
+        (30.0, True, (), False),
+        (12.0, True, (), True),
+    ],
+    ids=["monday-108h", "wednesday-60h", "thursday-30h", "friday-morning-12h"],
+)
+def test_d334_coverage_reserve_end_to_end(
+    catalog,
+    hours_to_reset: float,
+    eligible: bool,
+    reasons: tuple[str, ...],
+    expiring_surplus: bool,
+) -> None:
+    """One enabled instance, four horizons: the row and its instance agree."""
+    row = _by_route(
+        _evaluate(catalog, _anthropic_weekly(resets_in_hours=hours_to_reset)),
+        _SONNET_HIGH_ROUTE,
+    )
+    assert row.eligible is eligible
+    assert row.reasons == reasons
+    assert row.expiring_surplus is expiring_surplus
+
+    assert len(row.instance_headrooms) == 1
+    instance = row.instance_headrooms[0]
+    assert instance.eligible is eligible
+    assert instance.expiring_surplus is expiring_surplus
+    assert instance.reasons == reasons
+
+
+def test_old_snapshot_without_a_window_still_reserves_the_channel(catalog) -> None:
+    """A pre-``window_hours`` snapshot must never silently unlock the reserve."""
+    row = _by_route(
+        _evaluate(catalog, _anthropic_weekly(window_hours=None, resets_in_hours=None)),
+        _SONNET_HIGH_ROUTE,
+    )
+    assert row.eligible is False
+    assert row.reasons == (_WEEKLY_D216_RESERVE_REASON,)
+    assert row.expiring_surplus is False
+
+
+def test_reported_reset_without_a_window_falls_back_to_d216(catalog) -> None:
+    """A horizon alone is not enough: without the window the floor governs."""
+    row = _by_route(
+        _evaluate(catalog, _anthropic_weekly(window_hours=None)),
+        _SONNET_HIGH_ROUTE,
+    )
+    assert row.eligible is False
+    assert row.reasons == (_WEEKLY_D216_RESERVE_REASON,)
+
+
+@pytest.mark.parametrize(
+    "window_hours",
+    [0.0, -1.0, float("nan"), float("inf")],
+    ids=["zero", "negative", "nan", "inf"],
+)
+def test_nonsense_window_hours_falls_back_to_the_d216_floor(
+    catalog, window_hours: float
+) -> None:
+    """A nonsense window is not headroom: the plain D216 floor still reserves."""
+    row = _by_route(
+        _evaluate(catalog, _anthropic_weekly(window_hours=window_hours)),
+        _SONNET_HIGH_ROUTE,
+    )
+    assert row.eligible is False
+    assert row.reasons == (_WEEKLY_D216_RESERVE_REASON,)
+
+
+def test_health_veto_still_excludes_when_coverage_would_admit(catalog) -> None:
+    """2% left with an hour to spend is huge coverage; health still vetoes."""
+    snapshot = _anthropic_weekly(
+        remaining_pct=2.0, resets_in_hours=1.0, window_hours=168.0
+    )
+    row = _by_route(_evaluate(catalog, snapshot), _SONNET_HIGH_ROUTE)
+    assert row.eligible is False
+    assert "channel likely_exhausted" in row.reasons
+    assert not any(reason.startswith("reserve:") for reason in row.reasons)
+
+
+# ---------------------------------------------------------------------------
+# The model-scoped veto site gets the same coverage treatment
+# ---------------------------------------------------------------------------
+
+
+def _anthropic_with_fable(
+    *,
+    fable_pct: float,
+    fable_resets: float | None,
+    fable_window: float | None,
+) -> AvailabilitySnapshot:
+    """Healthy channel-wide windows beside one Fable sub-limit bucket."""
+    entries: list[dict] = [
+        {
+            "provider": "Anthropic/Claude",
+            "bucket": "Current session",
+            "status": "COLD",
+            "remaining_pct": 97,
+        },
+        {
+            "provider": "Anthropic/Claude",
+            "bucket": "All models — weekly",
+            "status": "ON TRACK",
+            "remaining_pct": 66,
+        },
+        {
+            "provider": "Anthropic/Claude",
+            "bucket": FABLE_BUCKET,
+            "status": "ON TRACK",
+            "remaining_pct": fable_pct,
+        },
+    ]
+    if fable_resets is not None:
+        entries[2]["resets_in_hours"] = fable_resets
+    if fable_window is not None:
+        entries[2]["window_hours"] = fable_window
+    return _snapshot(*entries)
+
+
+def test_model_sub_limit_coverage_reserve_is_isolated(catalog) -> None:
+    """A reserved Fable sub-limit names its coverage and leaves Sonnet alone."""
+    snapshot = _anthropic_with_fable(
+        fable_pct=10.0, fable_resets=108.0, fable_window=168.0
+    )
+    rows = _evaluate(catalog, snapshot)
+    fable = _by_route(rows, FABLE_ROUTE)
+    assert fable.eligible is False
+    assert fable.reasons == (
+        "never_automatic",
+        f"model bucket {FABLE_BUCKET!r} reserve: coverage 0.16 < 0.50 (D334)",
+    )
+    assert _by_route(rows, _SONNET_HIGH_ROUTE).eligible is True
+
+
+def test_model_sub_limit_expiring_surplus_is_surfaced(catalog) -> None:
+    """A Fable sub-limit with a Friday-morning horizon is flagged, not vetoed."""
+    snapshot = _anthropic_with_fable(
+        fable_pct=10.0, fable_resets=12.0, fable_window=168.0
+    )
+    fable = _by_route(_evaluate(catalog, snapshot), FABLE_ROUTE)
+    assert fable.eligible is False  # never_automatic only
+    assert fable.reasons == ("never_automatic",)
+    assert fable.expiring_surplus is True
+
+
+def test_model_sub_limit_without_a_window_uses_the_d216_floor(catalog) -> None:
+    """A sub-limit's own snapshot predating ``window_hours`` keeps the floor."""
+    snapshot = _anthropic_with_fable(
+        fable_pct=10.0, fable_resets=108.0, fable_window=None
+    )
+    fable = _by_route(_evaluate(catalog, snapshot), FABLE_ROUTE)
+    assert FABLE_RESERVE_REASON in fable.reasons
+
+
+def test_model_sub_limit_health_veto_beats_admitting_coverage(catalog) -> None:
+    """Coverage would admit Fable; its own health veto still excludes it."""
+    snapshot = _anthropic_with_fable(
+        fable_pct=2.0, fable_resets=1.0, fable_window=168.0
+    )
+    fable = _by_route(_evaluate(catalog, snapshot), FABLE_ROUTE)
+    assert f"model bucket {FABLE_BUCKET!r} likely_exhausted" in fable.reasons
+    assert not any("reserve" in reason for reason in fable.reasons)
+
+
+# ---------------------------------------------------------------------------
+# Packet F: coverage is computed per bucket, never across two buckets
+# ---------------------------------------------------------------------------
+
+
+def test_coverage_never_pairs_one_buckets_capacity_with_anothers_clock(
+    catalog,
+) -> None:
+    """Supervisor's reproducer: a high-remaining/low-health bucket must not lend
+    its one-hour fuse to the low-remaining bucket that actually binds.
+
+    ``Weekly extra`` holds 90% and is ``TOO FAST``, so it sets
+    ``limiting_bucket`` by worst health severity; ``Weekly`` holds 30% and
+    resets in 140h of a 168h window, coverage ``0.30 / (140/168) = 0.36`` —
+    below the 0.5 floor, so D334 requires it reserved. Pairing the channel's
+    smallest fraction (0.30, from ``Weekly``) with ``Weekly extra``'s 1h fuse
+    read as ~50.4 and wrongly admitted the route as expiring surplus.
+    """
+    snapshot = _snapshot(
+        {
+            "provider": "Anthropic/Claude",
+            "bucket": "Weekly extra",
+            "status": "TOO FAST",
+            "remaining_pct": 90,
+            "resets_in_hours": 1.0,
+            "window_hours": 168.0,
+        },
+        {
+            "provider": "Anthropic/Claude",
+            "bucket": "Weekly",
+            "status": "ON TRACK",
+            "remaining_pct": 30,
+            "resets_in_hours": 140.0,
+            "window_hours": 168.0,
+        },
+    )
+    row = _by_route(_evaluate(catalog, snapshot), _SONNET_HIGH_ROUTE)
+    assert row.eligible is False
+    assert row.expiring_surplus is False
+    # The reserve names the bucket it came from — "Weekly", whose own coverage
+    # is 0.36 — never the "Weekly extra" bucket that set the channel limiter.
+    assert "bucket 'Weekly' reserve: coverage 0.36 < 0.50 (D334)" in row.reasons
+    assert not any("'Weekly extra'" in reason for reason in row.reasons)
+    assert len(row.instance_headrooms) == 1
+    instance = row.instance_headrooms[0]
+    assert instance.eligible is False
+    assert instance.expiring_surplus is False
+    assert instance.reasons == row.reasons
+
+
+def test_low_fraction_bucket_with_a_short_fuse_is_not_reserved_by_distant_reset(
+    catalog,
+) -> None:
+    """Opposite mispairing: the channel's smallest fraction must not borrow a
+    high-remaining bucket's distant reset.
+
+    ``Weekly extra`` holds 90% and resets in 140h (coverage 1.08); ``Weekly``
+    holds 10% and resets in 1h (coverage 16.8). Neither bucket is reserved, so
+    the instance stands and the high bucket's surplus surfaces. The old
+    cross-bucket pairing fed the channel minimum (0.10, from ``Weekly``) into
+    ``Weekly extra``'s 140h reset -> 0.12 and wrongly reserved the route.
+    """
+    snapshot = _snapshot(
+        {
+            "provider": "Anthropic/Claude",
+            "bucket": "Weekly extra",
+            "status": "TOO FAST",
+            "remaining_pct": 90,
+            "resets_in_hours": 140.0,
+            "window_hours": 168.0,
+        },
+        {
+            "provider": "Anthropic/Claude",
+            "bucket": "Weekly",
+            "status": "ON TRACK",
+            "remaining_pct": 10,
+            "resets_in_hours": 1.0,
+            "window_hours": 168.0,
+        },
+    )
+    row = _by_route(_evaluate(catalog, snapshot), _SONNET_HIGH_ROUTE)
+    assert row.eligible is True
+    assert row.reasons == ()
+    assert not any("reserve" in reason for reason in row.reasons)
+    # "Weekly extra" at 90% with 140h to run is expiring surplus (coverage
+    # 1.08); no bucket is reserved, so the flag surfaces.
+    assert row.expiring_surplus is True

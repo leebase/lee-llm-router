@@ -441,10 +441,49 @@ class ClaudeCodeCLIProvider(CodexCLIProvider):
                 )
         return args
 
+    def _resolve_additional_dirs(self, config: dict[str, Any]) -> list[str]:
+        dirs = config.get("additional_dirs", [])
+        if not isinstance(dirs, list) or any(
+            not isinstance(directory, str) for directory in dirs
+        ):
+            raise LLMRouterError(
+                f"{self.name} provider key 'additional_dirs' must be a list "
+                "of strings",
+                failure_type=FailureType.PROVIDER_ERROR,
+            )
+        return dirs
+
+    def _resolve_allowed_tools(self, config: dict[str, Any]) -> list[str]:
+        tools = config.get("allowed_tools", [])
+        if not isinstance(tools, list) or any(
+            not isinstance(tool, str) for tool in tools
+        ):
+            raise LLMRouterError(
+                f"{self.name} provider key 'allowed_tools' must be a list of strings",
+                failure_type=FailureType.PROVIDER_ERROR,
+            )
+        return tools
+
+    def _resolve_disallowed_tools(self, config: dict[str, Any]) -> list[str]:
+        tools = config.get("disallowed_tools", [])
+        if not isinstance(tools, list) or any(
+            not isinstance(tool, str) for tool in tools
+        ):
+            raise LLMRouterError(
+                f"{self.name} provider key 'disallowed_tools' must be a list "
+                "of strings",
+                failure_type=FailureType.PROVIDER_ERROR,
+            )
+        return tools
+
     def validate_config(self, config: dict[str, Any]) -> None:
         super().validate_config(config)
         self._resolve_output_format(config)
         self._resolve_permission_args(config)
+        self._resolve_additional_dirs(config)
+        self._resolve_allowed_tools(config)
+        self._resolve_disallowed_tools(config)
+        self._resolve_config_string_flag(config, "append_system_prompt", None)
 
     def build_command(
         self,
@@ -484,6 +523,12 @@ class ClaudeCodeCLIProvider(CodexCLIProvider):
         """
         output_format = self._resolve_output_format(config)
         permission_args = self._resolve_permission_args(config)
+        additional_dirs = self._resolve_additional_dirs(config)
+        allowed_tools = self._resolve_allowed_tools(config)
+        disallowed_tools = self._resolve_disallowed_tools(config)
+        append_system_prompt = self._resolve_config_string_flag(
+            config, "append_system_prompt", None
+        )
         cmd = list(super().build_command(config, model=model, effort=effort))
         tail: list[str] = []
         if output_format:
@@ -498,6 +543,14 @@ class ClaudeCodeCLIProvider(CodexCLIProvider):
                 # formats keep their existing argv contract.
                 tail.append("--verbose")
         tail.extend(permission_args)
+        for directory in additional_dirs:
+            tail.extend(["--add-dir", directory])
+        for tool in allowed_tools:
+            tail.extend(["--allowedTools", tool])
+        for tool in disallowed_tools:
+            tail.extend(["--disallowedTools", tool])
+        if append_system_prompt is not None:
+            tail.extend(["--append-system-prompt", append_system_prompt])
         if tail:
             if cmd and cmd[-1] == PROMPT_PLACEHOLDER:
                 cmd[len(cmd) - 1 : len(cmd) - 1] = tail

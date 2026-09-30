@@ -177,6 +177,13 @@ class Bucket:
         pace_ratio: Burn pace relative to the window, as reported.
         raw_status: The raw status badge (``COLD``, ``HOT``, ``TOO FAST``, ...).
         instance: The instance id within the channel, or ``None`` if unspecified.
+        window_hours: Total length of this bucket's quota window in hours (168
+            for weekly, 5 for the session/rolling windows, 720 for monthly),
+            or ``None`` when the snapshot omits it. Read and carried unchanged
+            for the staffing eligibility coverage reserve (D334); an absent or
+            nonsense value leaves the reserve on its D216 floor rather than
+            admitting the channel. "Not reported" is deliberately distinct
+            from every number a snapshot could carry.
         model_scope: Model family this bucket meters, or ``None`` when the
             bucket constrains the channel as a whole. A model-scoped bucket is
             a provider's model *sub-limit*: it contributes to neither the
@@ -197,6 +204,7 @@ class Bucket:
     raw_status: str
     instance: str | None = None
     model_scope: str | None = None
+    window_hours: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serialisable view of this bucket."""
@@ -212,6 +220,7 @@ class Bucket:
             "raw_status": self.raw_status,
             "instance": self.instance,
             "model_scope": self.model_scope,
+            "window_hours": self.window_hours,
         }
 
 
@@ -720,6 +729,7 @@ def _buckets_from_entries(
                     raw_status=raw_status,
                     instance=instance,
                     model_scope=model_scope_for(name),
+                    window_hours=_number(entry.get("window_hours")),
                 )
             )
     return buckets, ignored, malformed

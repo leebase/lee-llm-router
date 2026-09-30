@@ -27,13 +27,29 @@ checks, each with a named reason string:
   enabled instance: an enabled instance whose headroom is ``exhausted``,
   ``likely_exhausted``, or ``unknown`` is vetoed. Metered and local channels
   carry no committed quota records and are never vetoed for their absence;
-* subscription reserve (D216) — evaluated per enabled instance: an enabled
-  instance whose ``remaining_fraction`` in any binding window is at or below
-  its configured ``reserve_fraction`` (default 0.10; Anthropic and Gemini
-  explicitly 0.10) is excluded with the reason
-  ``reserve: N% kept in the tank (D216)``. The reserve is a policy floor,
-  distinct from the availability reader's ``likely_exhausted`` fail-safe;
-  both checks run and either can independently exclude an instance.
+* subscription reserve (D216/D334) — evaluated per enabled instance and
+  **per channel-wide bucket**: each bucket's D334 *coverage* (its own remaining
+  capacity divided by the fraction of *its own* window still to run) is
+  computed from that same bucket's ``remaining_fraction``,
+  ``resets_in_hours`` and ``window_hours`` — one bucket's capacity is never
+  read next to another bucket's clock. The headroom's aggregate
+  ``remaining_fraction`` is the smallest fraction across the channel-wide
+  buckets while ``limiting_bucket`` names the worst-*health* bucket; those two
+  reductions need not be the same bucket, so neither is used to pair a
+  fraction with a window here. A bucket whose own coverage is below ``0.5``
+  reserves the instance, with the reason ``bucket '<name>' reserve: coverage C
+  < 0.50 (D334)`` naming the bucket. When the snapshot cannot supply a
+  bucket's inputs — an absent/zero/negative/non-finite ``window_hours`` or an
+  absent/negative/non-finite ``hours_to_reset`` — that bucket's coverage is not
+  computable and the plain D216 floor applies instead: its
+  ``remaining_fraction`` at or below the configured ``reserve_fraction``
+  (default 0.10) reserves the instance with ``bucket '<name>' reserve: N% kept
+  in the tank (D216)``. A bucket's coverage at or above ``1.0`` is *expiring
+  surplus*: usable, and surfaced on the row via ``expiring_surplus`` for a
+  later ranking packet — never consumed here. An instance reserved by any
+  bucket never also reports surplus. The reserve is a policy floor, distinct
+  from the availability reader's ``likely_exhausted`` fail-safe; both checks
+  run and either can independently exclude an instance.
   A route is vetoed by health/reserve only when every enabled instance is
   vetoed (or no enabled instance exists);
 * model-scoped bucket veto (``availability.MODEL_SCOPED_BUCKETS``) — some
@@ -43,10 +59,12 @@ checks, each with a named reason string:
   a bucket out of the channel- and instance-wide reduction, and this check
   applies it per route: only routes whose ``model`` starts with the bucket's
   mapped family token are constrained. The same two vetoes used for instance
-  headroom are applied (the health veto and the reserve floor), each naming
-  the bucket it came from — ``model bucket '<name>' exhausted`` and
-  ``model bucket '<name>' reserve: N% kept in the tank (D216)``. A model
-  sub-limit therefore stops gating sibling models while still gating its own;
+  headroom are applied (the health veto and the D334 coverage reserve), each
+  naming the bucket it came from — ``model bucket '<name>' exhausted`` and
+  ``model bucket '<name>' reserve: coverage C < 0.50 (D334)`` (the plain
+  ``reserve: N% kept in the tank (D216)`` form when coverage is not
+  computable). A model sub-limit therefore stops gating sibling models while
+  still gating its own;
 * dated terms at the requested date and the badge marginal multiplier —
   each route is priced at the badge derived from its own channel's record
   in the availability snapshot (the limiting bucket's raw status badge);
@@ -225,6 +243,7 @@ class EligibilityInstance:
     remaining_fraction: float | None
     health: str
     badge: str | None
+    expiring_surplus: bool = False
 
 
 @dataclass(frozen=True)
@@ -245,6 +264,17 @@ class EligibilityRow:
     descending remaining fraction (most headroom first; None sorts last).
     For non-subscription channels or unrecognized channels, this is an
     empty tuple. Disabled instances are excluded entirely.
+    ``expiring_surplus`` is the D334 signal: True when any window covering
+    this route reports coverage at or above 1.0 (more capacity remains than
+    time in which to spend it) and no bucket reserves that window. It is
+    informational here — it never changes ``eligible``, ordering, or selection;
+    consuming it as a ranking preference is a later packet.
+    ``reserved`` is the D216/D334 reserve as a structured fact, not prose: True
+    when a reserve veto is applied to this route's exclusions — the
+    channel/instance site and the model-scoped site alike, and for both the
+    D334 coverage reason and the fail-closed D216 floor reason. Consumers (the
+    ``bind`` seam) read this flag rather than parsing reason strings; the
+    reason strings keep their bucket attribution and are unaffected.
     """
 
     route_id: str
@@ -260,6 +290,8 @@ class EligibilityRow:
     availability_headroom: float | None
     pricing: EligibilityPrice | None
     instance_headrooms: tuple[EligibilityInstance, ...] = ()
+    expiring_surplus: bool = False
+    reserved: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -432,8 +464,8 @@ def _availability_badge(headroom: ChannelHeadroom) -> str | None:
 
 def _model_scoped_vetoes(
     headroom: ChannelHeadroom, model: str, reserve: float
-) -> tuple[str, ...]:
-    """Veto reasons from model-scoped buckets that cover ``model``.
+) -> tuple[tuple[str, ...], bool, bool]:
+    """Veto reasons, the reserve flag, and expiring surplus from model buckets.
 
     A bucket carrying a ``model_scope`` meters one model family inside its
     channel (a provider's model *sub-limit*), so it is not part of the
@@ -443,7 +475,8 @@ def _model_scoped_vetoes(
     whose model starts with the mapped family token.
 
     The two vetoes are the instance vetoes verbatim: the subscription health
-    veto :data:`_SUBSCRIPTION_VETO_HEALTH` and the D216 reserve floor. Every
+    veto :data:`_SUBSCRIPTION_VETO_HEALTH` and the D334 reserve (the coverage
+    ratio, or the plain D216 floor when coverage is not computable). Every
     reason names the bucket that produced it, because a route excluded by a
     sub-limit must be distinguishable from one excluded by the channel.
 
@@ -454,68 +487,209 @@ def _model_scoped_vetoes(
         reserve: The channel's configured ``reserve_fraction``.
 
     Returns:
-        One reason per tripped veto, in bucket order; empty when no
-        model-scoped bucket covers ``model`` or none of them trips.
+        ``(reasons, reserved, expiring_surplus)``: one reason per tripped veto,
+        in bucket order (empty when no model-scoped bucket covers ``model`` or
+        none of them trips); ``reserved`` True when a covering bucket applies a
+        reserve veto (the D334 coverage reserve or the fail-closed D216 floor
+        alike); and ``expiring_surplus`` True when a covering bucket reports
+        D334 expiring surplus. The surplus flag is informational — it never
+        changes ``eligible``.
     """
     reasons: list[str] = []
+    reserved = False
+    expiring_surplus = False
     for bucket in headroom.buckets:
         scope = bucket.model_scope
         if scope is None or not model.startswith(scope):
             continue
         if bucket.health in _SUBSCRIPTION_VETO_HEALTH:
             reasons.append(f"model bucket {bucket.name!r} {bucket.health.value}")
-        if (
-            bucket.remaining_fraction is not None
-            and bucket.remaining_fraction <= reserve
-            and not _reserve_waived(bucket.resets_in_hours)
-        ):
-            reasons.append(
-                f"model bucket {bucket.name!r} {_RESERVE_REASON}: "
-                f"{reserve * 100:.0f}% kept in the tank (D216)"
-            )
-    return tuple(reasons)
+        finding = _reserve_finding(
+            bucket.remaining_fraction,
+            bucket.resets_in_hours,
+            bucket.window_hours,
+            reserve,
+        )
+        reason = _reserve_reason(finding, reserve)
+        if reason is not None:
+            reasons.append(f"model bucket {bucket.name!r} {reason}")
+            reserved = True
+        if finding.expiring_surplus:
+            expiring_surplus = True
+    return tuple(reasons), reserved, expiring_surplus
 
 
-#: Hours before a quota window resets within which the D216 reserve stops
-#: applying to that window. The reserve exists to preserve capacity for later
-#: work *inside the current window*; quota that expires before that work could
-#: be done cannot serve it, so holding it back is pure waste. Lee, 2026-09-17:
-#: "we are close to roll over so it's use it or lose it". This waives only the
-#: reserve floor — an exhausted or unhealthy bucket is still vetoed on health.
-RESERVE_WAIVER_HORIZON_HOURS = 2.0
+#: D334 coverage below this reserves the window (its routes are excluded).
+#: Coverage is remaining capacity divided by the fraction of the quota window
+#: still to run: ``remaining_fraction / (hours_to_reset / window_hours)``. A
+#: flat percentage floor answers the wrong question — 10% left with six days
+#: to spend it is a very different reserve from 10% left with one.
+_RESERVE_COVERAGE_FLOOR = 0.5
+
+#: D334 coverage at or above this is *expiring surplus*: more capacity remains
+#: than there is time left in the window to spend it. Usable, and surfaced on
+#: the row for a later ranking packet — never a veto, never consumed here.
+_RESERVE_COVERAGE_SURPLUS = 1.0
 
 
-def _reserve_waived(hours_to_reset: float | None) -> bool:
-    """Return True when a window resets too soon for the reserve to mean anything.
+@dataclass(frozen=True)
+class _ReserveFinding:
+    """The D334 reserve decision for one binding window.
+
+    Attributes:
+        reserved: True when the reserve excludes the window.
+        expiring_surplus: True when coverage is at or above
+            :data:`_RESERVE_COVERAGE_SURPLUS`.
+        coverage: The computed coverage ratio, or ``None`` when it could not
+            be computed and the plain D216 floor was used instead.
+    """
+
+    reserved: bool
+    expiring_surplus: bool
+    coverage: float | None
+
+
+def _reserve_coverage(
+    remaining_fraction: float | None,
+    hours_to_reset: float | None,
+    window_hours: float | None,
+) -> float | None:
+    """Compute the D334 coverage ratio, or ``None`` when it is not computable.
 
     Args:
-        hours_to_reset: Hours until the window resets, or ``None`` when the
-            snapshot did not report it.
+        remaining_fraction: Remaining quota as ``0.0``–``1.0``, or ``None``.
+        hours_to_reset: Hours until the bucket's window resets.
+        window_hours: Total length of the bucket's window in hours.
 
     Returns:
-        ``True`` only for a reported, finite, non-negative horizon strictly
-        inside :data:`RESERVE_WAIVER_HORIZON_HOURS`. An unreported horizon is
-        never waived: the reserve holds when the reset time is unknown.
+        ``remaining_fraction / (hours_to_reset / window_hours)`` for a finite,
+        strictly positive ``window_hours`` and a finite, non-negative
+        ``hours_to_reset``; otherwise ``None``, which the caller must read as
+        "fall back to the plain D216 floor" (fail closed). A window that
+        resets now reports infinite coverage when any capacity remains, and
+        ``0.0`` when none does.
     """
-    if hours_to_reset is None:
-        return False
-    if not math.isfinite(hours_to_reset):
-        return False
-    return 0.0 <= hours_to_reset < RESERVE_WAIVER_HORIZON_HOURS
+    if remaining_fraction is None:
+        return None
+    if window_hours is None or not math.isfinite(window_hours) or window_hours <= 0.0:
+        return None
+    if (
+        hours_to_reset is None
+        or not math.isfinite(hours_to_reset)
+        or hours_to_reset < 0.0
+    ):
+        return None
+    elapsed = hours_to_reset / window_hours
+    if elapsed <= 0.0:
+        return math.inf if remaining_fraction > 0.0 else 0.0
+    return remaining_fraction / elapsed
 
 
-def _instance_hours_to_reset(headroom: ChannelHeadroom) -> float | None:
-    """Return the limiting bucket's hours-to-reset for an instance headroom."""
-    limiting = headroom.limiting_bucket
+def _reserve_finding(
+    remaining_fraction: float | None,
+    hours_to_reset: float | None,
+    window_hours: float | None,
+    reserve: float,
+) -> _ReserveFinding:
+    """Decide the reserve for one window: reserved, usable, or expiring surplus.
+
+    Fails closed exactly as the retired ``_reserve_waived`` did: when coverage
+    cannot be computed the plain D216 floor applies — ``remaining_fraction``
+    at or below ``reserve`` still reserves the window — so an old snapshot
+    without ``window_hours`` can never silently unlock a reserved channel.
+    ``remaining_fraction`` of ``None`` keeps its documented behaviour: no
+    reserve floor is applied to it here.
+    """
+    coverage = _reserve_coverage(remaining_fraction, hours_to_reset, window_hours)
+    # A supported zero reserve opts out of protective capacity retention.
+    # Keep the zero-capacity floor; availability health independently vetoes
+    # exhausted, likely-exhausted, unknown and stale observations.
+    if reserve == 0.0 and remaining_fraction is not None:
+        return _ReserveFinding(
+            reserved=remaining_fraction <= 0.0,
+            expiring_surplus=(
+                coverage is not None and coverage >= _RESERVE_COVERAGE_SURPLUS
+            ),
+            coverage=coverage,
+        )
+    if coverage is None:
+        reserved = remaining_fraction is not None and remaining_fraction <= reserve
+        return _ReserveFinding(reserved=reserved, expiring_surplus=False, coverage=None)
+    return _ReserveFinding(
+        reserved=coverage < _RESERVE_COVERAGE_FLOOR,
+        expiring_surplus=coverage >= _RESERVE_COVERAGE_SURPLUS,
+        coverage=coverage,
+    )
+
+
+def _reserve_reason(finding: _ReserveFinding, reserve: float) -> str | None:
+    """Return the reserve exclusion reason, or ``None`` when not reserved.
+
+    A computable coverage names the figure and cites D334; a fall-back to the
+    plain D216 floor keeps the historical reason verbatim.
+    """
+    if not finding.reserved:
+        return None
+    if finding.coverage is None:
+        return f"{_RESERVE_REASON}: {reserve * 100:.0f}% kept in the tank (D216)"
+    return (
+        f"{_RESERVE_REASON}: coverage {finding.coverage:.2f} < "
+        f"{_RESERVE_COVERAGE_FLOOR:.2f} (D334)"
+    )
+
+
+def _instance_reserve_vetoes(
+    headroom: ChannelHeadroom, reserve: float
+) -> tuple[tuple[str, ...], bool, bool]:
+    """Reserve reasons, the reserve flag, and surplus from an instance's buckets.
+
+    D334 coverage is computed **per bucket**, from each channel-wide bucket's
+    own ``remaining_fraction``, ``resets_in_hours`` and ``window_hours``: one
+    bucket's capacity is never read next to another bucket's clock. The
+    headroom's aggregate ``remaining_fraction`` (the smallest fraction across
+    the channel-wide buckets) and its ``limiting_bucket`` (the worst-*health*
+    bucket) are two different reductions and need not name the same bucket, so
+    neither is used to pair a fraction with a window here.
+
+    Model-scoped buckets are skipped: they constrain only their own model
+    family and are evaluated by :func:`_model_scoped_vetoes`. Every reason
+    names the bucket that produced it, exactly as the model-scoped reasons do,
+    so a reserved instance is distinguishable from one reserved by a sibling
+    window.
+
+    Args:
+        headroom: The instance's channel headroom, whose ``buckets`` keeps the
+            channel-wide windows this check evaluates.
+        reserve: The channel's configured ``reserve_fraction``.
+
+    Returns:
+        ``(reasons, reserved, expiring_surplus)``: one reason per channel-wide
+        bucket whose own coverage reserves it (empty when none does);
+        ``reserved`` True when any channel-wide bucket applies a reserve veto
+        (the D334 coverage reserve or the fail-closed D216 floor alike); and
+        ``expiring_surplus`` True only when the instance is not reserved by any
+        bucket *and* at least one channel-wide bucket reports D334 expiring
+        surplus. A reserved instance never also reports surplus.
+    """
+    reasons: list[str] = []
+    reserved = False
+    surplus = False
     for bucket in headroom.buckets:
-        if limiting is not None and bucket.name == limiting:
-            return bucket.resets_in_hours
-    horizons = [
-        bucket.resets_in_hours
-        for bucket in headroom.buckets
-        if bucket.resets_in_hours is not None
-    ]
-    return min(horizons) if horizons else None
+        if bucket.model_scope is not None:
+            continue
+        finding = _reserve_finding(
+            bucket.remaining_fraction,
+            bucket.resets_in_hours,
+            bucket.window_hours,
+            reserve,
+        )
+        reason = _reserve_reason(finding, reserve)
+        if reason is not None:
+            reasons.append(f"bucket {bucket.name!r} {reason}")
+            reserved = True
+        elif finding.expiring_surplus:
+            surplus = True
+    return tuple(reasons), reserved, surplus and not reserved
 
 
 def _instance_or_channel_headroom(
@@ -690,6 +864,8 @@ def evaluate_eligibility(
         informational_reasons: list[str] = []
         channel = channels.get(route.channel)
         instance_headrooms: tuple[EligibilityInstance, ...] = ()
+        expiring_surplus = False
+        reserved = False
         if channel is None:
             reasons.append(f"channel '{route.channel}' not in channel catalog")
             availability_health = Health.UNKNOWN.value
@@ -719,6 +895,7 @@ def evaluate_eligibility(
 
             if channel.kind == "subscription":
                 enabled_instances: list[EligibilityInstance] = []
+                any_instance_reserved = False
                 reserve = catalog.policy.reserve_fraction.fraction_for(
                     channel.channel_id
                 )
@@ -731,15 +908,14 @@ def evaluate_eligibility(
                     inst_vetoes: list[str] = []
                     if inst_headroom.health in _SUBSCRIPTION_VETO_HEALTH:
                         inst_vetoes.append(f"channel {inst_headroom.health.value}")
-                    if (
-                        inst_headroom.remaining_fraction is not None
-                        and inst_headroom.remaining_fraction <= reserve
-                        and not _reserve_waived(_instance_hours_to_reset(inst_headroom))
-                    ):
-                        inst_vetoes.append(
-                            f"{_RESERVE_REASON}: {reserve * 100:.0f}% kept in "
-                            "the tank (D216)"
-                        )
+                    inst_reserve, inst_reserved, inst_surplus = (
+                        _instance_reserve_vetoes(inst_headroom, reserve)
+                    )
+                    inst_vetoes.extend(inst_reserve)
+                    if inst_reserved:
+                        any_instance_reserved = True
+                    if inst_surplus:
+                        expiring_surplus = True
                     inst_reasons = [*inst_vetoes]
                     if inherited:
                         inst_reasons.append(_INHERITED_CHANNEL_REASON)
@@ -753,6 +929,7 @@ def evaluate_eligibility(
                             remaining_fraction=inst_headroom.remaining_fraction,
                             health=inst_headroom.health.value,
                             badge=inst_badge,
+                            expiring_surplus=inst_surplus,
                         )
                     )
 
@@ -767,11 +944,22 @@ def evaluate_eligibility(
                             for reason in inst.reasons
                             if reason != _INHERITED_CHANNEL_REASON
                         )
+                    # A reserve veto carried into the route's exclusions is
+                    # surfaced structurally, never left to prose matching.
+                    if any_instance_reserved:
+                        reserved = True
 
                 # A model sub-limit constrains only the routes for its own
                 # model family, so it is checked per route and never through
                 # the instance headroom above.
-                reasons.extend(_model_scoped_vetoes(headroom, route.model, reserve))
+                model_vetoes, model_reserved, model_expiring = _model_scoped_vetoes(
+                    headroom, route.model, reserve
+                )
+                reasons.extend(model_vetoes)
+                if model_reserved:
+                    reserved = True
+                if model_expiring:
+                    expiring_surplus = True
 
                 instance_headrooms = tuple(
                     sorted(
@@ -847,6 +1035,8 @@ def evaluate_eligibility(
                 availability_headroom=availability_headroom,
                 pricing=pricing,
                 instance_headrooms=instance_headrooms,
+                expiring_surplus=expiring_surplus,
+                reserved=reserved,
             )
         )
     return tuple(rows)

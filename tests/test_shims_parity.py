@@ -227,7 +227,8 @@ def test_supervise_bodies_are_parity_checked_against_d213(tmp_path, monkeypatch)
         "--class-derivation <derivation-json-path> --oracle <oracle-cmd> "
         "--timeout <bound×60> --stall-minutes 10 --progress-minutes 20 --json",
         "lee-llm-router classify-failure --record <attempt-record-path> --json",
-        "lee-llm-router next-action --input <classify-json-path>",
+        "lee-llm-router next-action --input <classify-json-path> "
+        "--repair-count <completed-same-route-repairs>",
         "lee-llm-router census --json",
         "lee-llm-router evidence rollup",
     )
@@ -256,6 +257,11 @@ def test_supervise_bodies_are_parity_checked_against_d213(tmp_path, monkeypatch)
         for signature in expected_signatures:
             assert signature in body
         assert review_signature in body
+        assert "A manual primary is one" in body
+        assert "two terminal\n   noncompletions (as counted in step 8)" in body
+        assert "exclude that route from the saved same-role fallback ladder" in body
+        assert "A missing record is an accounting/control failure" in body
+        assert "only if no eligible worker can be dispatched" in body
 
         # Provider names may be discussed as prohibited binaries, but no
         # provider invocation or legacy router dispatch may be present.
@@ -305,10 +311,10 @@ def test_supervise_bodies_are_parity_checked_against_d213(tmp_path, monkeypatch)
             "contract-blocking defects, non-blocking hardening, or future concerns"
             in compact
         )
-        assert (
-            "keep fixing and independently re-reviewing until 0 High / 0 Medium"
-            in compact
-        )
+        assert "up to two reviewer-directed remediation rounds" in compact
+        assert "then final independent review" in compact
+        assert "keep fixing and independently re-reviewing until" not in compact
+        assert "supersedes indefinite convergence" in compact
         assert "staffing block for every packet plus exact ledger evidence" in compact
         assert (
             "attempt ids, routes, selection basis and reason, usage basis, verdicts, and next actions"

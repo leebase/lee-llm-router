@@ -282,3 +282,42 @@ Catalog/data/schema/loader/explain, priced cheap routes, Pi crew dispatch, bench
 Next action is Phase 1's first packet — display the effective channel tier in `catalog explain` — but do not begin it. Open follow-ups remain in `docs/staffing/needs-lee.md`; no Phase 0 blocker.
 
 *This file is a living document - update it frequently.*
+
+## 2026-09-29 — isolated supervise owner repair candidate
+
+Direct owner assignment `supervise-remediation-0929`; amended diagnosis implemented
+in isolated copies only. Bounded generated contract, parent acceptance/method
+record and additive version-1 `run` admission retain legacy records/routing policy.
+WORK.md records gaps and verification. Source baseline includes canonical dirty
+changes; candidate delta is against isolated HEAD. No installation, live ledger
+mutation, provider/worker/reviewer dispatch or acceptance claim. Independent exact
+Opus-5.5 medium code/behavior review and Lee adoption decision remain outstanding.
+
+## 2026-09-29 — reviewer-directed repair round 1 (same parent)
+
+Initial independent review REJECTED H1–H3/M1–M4. This isolated delta adds
+truthful missing-record reconciliation with shutdown evidence, frozen inception
+gaps/review gate, capability denial continuity and review-driven round transitions.
+Instructions disclose serial opted-in accounting and accurate manual-primary
+fallback policy. Verification and disposition are retained in WORK.md and the
+evidence directory. Independent final/delta review, consuming evidence and adoption
+remain outstanding; no live install or self-acceptance.
+
+## 2026-09-29 — final directed repair round 2 (same parent)
+
+Second independent review rejected only the H1 Linux process scan. The isolated
+candidate now excludes unreadable environments only with readable creation ticks
+strictly older than the recorded controller. Equal/newer or missing/unknown
+creation identities refuse precisely; marked workers and original-controller
+checks remain enforced. Consumed starts, conservative time and unknown outcome
+remain unchanged. Focused sandbox checks and refreshed packaging are recorded in
+WORK.md/test-results.json. Chief’s two production-host CLI checks, final-contract
+offline decisions and independent final Opus review remain outstanding. The
+retained 72 baseline failures remain; no broad rerun, adoption or self-acceptance.
+
+## 2026-09-30 — accepted supervise publication
+
+Lee accepted the rollout and authorized commit/push. The publication includes
+exact reviewed runtime bytes and necessary accepted reserve/launch dependencies,
+with catalog-compatible focused tests. Model replacements, CSS work and other
+canonical dirt remain outside this commit. See [user instructions](docs/supervise-rollout.md).

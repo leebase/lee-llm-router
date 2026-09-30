@@ -1761,3 +1761,69 @@ def test_sub_limit_that_is_neither_worst_nor_smallest_changes_nothing() -> None:
     # The sub-limit keeps its own reading; it is excluded, not rewritten.
     assert anthropic.buckets[-1].health is Health.DEGRADED
     assert anthropic.buckets[-1].remaining_fraction == pytest.approx(0.60)
+
+
+# --------------------------------------------------------------------------
+# Packet D334-C — window_hours is read and carried, absent when omitted
+# --------------------------------------------------------------------------
+
+
+def _bucket_with(**overrides: Any) -> dict:
+    """An Anthropic weekly bucket carrying any ``overrides``."""
+    entry: dict[str, Any] = {
+        "provider": "Anthropic/Claude",
+        "bucket": "All models — weekly",
+        "status": "ON TRACK",
+        "remaining_pct": 10.0,
+    }
+    entry.update(overrides)
+    return entry
+
+
+def test_bucket_carries_window_hours_when_reported() -> None:
+    """A reported ``window_hours`` is carried on the bucket and serialised."""
+    snapshot = _parse(_bucket_with(window_hours=168))
+    bucket = snapshot.headroom("anthropic-sub").buckets[0]
+    assert bucket.window_hours == pytest.approx(168.0)
+    assert bucket.to_dict()["window_hours"] == pytest.approx(168.0)
+
+
+def test_window_hours_defaults_to_absent_when_omitted() -> None:
+    """A pre-``window_hours`` snapshot leaves the field absent (``None``)."""
+    snapshot = _parse(_bucket_with())
+    bucket = snapshot.headroom("anthropic-sub").buckets[0]
+    assert bucket.window_hours is None
+    assert bucket.to_dict()["window_hours"] is None
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["nan", "inf", "-inf", "NaN", "Infinity", float("nan"), float("inf")],
+    ids=["nan", "inf", "-inf", "NaN", "Infinity", "f-nan", "f-inf"],
+)
+def test_non_finite_window_hours_is_absent(value: object) -> None:
+    """Non-finite windows are dropped to ``None`` like every other number."""
+    snapshot = _parse(_bucket_with(window_hours=value))
+    assert snapshot.headroom("anthropic-sub").buckets[0].window_hours is None
+
+
+@pytest.mark.parametrize("value", [0, -5, 0.0, -1.5], ids=["0", "-5", "0.0", "-1.5"])
+def test_zero_or_negative_window_hours_is_carried_verbatim(value: float) -> None:
+    """The reader only carries the value; the reserve fails closed on nonsense."""
+    snapshot = _parse(_bucket_with(window_hours=value))
+    bucket = snapshot.headroom("anthropic-sub").buckets[0]
+    assert bucket.window_hours == pytest.approx(float(value))
+
+
+def test_window_hours_survives_the_live_fixtures_without_being_invented() -> None:
+    """Snapshots that never reported a window stay ``None`` end to end."""
+    live = load_availability(
+        LIVE_SAMPLE, now=LIVE_OBSERVED_AT + timedelta(minutes=2)
+    )
+    for channel in CHANNELS:
+        for bucket in live.headroom(channel).buckets:
+            assert bucket.window_hours is None
+            assert "window_hours" in bucket.to_dict()
+    assert live.to_dict()["channels"]["anthropic-sub"]["buckets"][0][
+        "window_hours"
+    ] is None

@@ -18,7 +18,10 @@ import pytest
 from lee_llm_router.availability import parse_availability
 from lee_llm_router.events import EVENT_FIELDS, read_events
 from lee_llm_router.staffing.catalog import load_staffing_catalog
-from lee_llm_router.staffing.eligibility import resolve_route_family
+from lee_llm_router.staffing.eligibility import (
+    evaluate_eligibility,
+    resolve_route_family,
+)
 from lee_llm_router.staffing.staff import (
     BIND_AUTHORIZED_BY,
     StaffServiceError,
@@ -778,3 +781,82 @@ def test_bind_reserved_lane_shows_reserve_in_text(
     )
     assert "Reserve: yes" in result.text
     assert "bound by lee" in result.text
+
+
+def test_bind_d216_floor_reserve_refuses_non_lee_via_structured_flag(
+    catalog, tmp_path: Path
+) -> None:
+    """Regression: a route reserved *only* by the fail-closed D216 floor (the
+    snapshot carries no ``resets_in_hours``/``window_hours``, so no bucket's
+    coverage is computable) still binds only with ``--authorized-by lee``.
+
+    The reserve is read from the structured ``EligibilityRow.reserved`` flag,
+    never parsed out of a reason string. The bucket-attributed prose
+    (``bucket 'Weekly limit' reserve: 10% kept in the tank (D216)``) used to
+    defeat prefix matching and silently admit an unauthorized bind.
+    """
+    availability = parse_availability(
+        {
+            "host": "staff-test",
+            "observed_at": "2026-09-09T11:59:00+00:00",
+            "subscriptions": [
+                {
+                    "provider": "OpenAI/Codex",
+                    "bucket": "Weekly limit",
+                    "status": "ON TRACK",
+                    "remaining_pct": 7,
+                },
+                {
+                    "provider": "Anthropic/Claude",
+                    "bucket": "Current session",
+                    "status": "ON TRACK",
+                    "remaining_pct": 8,
+                },
+                {
+                    "provider": "Gemini/agy",
+                    "bucket": "Gemini models",
+                    "status": "ON TRACK",
+                    "remaining_pct": 8,
+                },
+                {
+                    "provider": "OpenCode/Go",
+                    "bucket": "Weekly",
+                    "status": "ON TRACK",
+                    "remaining_pct": 8,
+                },
+            ],
+        },
+        now=NOW,
+    )
+    rows = evaluate_eligibility(
+        catalog,
+        role="impl",
+        oracle_type="deterministic",
+        size_band="s",
+        language="python",
+        domain_tags=(),
+        class_key=CLASS_KEY,
+        availability=availability,
+        at_date=AT,
+    )
+    row = next(entry for entry in rows if entry.route_id == SOL_LOW)
+    assert row.eligible is False
+    # The structured fact, not the prose, carries the reserve.
+    assert row.reserved is True
+
+    path = tmp_path / "d216-floor-refused.jsonl"
+    with pytest.raises(StaffServiceError) as excinfo:
+        staff(
+            catalog,
+            availability,
+            mode="bind",
+            role="impl",
+            class_key=CLASS_KEY,
+            at_date=AT,
+            bind_route=SOL_LOW,
+            authorized_by="chief",
+            reason="attempt to bind a reserved route without Lee",
+            events_path=path,
+        )
+    assert excinfo.value.kind == "reserve"
+    assert not path.exists()

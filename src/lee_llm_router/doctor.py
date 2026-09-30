@@ -1546,7 +1546,9 @@ def _run_run(args: argparse.Namespace) -> int:
     class; with ``--route ID`` the basis is ``explicit`` and the route must
     be eligible under the same role/class eligibility path as ``catalog
     explain`` — an ineligible explicit route exits 3 with the explain
-    reason. ``--author-route ROUTE_ID`` (Astra final-review finding 4) is
+    reason. A pinned route with ``--authorized-by lee --reason TEXT`` may
+    waive only its ``never_automatic`` reason. ``--author-route ROUTE_ID``
+    (Astra final-review finding 4) is
     forwarded to the same path: for a review/judge class the author route
     and every same-family candidate are excluded with the reason
     ``independence`` exactly as ``catalog explain --author-route`` reports,
@@ -1631,6 +1633,8 @@ def _run_run(args: argparse.Namespace) -> int:
         build_attempt_record,
         dispatch_route,
         no_work_evidence,
+        normalize_additional_dirs,
+        normalize_identity_files,
         oracle_timeout_seconds,
         packet_id_for_text,
         parse_oracle_command,
@@ -1662,8 +1666,29 @@ def _run_run(args: argparse.Namespace) -> int:
             )
         return exit_code
 
+    from lee_llm_router.staffing.unit_admission import (
+        WORKER_ENV,
+        UnitAdmissionError,
+        execution_identity,
+        finish_start,
+        reserve_start,
+    )
+
+    unit_state = getattr(args, "unit_state", None)
+    unit_decision = getattr(args, "unit_decision", None)
+    unit_id = getattr(args, "unit_id", None)
+    if any((unit_state, unit_decision, unit_id)) and not all(
+        (unit_state, unit_decision, unit_id)
+    ):
+        return fail("--unit-state, --unit-decision and --unit-id are required together")
+    unit_start = None
+    unit_record = None
+    unit_execution = None
+
     as_json = bool(getattr(args, "json", False))
     route_id = getattr(args, "route", None)
+    authorized_by = getattr(args, "authorized_by", None)
+    authorization_reason = getattr(args, "reason", None)
     role = args.role
     class_string = args.class_string
     class_derivation = None
@@ -1779,6 +1804,8 @@ def _run_run(args: argparse.Namespace) -> int:
             at_date=at_date,
             author_route_id=getattr(args, "author_route", None),
             route_id=route_id,
+            authorized_by=authorized_by,
+            authorization_reason=authorization_reason,
             instance_id=getattr(args, "instance", None),
             supervisor_route_id=getattr(args, "supervisor_route", None),
             openrouter_snapshot_path=args.openrouter_snapshot,
@@ -1847,6 +1874,25 @@ def _run_run(args: argparse.Namespace) -> int:
     # check-and-register is atomic: when any live record owns an intersecting
     # path the run is refused here, launches nothing, and appends nothing.
     try:
+        additional_dirs = normalize_additional_dirs(
+            list(getattr(args, "add_dirs", None) or [])
+        )
+        identity_inputs = normalize_identity_files(
+            list(getattr(args, "identity_files", None) or [])
+        )
+    except RunDispatchError as exc:
+        return fail(str(exc), as_json=as_json)
+    control_plane = getattr(args, "control_plane", None)
+    if (
+        additional_dirs or control_plane is not None or identity_inputs
+    ) and outcome.route.harness != "claude":
+        return fail(
+            f"harness {outcome.route.harness!r} does not support additional "
+            "directory or control-plane grants",
+            as_json=as_json,
+        )
+
+    try:
         owned_paths = normalize_owned_paths(
             list(getattr(args, "owned_paths", None) or []),
             workdir=args.workdir,
@@ -1883,6 +1929,37 @@ def _run_run(args: argparse.Namespace) -> int:
 
     def _execute_registered() -> int:
         """Dispatch, record, and print — every exit deregisters the run."""
+        nonlocal unit_start, unit_record, unit_execution
+        if unit_state:
+            try:
+                unit_execution = execution_identity()
+                unit_execution["registry"] = {
+                    "id": registration.registry_id,
+                    "path": str(registration.path),
+                }
+                unit_execution["route_record"] = {
+                    "model": outcome.route.model,
+                    "effort": outcome.route.effort,
+                    "harness": outcome.route.harness,
+                    "channel": outcome.route.channel,
+                    "channel_instance": outcome.channel_instance,
+                }
+                unit_start = reserve_start(
+                    unit_state,
+                    unit_decision,
+                    unit_id,
+                    execution=unit_execution,
+                    route=outcome.route.route_id,
+                    packet_id=packet_id,
+                    timeout=args.timeout,
+                    role=role,
+                    author_route=getattr(args, "author_route", None),
+                    binding_path=str(
+                        resolve_attempts_path().parent / "unit-bindings.jsonl"
+                    ),
+                )
+            except UnitAdmissionError as exc:
+                return fail(f"parent admission refused: {exc}", as_json=as_json)
         try:
             raw_prog = getattr(args, "progress_minutes", 20.0)
             if credential_path is not None:
@@ -1902,7 +1979,17 @@ def _run_run(args: argparse.Namespace) -> int:
                         ),
                         stall_action=getattr(args, "stall_action", "kill"),
                         watch_dirs=owned_paths,
-                        extra_env=extra_env,
+                        extra_env={
+                            **extra_env,
+                            **(
+                                {WORKER_ENV: unit_execution["marker"]}
+                                if unit_execution
+                                else {}
+                            ),
+                        },
+                        additional_dirs=additional_dirs,
+                        control_plane=control_plane,
+                        identity_inputs=identity_inputs,
                     )
             else:
                 dispatch = dispatch_route(
@@ -1914,6 +2001,14 @@ def _run_run(args: argparse.Namespace) -> int:
                     progress_minutes=raw_prog if raw_prog and raw_prog > 0 else None,
                     stall_action=getattr(args, "stall_action", "kill"),
                     watch_dirs=owned_paths,
+                    additional_dirs=additional_dirs,
+                    control_plane=control_plane,
+                    identity_inputs=identity_inputs,
+                    extra_env=(
+                        {WORKER_ENV: unit_execution["marker"]}
+                        if unit_execution
+                        else None
+                    ),
                 )
         except (LLMRouterError, credentials.CredentialStagingError) as exc:
             return fail(f"dispatch failed: {exc}", as_json=as_json)
@@ -1971,6 +2066,9 @@ def _run_run(args: argparse.Namespace) -> int:
                 supervisor_route=outcome.supervisor_route,
                 attempt_id=getattr(args, "attempt_id", None),
                 class_derivation=class_derivation,
+                additional_dirs=additional_dirs,
+                control_plane=control_plane,
+                identity_inputs=identity_inputs,
             )
         except (LLMRouterError, OSError, TypeError, ValueError) as exc:
             return fail(f"attempt record could not be built: {exc}", as_json=as_json)
@@ -1983,6 +2081,7 @@ def _run_run(args: argparse.Namespace) -> int:
         except (LLMRouterError, OSError, TypeError, ValueError) as exc:
             return fail(f"attempt record could not be appended: {exc}", as_json=as_json)
 
+        unit_record = record
         if as_json:
             # One compact JSON object is both the command result and the
             # exact object encoded by append_attempt (the ledger adds only
@@ -2022,6 +2121,11 @@ def _run_run(args: argparse.Namespace) -> int:
     try:
         return _execute_registered()
     finally:
+        if unit_start is not None:
+            try:
+                finish_start(unit_state, unit_id, unit_start, unit_record)
+            except (LLMRouterError, OSError, ValueError, TypeError) as exc:
+                print(f"run: parent accounting incomplete: {exc}", file=sys.stderr)
         cleanup_note = deregister_run(registration)
         if cleanup_note is not None:
             print(f"run: registry cleanup warning: {cleanup_note}", file=sys.stderr)
@@ -3037,10 +3141,29 @@ def main(argv: list[str] | None = None):
         help=(
             "Explicit route id: selection basis 'explicit'; the route must "
             "be eligible under the same role/class path as catalog explain "
-            "(an excluded route exits 3 and launches nothing). Without it, "
+            "(only never_automatic may be waived with --authorized-by lee "
+            "and --reason). Without it, "
             "the first eligible route in catalog explain marginal-price "
             "order is selected (basis 'explain_cheapest_eligible')"
         ),
+    )
+    for flag in ("unit-state", "unit-decision", "unit-id"):
+        run_parser.add_argument(
+            f"--{flag}",
+            default=None,
+            help="Opt-in version-1 parent admission; all three unit flags required",
+        )
+    run_parser.add_argument(
+        "--authorized-by",
+        default=None,
+        metavar="ID",
+        help="Explicit --route authorization; requires 'lee' and --reason",
+    )
+    run_parser.add_argument(
+        "--reason",
+        default=None,
+        metavar="TEXT",
+        help="Nonblank reason for an explicitly authorized --route",
     )
     run_parser.add_argument(
         "--instance",
@@ -3101,6 +3224,36 @@ def main(argv: list[str] | None = None):
         default=None,
         metavar="DIR",
         help="Child and oracle working directory (must exist; default: inherit)",
+    )
+    run_parser.add_argument(
+        "--add-dir",
+        action="append",
+        default=None,
+        dest="add_dirs",
+        metavar="DIR",
+        help=(
+            "Additional readable root for a supported harness; repeatable, "
+            "normalized to an absolute existing directory, and distinct from cwd"
+        ),
+    )
+    run_parser.add_argument(
+        "--control-plane",
+        choices=("lee-llm-router",),
+        default=None,
+        dest="control_plane",
+        metavar="NAME",
+        help="Explicit router control grant (supported value: lee-llm-router)",
+    )
+    run_parser.add_argument(
+        "--identity-file",
+        action="append",
+        default=None,
+        dest="identity_files",
+        metavar="FILE",
+        help=(
+            "UTF-8 identity/policy file appended with a source label to the "
+            "supported harness system prompt; repeatable and deduplicated"
+        ),
     )
     run_parser.add_argument(
         "--parent",

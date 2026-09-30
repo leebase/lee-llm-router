@@ -155,6 +155,37 @@ def test_legacy_claude_and_codex_argv_are_unchanged():
     ) == ["codex", "exec", "--json", "--model", "m", "{prompt}"]
 
 
+def test_claude_identity_capabilities_precede_prompt(tmp_path):
+    employee_base = tmp_path / "employees"
+    assignment = tmp_path / "assignment"
+    employee_base.mkdir()
+    assignment.mkdir()
+
+    cmd = ClaudeCodeCLIProvider().build_command(
+        {
+            "command": "claude",
+            **CLAUDE_GOVERNED_CONFIG,
+            "additional_dirs": [str(employee_base), str(assignment)],
+            "allowed_tools": ["Bash(lee-llm-router:*)"],
+            "disallowed_tools": ["Bash(claude:*)", "Bash(codex:*)"],
+            "append_system_prompt": "identity bytes",
+        }
+    )
+
+    assert cmd[-1] == "{prompt}"
+    assert cmd.count("--add-dir") == 2
+    assert cmd[cmd.index("--allowedTools") + 1] == "Bash(lee-llm-router:*)"
+    denied = [
+        cmd[index + 1]
+        for index, item in enumerate(cmd)
+        if item == "--disallowedTools"
+    ]
+    assert denied == ["Bash(claude:*)", "Bash(codex:*)"]
+    assert cmd[cmd.index("--append-system-prompt") + 1] == "identity bytes"
+    assert "Bash" not in cmd
+    assert "--dangerously-skip-permissions" not in cmd
+
+
 def test_permission_args_without_output_format_still_precede_the_prompt():
     """The governed pair is prompt-adjacent even without governed capture."""
     provider = ClaudeCodeCLIProvider()

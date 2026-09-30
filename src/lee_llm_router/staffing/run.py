@@ -89,6 +89,7 @@ import math
 import os
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -149,7 +150,7 @@ from lee_llm_router.providers.pi_cli import (
 )
 from lee_llm_router.providers.pi_cli import capture_usage as capture_pi_usage
 from lee_llm_router.staffing.catalog import Route as StaffingRoute
-from lee_llm_router.staffing.catalog import StaffingCatalog
+from lee_llm_router.staffing.catalog import StaffingCatalog, resolve_harness_binary
 from lee_llm_router.staffing.eligibility import (
     EligibilityPrice,
     EligibilityRow,
@@ -198,6 +199,8 @@ __all__ = [
     "SELECTION_EXIT_CODE",
     "SelectionOutcome",
     "build_dispatch_command",
+    "normalize_additional_dirs",
+    "normalize_identity_files",
     "dispatch_route",
     "oracle_timeout_seconds",
     "parse_oracle_command",
@@ -364,6 +367,26 @@ _CHANNEL_TO_PI_PROVIDER_ID: dict[str, str] = {
     channel: provider for provider, channel in HARNESS_PROVIDER_CHANNELS.items()
 }
 
+
+def _codex_governed_command() -> str:
+    """Resolve the governed Codex CLI without depending on an interactive PATH.
+
+    Honor the existing explicit harness override, keep normal PATH dispatch,
+    then accept only an executable exact-name CLI in the user's install bin.
+    """
+    if os.environ.get("LEE_LLM_ROUTER_CODEX_BINARY"):
+        return resolve_harness_binary("@CODEX_BINARY@")
+    if shutil.which("codex"):
+        return "codex"
+    installed = Path.home() / ".local" / "bin" / "codex"
+    if installed.is_file() and os.access(installed, os.X_OK):
+        return str(installed.resolve())
+    raise RunDispatchError(
+        "Codex CLI binary not found on PATH or in ~/.local/bin/codex; "
+        "set LEE_LLM_ROUTER_CODEX_BINARY to an installed executable"
+    )
+
+
 _CODEX_GOVERNED_CONFIG: dict[str, Any] = {
     "json_flag": "--json",
     "sandbox_args": ["-s", "workspace-write", "--skip-git-repo-check"],
@@ -381,6 +404,79 @@ _RUN_EDIT_TOOLS = "read,edit,write,grep,find,ls"
 bounded allowlist built from pi's committed built-in tool set minus
 ``bash`` — file edit/create capability for scoped implementation files
 without shell escape. Pi's ``--mode json`` usage capture is unaffected."""
+
+ROUTER_CONTROL_PLANE = "lee-llm-router"
+_ROUTER_CONTROL_TOOL = "Bash(lee-llm-router:*)"
+_DIRECT_PROVIDER_DENIALS = tuple(
+    f"Bash({command}:*)"
+    for command in ("claude", "codex", "agy", "opencode", "omp", "pi")
+)
+
+
+@dataclass(frozen=True)
+class IdentityInput:
+    path: str
+    sha256: str
+    content: str
+
+
+def normalize_additional_dirs(directories: Sequence[str | Path]) -> tuple[str, ...]:
+    """Resolve existing roots and remove duplicates in caller-supplied order."""
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for directory in directories:
+        path = Path(directory).expanduser().resolve()
+        if not path.is_dir():
+            raise RunDispatchError(f"additional directory is not a directory: {path}")
+        value = str(path)
+        if value not in seen:
+            seen.add(value)
+            normalized.append(value)
+    return tuple(normalized)
+
+
+def normalize_identity_files(files: Sequence[str | Path]) -> tuple[IdentityInput, ...]:
+    """Read distinct regular UTF-8 identity files and preserve their bytes."""
+    normalized: list[IdentityInput] = []
+    seen: set[str] = set()
+    for identity_file in files:
+        path = Path(identity_file).expanduser().resolve()
+        if not path.is_file():
+            raise RunDispatchError(f"identity file is not a regular file: {path}")
+        value = str(path)
+        if value in seen:
+            continue
+        try:
+            raw = path.read_bytes()
+            content = raw.decode("utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise RunDispatchError(
+                f"identity file cannot be read as UTF-8: {path}: {exc}"
+            ) from exc
+        seen.add(value)
+        normalized.append(
+            IdentityInput(
+                path=value,
+                sha256=hashlib.sha256(raw).hexdigest(),
+                content=content,
+            )
+        )
+    return tuple(normalized)
+
+
+def _identity_system_prompt(identity_inputs: Sequence[IdentityInput]) -> str | None:
+    if not identity_inputs:
+        return None
+    sections = []
+    for identity in identity_inputs:
+        label = json.dumps(identity.path, ensure_ascii=False)
+        sections.append(
+            f"===== BEGIN IDENTITY FILE {label} =====\n"
+            f"{identity.content}"
+            f"\n===== END IDENTITY FILE {label} ====="
+        )
+    return "\n\n".join(sections)
+
 
 #: Governed ``run`` capture and noninteractive editing reuse the committed
 #: Claude config (:data:`CLAUDE_GOVERNED_CONFIG`) verbatim, so ``claude -p``
@@ -449,7 +545,10 @@ class SelectionOutcome:
     ``basis`` is :data:`SELECTION_BASIS_EXPLICIT` or
     :data:`SELECTION_BASIS_EXPLAIN_CHEAPEST_ELIGIBLE`; ``excluded`` carries
     every excluded route's id and its exact explain reasons joined with
-    ``"; "`` — explain evidence preserved verbatim, never re-judged.
+    ``"; "``. Other routes' explain evidence is preserved verbatim.
+    A caller-declared exception carries ``authorized_by`` and
+    ``authorization_reason`` and removes only the selected route's
+    ``never_automatic`` exclusion from ``excluded``.
 
     ``supervisor_route`` is the accepted supervisor-route object
     (``model``/``effort``/``harness``/``channel``/``provider``) built from the
@@ -478,6 +577,8 @@ class SelectionOutcome:
     """The resolved instance id for the selected route's channel, or ``None``
     when the channel is not a subscription channel (empty instance_headrooms)
     or no instance clears."""
+    authorized_by: str | None = None
+    authorization_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -671,6 +772,8 @@ def select_route(
     class_key: str,
     at_date: date | str,
     route_id: str | None = None,
+    authorized_by: str | None = None,
+    authorization_reason: str | None = None,
     instance_id: str | None = None,
     author_route_id: str | None = None,
     supervisor_route_id: str | None = None,
@@ -698,8 +801,11 @@ def select_route(
             eligibility evaluation).
         at_date: Date for the dated-terms check (ISO string or date).
         route_id: Explicit ``--route`` selection. The route must exist and
-            be currently eligible; otherwise :class:`RunSelectionError`
-            with exit code 3 and the exact explain reason.
+            be currently eligible, except for ``never_automatic`` when Lee
+            explicitly authorizes this pinned route.
+        authorized_by: Caller-declared authorizer; requires ``route_id`` and
+            ``authorization_reason`` and must be exactly ``"lee"``.
+        authorization_reason: Nonblank caller reason for the exception.
         instance_id: Optional explicit ``--instance`` pin. When supplied,
             pins a specific channel instance for the selected route. The
             instance must exist, be enabled, and be eligible (otherwise
@@ -731,11 +837,27 @@ def select_route(
     Raises:
         RunSelectionError: When the class arguments are invalid, the
             explicit route id matches no catalog route, the explicit route
-            is not currently eligible, no route is eligible for
+            is not currently eligible under this exception, no route is eligible for
             role/class selection, or the explicit instance is unknown,
             disabled, ineligible, or specified for a channel with no
             instance concept. ``exit_code`` is always 3.
     """
+    if authorized_by is not None or authorization_reason is not None:
+        if route_id is None:
+            raise RunSelectionError(
+                "--authorized-by and --reason require --route",
+                kind="invalid_arguments",
+            )
+        if (
+            authorized_by != "lee"
+            or not isinstance(authorization_reason, str)
+            or not authorization_reason.strip()
+        ):
+            raise RunSelectionError(
+                "explicit authorization requires --authorized-by lee "
+                "and a nonblank --reason",
+                kind="invalid_arguments",
+            )
     when = _normalize_at_date(at_date)
     try:
         rows = evaluate_eligibility(
@@ -784,7 +906,16 @@ def select_route(
                 kind="unknown_route",
             )
         route = next(r for r in catalog.routes.routes if r.route_id == route_id)
-        if not row.eligible:
+        authorized_exception = (
+            authorized_by == "lee"
+            and "never_automatic" in row.reasons
+            and not row.reserved
+            and all(
+                reason in {"never_automatic", "inherited channel record"}
+                for reason in row.reasons
+            )
+        )
+        if not row.eligible and not authorized_exception:
             raise RunSelectionError(
                 f"explicit route {route_id!r} is not eligible for class "
                 f"{class_key!r} at {when.isoformat()}: {'; '.join(row.reasons)}",
@@ -796,15 +927,29 @@ def select_route(
             rate_table_path=rate_table_path,
         )
         channel_instance = _resolve_channel_instance(row, instance_id)
+        selection_reason = (
+            f"explicit --route {route_id} is eligible for class "
+            f"{class_key} at {when.isoformat()}"
+        )
+        if authorized_exception:
+            selection_reason = (
+                f"explicit --route {route_id} uses a never_automatic exception "
+                f"for class {class_key} at {when.isoformat()}"
+            )
+        if authorized_by is not None:
+            selection_reason += (
+                f"; authorized by {authorized_by}: {authorization_reason.strip()}"
+            )
         return SelectionOutcome(
             route=route,
             basis=SELECTION_BASIS_EXPLICIT,
-            reason=(
-                f"explicit --route {route_id} is eligible for class "
-                f"{class_key} at {when.isoformat()}"
-            ),
+            reason=selection_reason,
             explain_ref=explain_ref,
-            excluded=excluded,
+            excluded=(
+                tuple(entry for entry in excluded if entry[0] != route_id)
+                if authorized_exception
+                else excluded
+            ),
             pricing=row.pricing,
             supervisor_route=attested_supervisor,
             cache_replacement_usd_per_token=cache_repl,
@@ -812,6 +957,10 @@ def select_route(
             cache_rates_checked=True,
             channel_kind=_channel_kind(catalog, route.channel),
             channel_instance=channel_instance,
+            authorized_by=authorized_by,
+            authorization_reason=(
+                authorization_reason.strip() if authorized_by else None
+            ),
         )
 
     eligible = sorted(
@@ -855,7 +1004,8 @@ def selection_record(outcome: SelectionOutcome) -> dict[str, Any]:
 
     Exactly the four schema fields (``basis``, ``reason``, ``explain_ref``,
     ``excluded``); excluded entries carry exactly ``route_id`` and
-    ``reason``. Explain evidence only — never a new selection judgment.
+    ``reason``. An authorized selection excludes the selected route from
+    this list while retaining all other explain exclusions.
     """
     return {
         "basis": outcome.basis,
@@ -1635,6 +1785,9 @@ def build_attempt_record(
     captured_at: str | None = None,
     class_derivation: Mapping[str, Any] | None = None,
     artifacts_dir: str | Path | None = None,
+    additional_dirs: Sequence[str | Path] = (),
+    control_plane: str | None = None,
+    identity_inputs: Sequence[IdentityInput] = (),
 ) -> dict[str, Any]:
     """Build one strict v2 router-run attempt record.
 
@@ -1692,9 +1845,8 @@ def build_attempt_record(
     channel_headroom = availability.headroom(route.channel)
     provider = _HARNESS_PROVIDER_NAMES.get(route.harness, route.harness)
 
-    # ``router_event`` is the existing event shape embedded as provenance
-    # evidence. A run is a strict eligibility decision, not a new resolver
-    # mode; the event remains a normal 17-field build_event result.
+    # ``router_event`` uses the existing event shape. The schema permits an
+    # authorizer only in bind mode; unapproved runs remain strict events.
     from lee_llm_router import events as events_mod
 
     router_event = events_mod.build_event(
@@ -1702,7 +1854,7 @@ def build_attempt_record(
         harness="cli",
         crew="run",
         role=class_record["role"],
-        mode="strict",
+        mode="bind" if outcome.authorized_by is not None else "strict",
         worker_id=route.route_id,
         provider=provider,
         model=route.model,
@@ -1710,7 +1862,7 @@ def build_attempt_record(
         channel=route.channel,
         headroom=channel_headroom.health.value,
         reason=outcome.reason,
-        authorized_by=None,
+        authorized_by=outcome.authorized_by,
         route_id=route.route_id,
         snapshot_observed_at=channel_headroom.observed_at,
         snapshot_stale=channel_headroom.stale,
@@ -1731,6 +1883,31 @@ def build_attempt_record(
         f"oracle verdict: {verdict}; command={'present' if oracle_cmd else 'none'}",
         f"cost: {cost_note}; dated terms at {at_date.isoformat()}",
     ]
+    if additional_dirs or control_plane is not None or identity_inputs:
+        notes.append(
+            "launch inputs and requested capabilities: "
+            + json.dumps(
+                {
+                    "additional_dirs": [str(path) for path in additional_dirs],
+                    "identity_files": [
+                        {"path": identity.path, "sha256": identity.sha256}
+                        for identity in identity_inputs
+                    ],
+                    "control_plane": control_plane,
+                    "allowed_tools": (
+                        [_ROUTER_CONTROL_TOOL] if control_plane is not None else []
+                    ),
+                    "disallowed_tools": (
+                        list(_DIRECT_PROVIDER_DENIALS)
+                        if control_plane is not None
+                        else []
+                    ),
+                    "permission_prompts": "none",
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
     if dispatch.timed_out:
         kr = dispatch.kill_reason or "ceiling"
         n = _format_minutes(dispatch.duration_seconds)
@@ -1950,6 +2127,9 @@ def build_dispatch_command(
     route: StaffingRoute,
     *,
     timeout_seconds: float | None = None,
+    additional_dirs: Sequence[str | Path] = (),
+    control_plane: str | None = None,
+    identity_inputs: Sequence[IdentityInput] = (),
 ) -> list[str]:
     """Build the route's dispatch argv through its harness provider.
 
@@ -1985,6 +2165,16 @@ def build_dispatch_command(
             or a Pi route's channel has no committed provider id.
     """
     harness = route.harness
+    if control_plane not in (None, ROUTER_CONTROL_PLANE):
+        raise RunDispatchError(f"unknown control plane: {control_plane!r}")
+    normalized_dirs = normalize_additional_dirs(additional_dirs)
+    if (
+        normalized_dirs or control_plane is not None or identity_inputs
+    ) and harness != "claude":
+        raise RunDispatchError(
+            f"harness {harness!r} does not support additional directory or "
+            "control-plane grants"
+        )
     provider_cls = _HARNESS_PROVIDER_CLASSES.get(harness)
     if provider_cls is None:
         raise RunDispatchError(
@@ -1998,8 +2188,16 @@ def build_dispatch_command(
         }
     elif harness == "codex":
         config = dict(_CODEX_GOVERNED_CONFIG)
+        config["command"] = _codex_governed_command()
     elif harness == "claude":
         config = dict(CLAUDE_GOVERNED_CONFIG)
+        config["additional_dirs"] = list(normalized_dirs)
+        if control_plane is not None:
+            config["allowed_tools"] = [_ROUTER_CONTROL_TOOL]
+            config["disallowed_tools"] = list(_DIRECT_PROVIDER_DENIALS)
+        identity_prompt = _identity_system_prompt(identity_inputs)
+        if identity_prompt is not None:
+            config["append_system_prompt"] = identity_prompt
     elif harness == "agy":
         # agy print mode waits 5m0s by default and then returns partial
         # output with the turn still in progress (observed 2026-09-12, P5-2b
@@ -2792,6 +2990,9 @@ def dispatch_route(
     poll_seconds: float = DEFAULT_POLL_SECONDS,
     stderr: TextIO | None = None,
     extra_env: dict[str, str] | None = None,
+    additional_dirs: Sequence[str | Path] = (),
+    control_plane: str | None = None,
+    identity_inputs: Sequence[IdentityInput] = (),
 ) -> DispatchOutcome:
     """Dispatch the selected route once through the watchdog boundary.
 
@@ -2833,7 +3034,13 @@ def dispatch_route(
             not exist, or the timeout is not positive.
     """
     harness = route.harness
-    argv = build_dispatch_command(route, timeout_seconds=timeout_seconds)
+    argv = build_dispatch_command(
+        route,
+        timeout_seconds=timeout_seconds,
+        additional_dirs=additional_dirs,
+        control_plane=control_plane,
+        identity_inputs=identity_inputs,
+    )
 
     if workdir is not None:
         workdir_path = Path(workdir)
