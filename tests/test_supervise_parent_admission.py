@@ -132,6 +132,128 @@ def finish(tmp_path: Path, number: int, accounted: bool = True) -> None:
     )
 
 
+def checkpoint(starts=2, seconds=30):
+    return dict(
+        version=1,
+        max_starts=starts,
+        max_seconds=seconds,
+        source="internal fixture checkpoint",
+    )
+
+
+def test_checkpoint_adoption_counts_legacy_history_and_asserted_progress(tmp_path):
+    value = decision()
+    finish(tmp_path, reserve(tmp_path, value))
+    value = advance(value, moved=True)
+    value["checkpoint"] = checkpoint()
+    finish(tmp_path, reserve(tmp_path, value))
+    value = advance(value, moved=True)
+    value["dispatch"].update(
+        method="new-method", capability="new-capability", hypothesis="new-hypothesis"
+    )
+    with pytest.raises(UnitAdmissionError, match="checkpoint starts exhausted"):
+        reserve(tmp_path, value)
+    assert (
+        len(
+            [
+                json.loads(x)
+                for x in (tmp_path / "STATE.jsonl").read_text().splitlines()
+                if json.loads(x)["kind"] == "start"
+            ]
+        )
+        == 2
+    )
+
+
+@pytest.mark.parametrize("mutation", ["drop", "raise", "source", "owner"])
+def test_checkpoint_cannot_renew_after_owner_or_source_change(tmp_path, mutation):
+    value = decision()
+    value["checkpoint"] = checkpoint()
+    finish(tmp_path, reserve(tmp_path, value))
+    value = advance(value, moved=True)
+    if mutation == "drop":
+        del value["checkpoint"]
+    elif mutation == "raise":
+        value["checkpoint"]["max_starts"] += 1
+    elif mutation == "source":
+        value["checkpoint"]["source"] = "new supervisor story"
+    else:
+        value["workstream"] = dict(
+            version=1,
+            id="owner-handoff",
+            owner="router-owner",
+            owned_paths=[str(tmp_path)],
+            previous_id="initial",
+            authority="fixture owner handoff",
+            boundary="authority",
+        )
+        value["checkpoint"]["max_starts"] += 1
+    with pytest.raises(UnitAdmissionError, match="checkpoint cannot"):
+        reserve(tmp_path, value)
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("version", True),
+        ("max_starts", True),
+        ("max_starts", 1.5),
+        ("max_seconds", float("nan")),
+        ("max_seconds", -1),
+        ("source", ""),
+        ("extra", 1),
+    ],
+)
+def test_invalid_checkpoint_fails_closed(tmp_path, key, value):
+    d = decision()
+    d["checkpoint"] = checkpoint()
+    d["checkpoint"][key] = value
+    with pytest.raises(UnitAdmissionError, match="invalid checkpoint"):
+        reserve(tmp_path, d)
+
+
+def test_checkpoint_reserves_full_timeout_and_retained_time(tmp_path):
+    value = decision()
+    value["checkpoint"] = checkpoint(seconds=10)
+    finish(tmp_path, reserve(tmp_path, value))
+    value = advance(value, moved=True)
+    with pytest.raises(UnitAdmissionError, match="checkpoint time exhausted"):
+        reserve(tmp_path, value)  # One retained second plus ten-second reservation.
+
+
+def test_checkpoint_cli_refuses_before_provider(
+    monkeypatch, capsys, catalog_dir, snapshot, packet, scratch_state, tmp_path
+):
+    value = decision()
+    value["checkpoint"] = checkpoint(seconds=1)
+    path = tmp_path / "decision.json"
+    path.write_text(json.dumps(value))
+    launcher = LaunchRecorder()
+    code, captured = _run_cli(
+        monkeypatch,
+        capsys,
+        catalog_dir=catalog_dir,
+        snapshot_path=snapshot,
+        packet_path=packet,
+        route=PI_ROUTE,
+        timeout=10,
+        launcher=launcher,
+        extra=[
+            "--unit-id",
+            "parent",
+            "--unit-state",
+            str(tmp_path / "STATE.jsonl"),
+            "--unit-decision",
+            str(path),
+        ],
+    )
+    assert code == 3
+    assert "checkpoint time exhausted" in captured.err
+    assert not launcher.processes
+    assert not scratch_state["attempts"].exists()
+    assert not (tmp_path / "STATE.jsonl").read_text().strip()
+
+
 def test_waste_survives_worker_packet_route_and_finding_renames(tmp_path):
     value = decision()
     for finding in ("new-review-id-1", "new-review-id-2"):
@@ -1081,3 +1203,163 @@ def test_shutdown_refuses_actual_live_process_with_matching_environment(monkeypa
         admission._stopped(
             {"execution": identity}, {"controller_finished_at": "retained finish"}
         )
+
+
+def owner_handoff(value, owner="router-owner", identity="router-seam"):
+    value["workstream"] = dict(
+        version=1,
+        id=identity,
+        owner=owner,
+        owned_paths=["/owned/router"],
+        previous_id="initial",
+        authority="Lee explicit repository-owner delegation",
+        boundary="authority",
+    )
+    value["dispatch"].update(
+        phase="author",
+        repair_round=0,
+        method="protected-owner-seam",
+        capability="owner-authorized repository repair",
+        hypothesis="owner can repair missing supported execution boundary",
+    )
+    return value
+
+
+def test_owner_handoff_retains_parent_accounting_and_review_window(tmp_path):
+    value = decision()
+    for phase, round_number in [
+        ("author", 0),
+        ("review", 0),
+        ("repair", 1),
+        ("final_review", 1),
+    ]:
+        value = phase_step(tmp_path, value, phase, round_number)
+    value = owner_handoff(value)
+    assert reserve(tmp_path, value) == 5
+    finish(tmp_path, 5)
+    value = advance(value, moved=True)
+    value["dispatch"].update(phase="review", targets=["review-gate"])
+    assert reserve(tmp_path, value) == 6
+    finish(tmp_path, 6)
+    value = advance(value, moved=True)
+    value["dispatch"].update(phase="author")
+    with pytest.raises(UnitAdmissionError, match="authoring cannot restart"):
+        reserve(tmp_path, value)
+    assert (
+        len(
+            [
+                json.loads(line)
+                for line in (tmp_path / "STATE.jsonl").read_text().splitlines()
+                if json.loads(line)["kind"] == "start"
+            ]
+        )
+        == 6
+    )
+
+
+@pytest.mark.parametrize(
+    "change", ["same_owner", "counts", "limits", "history", "drop", "mutate"]
+)
+def test_owner_handoff_cannot_erase_parent_or_rename_stable_contract(tmp_path, change):
+    value = decision()
+    finish(tmp_path, reserve(tmp_path, value))
+    value = owner_handoff(advance(value, moved=True))
+    if change == "same_owner":
+        value["workstream"]["owner"] = "chief-of-staff"
+    elif change == "counts":
+        value["completed_starts"] = 0
+    elif change == "limits":
+        value["limits"] = dict(starts=100, authority="fresh child budget")
+    elif change == "history":
+        value["assessments"] = []
+    else:
+        finish(tmp_path, reserve(tmp_path, value))
+        value = advance(value, moved=True)
+        if change == "drop":
+            del value["workstream"]
+        else:
+            value["workstream"]["owned_paths"] = ["/different/router"]
+    with pytest.raises(UnitAdmissionError):
+        reserve(tmp_path, value)
+
+
+def test_one_internal_checkpoint_extension_is_finite_and_cumulative(tmp_path):
+    value = decision()
+    value["checkpoint"] = checkpoint(starts=1)
+    finish(tmp_path, reserve(tmp_path, value))
+    value = advance(value, moved=True)
+    value["checkpoint_extension"] = dict(
+        version=1,
+        starts=1,
+        source="D268 one internal checkpoint extension; no outer limit change",
+    )
+    finish(tmp_path, reserve(tmp_path, value))
+    value = advance(value, moved=True)
+    with pytest.raises(UnitAdmissionError, match="checkpoint starts exhausted"):
+        reserve(tmp_path, value)
+    value["checkpoint_extension"]["source"] = "fresh extension story"
+    with pytest.raises(UnitAdmissionError, match="extension cannot"):
+        reserve(tmp_path, value)
+    del value["checkpoint_extension"]
+    with pytest.raises(UnitAdmissionError, match="extension cannot"):
+        reserve(tmp_path, value)
+
+
+def test_checkpoint_extension_never_raises_supplied_outer_limit(tmp_path):
+    value = decision()
+    value["checkpoint"] = checkpoint(starts=1)
+    value["limits"] = dict(starts=1, authority="fixture explicit outer cap")
+    finish(tmp_path, reserve(tmp_path, value))
+    value = advance(value, moved=True)
+    value["checkpoint_extension"] = dict(
+        version=1, starts=1, source="internal extension"
+    )
+    with pytest.raises(UnitAdmissionError, match="supplied parent starts exhausted"):
+        reserve(tmp_path, value)
+
+
+@pytest.mark.parametrize("starts", [0, 2, True, 1.5])
+def test_checkpoint_extension_cannot_multiply_or_renew_allowance(tmp_path, starts):
+    value = decision()
+    value["checkpoint"] = checkpoint()
+    finish(tmp_path, reserve(tmp_path, value))
+    value = advance(value, moved=True)
+    value["checkpoint_extension"] = dict(version=1, starts=starts, source="new story")
+    with pytest.raises(UnitAdmissionError, match="invalid one-start"):
+        reserve(tmp_path, value)
+
+
+def test_explicit_continuation_grant_retains_counters_and_caps(tmp_path):
+    import hashlib
+
+    import lee_llm_router.staffing.unit_admission as admission
+
+    source = tmp_path / "lee-grant.md"
+    source.write_text("Lee grants two additional starts and ten seconds.")
+    value = decision()
+    value["checkpoint"] = checkpoint(starts=1, seconds=10)
+    starts = [{"decision": value}]
+    grant = dict(
+        kind="continuation_grant",
+        version=1,
+        unit_id=value["unit_id"],
+        grant_id="lee-1",
+        at_start=1,
+        used_seconds=3,
+        additional_starts=2,
+        additional_seconds=10,
+        authority="Lee explicit continuation",
+        source=str(source),
+        source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+        recorded_at="2026-10-01T00:00:00Z",
+    )
+    admission._enforce_checkpoint(value, starts, 3, 2, [grant])
+    with pytest.raises(UnitAdmissionError, match="starts exhausted"):
+        admission._enforce_checkpoint(value, starts * 3, 5, 2, [grant])
+    with pytest.raises(UnitAdmissionError, match="time exhausted"):
+        admission._enforce_checkpoint(value, starts, 12, 2, [grant])
+    with pytest.raises(UnitAdmissionError, match="invalid host"):
+        admission._enforce_checkpoint(value, starts, 3, 2, [grant, grant])
+    source.write_text("changed authority")
+    with pytest.raises(UnitAdmissionError, match="source missing or changed"):
+        admission._enforce_checkpoint(value, starts, 3, 2, [grant])

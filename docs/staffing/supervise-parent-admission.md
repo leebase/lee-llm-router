@@ -138,3 +138,9 @@ completed blocking review requires the next directed repair round. Multiple
 targets name advanced_targets explicitly; movement on another row never resets
 the failed target’s method streak. Labels/capability claims remain subject to
 independent evidence inspection.
+
+## Explicit owning-workstream boundary transition
+
+A trusted supervisor may include `workstream` in the same version1 decision, with exactly version1, id, owner, owned_paths (canonical absolute non-root paths), previous_id, authority (attributed source) and boundary (authority or owned_surface). Legacy review unit is `initial`, owner chief-of-staff. Transition from legacy needs changed owner authority; later transitions require the named owner or owned surfaces actually change. IDs cannot be reused; contract cannot mutate or disappear within a stable unit. This is an explicit governing-boundary handoff, never model/method rename. Supervisor must inspect the actual grant; this schema, like limits.authority, cannot authenticate narrative authority.
+
+Only the review-phase window belongs to that stable owned unit. Whole-parent start/finish counts, previous-decision chain, limits, gap set, immutable assessments, method/denial history and resources remain unchanged and enforced across transitions. Every provider still uses all3parentflags and one protected host journal. Each changed owned unit needs its own independent final review; parent acceptance remains all frozen consuming/human gates. Missing numeric limits are not infinite or refreshed funding. New scope authority is not execution-budget authority. Do not use this feature to obtain a third repair of unchanged code under a renamed unit.

@@ -193,6 +193,17 @@ New lane authorized by Chief of Staff decision D187. Plan lives at
 `docs/crew-resolver/sprint-plan.md` (six sprints, its own numbering). Start there after a
 context reset.
 
+## 2026-09-22 — completed provisional model substitution
+
+- [x] Apply Chief D355 to active staffing routes, crew bindings and never-automatic policy without changing roles, effort or channels. Continue measuring supervised task outcomes before any performance ranking.
+
+## 2026-09-22 — FS0 CSS packet classification repair
+
+- [x] Derive existing `mixed` language for CSS-only and TSX+CSS packets; retain unsupported-extension rejection.
+- [x] Focused class oracle: 33 passed; FS5.1a staff JSON: nine owned paths, class language `mixed`.
+- [ ] Chief independent oracle, exact five-path delta and CLI check, and final Opus 0H/M review pending.
+
+
 ## 2026-09-29 — isolated supervise owner repair candidate
 
 Direct owner assignment `supervise-remediation-0929`; amended diagnosis implemented
@@ -231,3 +242,22 @@ Lee accepted the rollout and authorized commit/push. The publication includes
 exact reviewed runtime bytes and necessary accepted reserve/launch dependencies,
 with catalog-compatible focused tests. Model replacements, CSS work and other
 canonical dirt remain outside this commit. See [user instructions](docs/supervise-rollout.md).
+
+## 2026-09-30 — Bonnie delegated owner continuation
+
+Complete protected Staff consumption of the reviewed router executor seam;
+exercise an employee-owned native Board assignment with deliberately failed
+worker launch, same-parent recovery, independent artifact review and reconciled
+receipts. Preserve all original attempts and limits, including earlier review
+classification correction. Freeze the reviewed candidate and state-preserving
+installation/rollback instructions for Lee before any Bonnie environment change.
+
+
+## Chief owner repair — Bonnie, October1
+
+Lee explicitly authorized router-owner work for the original Bonnie parent. Added immutable opted-in economical checkpoint with one finite D268 extension; installed supervise guidance requires adoption. Final router210 checks passed. Independent source review72 approved its exact frozen revision; later two-field assignment-binding compatibility delta remains independently unapproved after final review75 launcher failed before the model. Original parent retains75 starts/75 finishes and exhaustion refuses another start. No76, no deployment, no parent acceptance. Evidence: /home/lee/projects/chief-of-staff/plans/bonnie-architecture-upgrade/RESULT.md. This scoped continuation does not supersede unrelated router work.
+
+
+## 2026-10-01 — Bonnie explicitly authorized continuation accepted
+
+This supersedes the exhausted75-attempt Bonnie disposition above for technical predeployment scope only. Lee granted12 additional routed starts/10800 aggregate worker-seconds under the original parent. The host admission seam now validates append-only authority-attributed continuation grants without changing counters or the old checkpoint. `close_outcome` rejects OPEN gaps and unaccounted starts, records evidenced parent closure, and prevents new starts on a closed parent. Independent final parent review87 approved the final candidate; actual original-parent closure succeeded after the unattended same-parent failure/recovery, owner handoff, review and employee-result evidence reconciled. All87 starts/finishes retained; continuation used581.412 recorded worker-seconds. Focused closure/checkpoint/continuation checks:37 passed; prior210 router/119 Staff accepted checks retained without redundant reruns. No deployment, customer acceptance or general restoration of failed staffing methods. No unrelated repository changes published. Evidence: `/home/lee/projects/chief-of-staff/plans/bonnie-architecture-upgrade/RESULT.md`, `proof/PARENT-INDEPENDENT-ACCEPTANCE.md`, `proof/FINAL-GUARDED-CLOSURE.json`. Frozen credential-free release manifest and limitations are in that outcome directory.

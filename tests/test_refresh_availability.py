@@ -525,3 +525,58 @@ def test_instance_key_is_passed_through_unmodified(tmp_path: Path) -> None:
     assert written["subscriptions"][0]["instance"] == "a"
     assert written["subscriptions"][1]["instance"] is None
     assert written["subscriptions"] == entries
+
+
+# --------------------------------------------------------------------------
+# Snapshot mode is pinned to 0644 for the protected worker
+# --------------------------------------------------------------------------
+
+
+def _run_under_umask(
+    args: list[str], snapshot: Path, umask: int
+) -> subprocess.CompletedProcess[str]:
+    """Run the real script with the given process umask."""
+    env = dict(os.environ)
+    env["LEE_LLM_ROUTER_AVAILABILITY_FILE"] = str(snapshot)
+    shim = f'umask {umask:04o} && exec bash "$0" "$@"'
+    return subprocess.run(
+        ["bash", "-c", shim, str(SCRIPT), *args],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+
+def test_snapshot_is_0644_under_a_permissive_umask(tmp_path: Path) -> None:
+    """Umask 0002 must not leave a group-writable snapshot behind."""
+    capture = _capture_file(tmp_path)
+    snapshot = tmp_path / "state" / "A8Max.json"
+    dry = _run_under_umask(["--dry-run", "--input", str(capture)], snapshot, 0o002)
+    assert dry.returncode == 0, dry.stderr
+
+    result = _run_under_umask(["--input", str(capture)], snapshot, 0o002)
+
+    assert result.returncode == 0, result.stderr
+    assert snapshot.stat().st_mode & 0o777 == 0o644
+    written = json.loads(snapshot.read_text(encoding="utf-8"))
+    expected = json.loads(dry.stdout)
+    written.pop("written_at")
+    expected.pop("written_at")
+    assert written == expected
+    assert [p.name for p in snapshot.parent.iterdir()] == ["A8Max.json"]
+
+
+def test_invalid_input_keeps_old_snapshot_mode_and_content(tmp_path: Path) -> None:
+    """A rejected payload under umask 0002 leaves the prior file exactly as it was."""
+    capture = _capture_payload(tmp_path, '{"foo":1}')
+    snapshot = tmp_path / "A8Max.json"
+    snapshot.write_text(PRIOR_SNAPSHOT, encoding="utf-8")
+    snapshot.chmod(0o640)
+
+    result = _run_under_umask(["--input", str(capture)], snapshot, 0o002)
+
+    assert result.returncode == 1
+    assert snapshot.read_text(encoding="utf-8") == PRIOR_SNAPSHOT
+    assert snapshot.stat().st_mode & 0o777 == 0o640
+    assert not list(snapshot.parent.glob("*.tmp.*"))

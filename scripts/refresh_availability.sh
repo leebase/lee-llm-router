@@ -216,5 +216,8 @@ tmp_file="${OUT_FILE}.tmp.$$"
 # Any exit between here and the rename must leave no partial *.tmp.* behind.
 trap 'rm -f -- "$tmp_file"' EXIT
 printf '%s\n' "$stamped" > "$tmp_file"
+# The protected worker rejects a group-writable snapshot, so pin the mode
+# instead of inheriting the caller's umask (0002 would yield 0664).
+chmod 0644 -- "$tmp_file"
 mv -f -- "$tmp_file" "$OUT_FILE"
 trap - EXIT

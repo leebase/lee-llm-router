@@ -877,6 +877,15 @@ pytest tests/test_smoke.py -v   # â†’ 4 passed
 
 *Add new entries above this line. Keep the newest work at the top.*
 
+## 2026-09-22 — provisional successor routes (D355)
+
+Updated live catalog, crew bindings and policy to the GPT-6 Sol/Luna and Opus 5.5 successors. Catalog and crew doctors passed (41 routes including nine retired predecessors; 30/30 workers resolved), pricing lookup passed, and focused staffing tests passed (174; one pre-existing unrelated live-crew catalog mismatch deselected). Independent review is recorded in the Chief journal.
+
+## 2026-09-22 — FS0 CSS packet classification repair
+
+Mapped only `.css` to the existing conservative `mixed` class and added CSS-only, TSX+CSS, and unsupported-extension tests. `python3 -m pytest tests/test_staffing_derive_class.py -q`: 33 passed. Actual FS5.1a `staff --from-packet ... --json` succeeded with nine owned paths and language `mixed`. Chief independent targeted oracle, exact five-path delta/CLI review, and final Opus 0H/M gate remain pending; no full router suite claim.
+
+
 ## 2026-09-29 — isolated supervise owner repair candidate
 
 Direct owner assignment `supervise-remediation-0929`; amended diagnosis implemented
@@ -915,3 +924,22 @@ Lee accepted the rollout and authorized commit/push. The publication includes
 exact reviewed runtime bytes and necessary accepted reserve/launch dependencies,
 with catalog-compatible focused tests. Model replacements, CSS work and other
 canonical dirt remain outside this commit. See [user instructions](docs/supervise-rollout.md).
+
+## 2026-09-30 — Scoped owner-seam review
+
+`code-reviews/bonnie-owner-seam.md` independently reviewed the final admission,
+executor, run/CLI transport and regression deltas: PASS, no High/Medium findings.
+Root also observed 99 focused checks passing. This accepts the router foundation
+only. Staff's cumulative broker, namespace adapter, negative architecture check
+and actual same-parent recovery journey still require integrated evidence and
+independent final review before the parent result is acceptable.
+
+
+## Chief owner repair — Bonnie, October1
+
+Lee explicitly authorized router-owner work for the original Bonnie parent. Added immutable opted-in economical checkpoint with one finite D268 extension; installed supervise guidance requires adoption. Final router210 checks passed. Independent source review72 approved its exact frozen revision; later two-field assignment-binding compatibility delta remains independently unapproved after final review75 launcher failed before the model. Original parent retains75 starts/75 finishes and exhaustion refuses another start. No76, no deployment, no parent acceptance. Evidence: /home/lee/projects/chief-of-staff/plans/bonnie-architecture-upgrade/RESULT.md. This scoped continuation does not supersede unrelated router work.
+
+
+## 2026-10-01 — Bonnie explicitly authorized continuation accepted
+
+This supersedes the exhausted75-attempt Bonnie disposition above for technical predeployment scope only. Lee granted12 additional routed starts/10800 aggregate worker-seconds under the original parent. The host admission seam now validates append-only authority-attributed continuation grants without changing counters or the old checkpoint. `close_outcome` rejects OPEN gaps and unaccounted starts, records evidenced parent closure, and prevents new starts on a closed parent. Independent final parent review87 approved the final candidate; actual original-parent closure succeeded after the unattended same-parent failure/recovery, owner handoff, review and employee-result evidence reconciled. All87 starts/finishes retained; continuation used581.412 recorded worker-seconds. Focused closure/checkpoint/continuation checks:37 passed; prior210 router/119 Staff accepted checks retained without redundant reruns. No deployment, customer acceptance or general restoration of failed staffing methods. No unrelated repository changes published. Evidence: `/home/lee/projects/chief-of-staff/plans/bonnie-architecture-upgrade/RESULT.md`, `proof/PARENT-INDEPENDENT-ACCEPTANCE.md`, `proof/FINAL-GUARDED-CLOSURE.json`. Frozen credential-free release manifest and limitations are in that outcome directory.

@@ -152,6 +152,7 @@ from lee_llm_router.providers.pi_cli import capture_usage as capture_pi_usage
 from lee_llm_router.staffing.catalog import Route as StaffingRoute
 from lee_llm_router.staffing.catalog import StaffingCatalog, resolve_harness_binary
 from lee_llm_router.staffing.eligibility import (
+    _SAME_FAMILY_REVIEW_DISCLOSURE,
     EligibilityPrice,
     EligibilityRow,
     StaffingEligibilityError,
@@ -1021,20 +1022,22 @@ def selection_record(outcome: SelectionOutcome) -> dict[str, Any]:
 def _is_role_class_capability_reason(reason: str) -> bool:
     """Whether one explain reason is worker role/class capability policy.
 
-    Exactly the three checks that must never be imposed on an attested
+    The worker-selection checks that must never be imposed on an attested
     supervisor identity: the D188 ``role_scoped`` denial (reason
     ``role_scoped: <class> denied for <model>``) and the review/judge
     author-family ``independence`` exclusion (Astra final-review finding 5),
     plus ``never_automatic`` (D223, Lee 2026-09-12: never-automatic governs
     *selection* of a worker, not the *identity* of the supervisor attesting a
     run — Fable/Opus/Luna-Max supervisors were refused as
-    ``supervisor_route_unattested`` throughout Phase 5). Every other governed
-    reason — status, channel membership, harness lock, availability veto,
-    terms/pricing availability — still refuses an attestation.
+    ``supervisor_route_unattested`` throughout Phase 5). The permitted
+    same-family review disclosure is informational, not an identity veto.
+    Every other governed reason — status, channel membership, harness lock,
+    availability veto, terms/pricing availability — still refuses an attestation.
     """
     return (
         reason == "independence"
         or reason == "never_automatic"
+        or reason == _SAME_FAMILY_REVIEW_DISCLOSURE
         or reason.startswith("role_scoped:")
     )
 
@@ -1060,8 +1063,9 @@ def _resolve_supervisor_route(
       channel membership, harness lock, availability headroom veto,
       unavailable dated terms or pricing. The only reasons *not* imposed on
       the supervisor are the worker-selection policies (``role_scoped``, the
-      review/judge ``independence`` author-family exclusion, and
-      ``never_automatic`` — D223): attesting one's identity is not selecting
+      review/judge ``independence`` author-family exclusion,
+      ``never_automatic`` — D223, and the informational same-family review
+      disclosure): attesting one's identity is not selecting
       a worker, and the supervisor is never a review candidate.
 
     Any refusal raises :class:`RunSelectionError` (exit 3) before anything
@@ -2993,6 +2997,7 @@ def dispatch_route(
     additional_dirs: Sequence[str | Path] = (),
     control_plane: str | None = None,
     identity_inputs: Sequence[IdentityInput] = (),
+    trusted_executor_argv_prefix: Sequence[str] = (),
 ) -> DispatchOutcome:
     """Dispatch the selected route once through the watchdog boundary.
 
@@ -3018,6 +3023,8 @@ def dispatch_route(
         sleep: Injected sleep callable (tests).
         poll_seconds: Watchdog polling cadence.
         stderr: Stream for watchdog warnings (defaults to ``sys.stderr``).
+        trusted_executor_argv_prefix: Validated privileged host launcher argv.
+            Applied only after provider command construction and prompt delivery.
         extra_env: Optional environment variables to merge into the child
             environment.
 
@@ -3062,12 +3069,19 @@ def dispatch_route(
     sleep_fn = sleep if sleep is not None else _DEFAULT_SLEEP
     cwd = str(Path(workdir)) if workdir is not None else None
 
+    launch_error: OSError | None = None
+
     def safe_popen(child_argv: list[str], **kwargs: Any) -> Any:
         """Keep the worker boundary explicitly argv-only and non-shell."""
+        nonlocal launch_error
         kwargs["shell"] = False
         if cwd is not None:
             kwargs["cwd"] = cwd
-        return base_popen(child_argv, **kwargs)
+        try:
+            return base_popen([*trusted_executor_argv_prefix, *child_argv], **kwargs)
+        except OSError as exc:
+            launch_error = exc
+            raise
 
     # Let the supervision layer apply real-process containment without
     # mistaking a monkeypatched ``_DEFAULT_POPEN`` fake for the real spawner.
@@ -3089,23 +3103,49 @@ def dispatch_route(
     owned_before = scan_watch_dirs(watch_paths) if watch_paths else None
 
     started = clock_fn()
-    exit_code = run_supervised_dispatch(
-        resolution,
-        prompt,
-        stall_minutes=stall_minutes,
-        max_minutes=max_minutes,
-        progress_minutes=progress_minutes,
-        stall_action=stall_action,
-        watch_dirs=watch_dirs,
-        popen=popen_fn,
-        clock=clock_fn,
-        sleep=sleep_fn,
-        poll_seconds=poll_seconds,
-        sink=stdout_buf.extend,
-        err_sink=stderr_buf.extend,
-        stderr=stderr,
-        extra_env=extra_env,
-    )
+    try:
+        exit_code = run_supervised_dispatch(
+            resolution,
+            prompt,
+            stall_minutes=stall_minutes,
+            max_minutes=max_minutes,
+            progress_minutes=progress_minutes,
+            stall_action=stall_action,
+            watch_dirs=watch_dirs,
+            popen=popen_fn,
+            clock=clock_fn,
+            sleep=sleep_fn,
+            poll_seconds=poll_seconds,
+            sink=stdout_buf.extend,
+            err_sink=stderr_buf.extend,
+            stderr=stderr,
+            extra_env=extra_env,
+        )
+    except OSError as exc:
+        if exc is not launch_error:
+            raise
+        # Never expose exception text/filenames: they can contain prompt or secrets.
+        diagnostic = f"native launch failed: OSError errno={exc.errno}"
+        return DispatchOutcome(
+            argv=tuple(argv),
+            exit_code=127,
+            stdout="",
+            stderr=diagnostic,
+            duration_seconds=clock_fn() - started,
+            timed_out=False,
+            usage={
+                "basis": "unavailable",
+                "unavailable_reason": "native launch failed; provider never started",
+                "input_tokens": None,
+                "output_tokens": None,
+                "cached_input_tokens": None,
+                "reasoning_tokens": None,
+                "total_tokens": None,
+            },
+            stall_minutes=stall_minutes,
+            progress_minutes=progress_minutes,
+            max_minutes=max_minutes,
+        )
     duration = clock_fn() - started
 
     owned_after = scan_watch_dirs(watch_paths) if watch_paths else None

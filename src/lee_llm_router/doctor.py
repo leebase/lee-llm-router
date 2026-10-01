@@ -1531,6 +1531,129 @@ def _run_catalog_no_subcommand(_args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _worker_binding_path() -> Path:
+    from pathlib import Path
+
+    return Path("/run/assignment/binding.json")
+
+
+def _run_worker_bound() -> bool:
+    """Detect worker context; ancestor inspection is best effort on Linux."""
+    import os
+    from pathlib import Path
+
+    marker = "LEE_LLM_ROUTER_PARENT_START"
+    binding_present = False
+    try:
+        _worker_binding_path().lstat()  # Includes dangling links and forged markers.
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return True
+    else:
+        binding_present = True
+    if marker in os.environ:
+        return True
+    pid = os.getppid()
+    for _ in range(32):
+        if pid <= 0 or not sys.platform.startswith("linux"):
+            break
+        proc = Path("/proc") / str(pid)
+        try:
+            if any(
+                entry.startswith((marker + "=").encode())
+                for entry in (proc / "environ").read_bytes().split(b"\0")
+            ):
+                return True
+        except OSError:
+            pass
+        try:
+            pid = int((proc / "stat").read_text().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            break
+    return binding_present and not _legacy_capture_bootstrap()
+
+
+def _legacy_capture_bootstrap() -> bool:
+    """Permit only the host's first legacy capture child in its fixed PID namespace."""
+    import json
+    import os
+    import stat
+    from pathlib import Path
+
+    if not sys.platform.startswith("linux") or os.getpid() != 3 or os.getppid() != 2:
+        return False
+    try:
+        path = _worker_binding_path()
+        with os.fdopen(
+            os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb"
+        ) as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                return False
+            raw = stream.read(1025)
+        if len(raw) > 1024:
+            return False
+
+        def pairs(items):
+            result = {}
+            for key, value in items:
+                if key in result:
+                    raise ValueError("duplicate binding")
+                result[key] = value
+            return result
+
+        binding = json.loads(raw, object_pairs_hook=pairs)
+        if (
+            not isinstance(binding, dict)
+            or set(binding) != {"employee_id", "task_id"}
+            or not all(
+                isinstance(binding[key], str) and binding[key]
+                for key in ("employee_id", "task_id")
+            )
+        ):
+            return False
+        bootstrap_path = path.parent / "router-bootstrap.json"
+        with os.fdopen(
+            os.open(bootstrap_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK),
+            "rb",
+        ) as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                return False
+            bootstrap_raw = stream.read(1025)
+        if len(bootstrap_raw) > 1024:
+            return False
+        bootstrap = json.loads(bootstrap_raw, object_pairs_hook=pairs)
+        if (
+            not isinstance(bootstrap, dict)
+            or set(bootstrap) != {"version", "employee_id", "task_id"}
+            or type(bootstrap["version"]) is not int
+            or bootstrap["version"] != 1
+            or any(bootstrap[key] != binding[key] for key in ("employee_id", "task_id"))
+        ):
+            return False
+        parent = Path("/proc/2")
+        if int((parent / "stat").read_text().rsplit(")", 1)[1].split()[1]) != 1:
+            return False
+        argv = (parent / "cmdline").read_bytes().split(b"\0")
+        if (
+            len(argv) < 5
+            or argv[:2] != [b"/usr/bin/python3", b"/run/assignment/capture.py"]
+            or argv[3] != b"run"
+        ):
+            return False
+        if Path(os.fsdecode(argv[2])).name != "lee-llm-router":
+            return False
+        # The fixed capture and marker must be the host's read-only mount.
+        return any(
+            len(fields := line.split()) > 5
+            and fields[4] == "/run/assignment"
+            and "ro" in fields[5].split(",")
+            for line in Path("/proc/self/mountinfo").read_text().splitlines()
+        )
+    except (OSError, ValueError, TypeError, KeyError, IndexError):
+        return False
+
+
 def _run_run(args: argparse.Namespace) -> int:
     """Run ``run``: select, dispatch, validate, append, and print one attempt.
 
@@ -1630,6 +1753,7 @@ def _run_run(args: argparse.Namespace) -> int:
         OracleOutcome,
         RunDispatchError,
         RunSelectionError,
+        _new_attempt_id,
         build_attempt_record,
         dispatch_route,
         no_work_evidence,
@@ -1666,6 +1790,13 @@ def _run_run(args: argparse.Namespace) -> int:
             )
         return exit_code
 
+    if _run_worker_bound():
+        return fail(
+            "bound workers must return delegated needs to the host employee broker",
+            as_json=bool(getattr(args, "json", False)),
+            kind="worker_bound",
+        )
+
     from lee_llm_router.staffing.unit_admission import (
         WORKER_ENV,
         UnitAdmissionError,
@@ -1681,6 +1812,23 @@ def _run_run(args: argparse.Namespace) -> int:
         (unit_state, unit_decision, unit_id)
     ):
         return fail("--unit-state, --unit-decision and --unit-id are required together")
+    from lee_llm_router.staffing.executor import ExecutorSpecError, load_executor_spec
+
+    executor_path = getattr(args, "executor_spec", None)
+    employee_id = getattr(args, "employee_id", None)
+    executor = None
+    if (executor_path is None) != (employee_id is None):
+        return fail("--executor-spec and --employee-id are required together")
+    if executor_path is not None:
+        if not all((unit_state, unit_decision, unit_id)):
+            return fail("executor requires all three parent unit flags")
+        try:
+            executor = load_executor_spec(executor_path)
+            executor.validate_binding(
+                employee_id, unit_id, json.loads(Path(unit_decision).read_text())
+            )
+        except (ExecutorSpecError, OSError, ValueError) as exc:
+            return fail(f"executor refused: {exc}")
     unit_start = None
     unit_record = None
     unit_execution = None
@@ -1712,6 +1860,11 @@ def _run_run(args: argparse.Namespace) -> int:
         )
     except RunSelectionError as exc:
         return fail(str(exc), as_json=as_json, exit_code=exc.exit_code)
+
+    attempt_id = getattr(args, "attempt_id", None)
+    if executor is not None and attempt_id is None:
+        attempt_id = _new_attempt_id()
+    executor_env = executor.binding_environment(attempt_id) if executor else {}
 
     packet_path = Path(args.packet).expanduser()
     try:
@@ -1933,6 +2086,8 @@ def _run_run(args: argparse.Namespace) -> int:
         if unit_state:
             try:
                 unit_execution = execution_identity()
+                if executor is not None:
+                    unit_execution["attempt_id"] = attempt_id
                 unit_execution["registry"] = {
                     "id": registration.registry_id,
                     "path": str(registration.path),
@@ -1958,8 +2113,28 @@ def _run_run(args: argparse.Namespace) -> int:
                         resolve_attempts_path().parent / "unit-bindings.jsonl"
                     ),
                 )
-            except UnitAdmissionError as exc:
+                if executor is not None:
+                    # Recheck the actual retained reservation, not a second mutable
+                    # decision-file read. Parent accounting remains host-owned.
+                    events = [
+                        json.loads(line)
+                        for line in Path(unit_state).read_text().splitlines()
+                        if line.strip()
+                    ]
+                    retained = next(
+                        e
+                        for e in events
+                        if e.get("kind") == "start" and e.get("start") == unit_start
+                    )
+                    executor.validate_binding(
+                        employee_id, unit_id, retained["decision"]
+                    )
+            except (UnitAdmissionError, ExecutorSpecError, OSError, ValueError) as exc:
                 return fail(f"parent admission refused: {exc}", as_json=as_json)
+        worker_env = {
+            **({WORKER_ENV: unit_execution["marker"]} if unit_execution else {}),
+            **executor_env,
+        }
         try:
             raw_prog = getattr(args, "progress_minutes", 20.0)
             if credential_path is not None:
@@ -1981,15 +2156,14 @@ def _run_run(args: argparse.Namespace) -> int:
                         watch_dirs=owned_paths,
                         extra_env={
                             **extra_env,
-                            **(
-                                {WORKER_ENV: unit_execution["marker"]}
-                                if unit_execution
-                                else {}
-                            ),
+                            **worker_env,
                         },
                         additional_dirs=additional_dirs,
                         control_plane=control_plane,
                         identity_inputs=identity_inputs,
+                        trusted_executor_argv_prefix=(
+                            executor.argv_prefix if executor else ()
+                        ),
                     )
             else:
                 dispatch = dispatch_route(
@@ -2004,11 +2178,10 @@ def _run_run(args: argparse.Namespace) -> int:
                     additional_dirs=additional_dirs,
                     control_plane=control_plane,
                     identity_inputs=identity_inputs,
-                    extra_env=(
-                        {WORKER_ENV: unit_execution["marker"]}
-                        if unit_execution
-                        else None
+                    trusted_executor_argv_prefix=(
+                        executor.argv_prefix if executor else ()
                     ),
+                    extra_env=worker_env or None,
                 )
         except (LLMRouterError, credentials.CredentialStagingError) as exc:
             return fail(f"dispatch failed: {exc}", as_json=as_json)
@@ -2064,7 +2237,7 @@ def _run_run(args: argparse.Namespace) -> int:
                 parent_attempt_id=parent,
                 escalation_reason=escalation_reason,
                 supervisor_route=outcome.supervisor_route,
-                attempt_id=getattr(args, "attempt_id", None),
+                attempt_id=attempt_id,
                 class_derivation=class_derivation,
                 additional_dirs=additional_dirs,
                 control_plane=control_plane,
@@ -2072,6 +2245,9 @@ def _run_run(args: argparse.Namespace) -> int:
             )
         except (LLMRouterError, OSError, TypeError, ValueError) as exc:
             return fail(f"attempt record could not be built: {exc}", as_json=as_json)
+
+        if executor is not None:
+            record["provenance"]["notes"].append(executor.provenance_note(attempt_id))
 
         # append_attempt performs the one schema validation immediately
         # before its one O_APPEND write. There is no pre-write repair or
@@ -3147,6 +3323,8 @@ def main(argv: list[str] | None = None):
             "order is selected (basis 'explain_cheapest_eligible')"
         ),
     )
+    run_parser.add_argument("--executor-spec", help="Privileged host executor v1 JSON")
+    run_parser.add_argument("--employee-id", help="Expected supervisor-bound employee")
     for flag in ("unit-state", "unit-decision", "unit-id"):
         run_parser.add_argument(
             f"--{flag}",

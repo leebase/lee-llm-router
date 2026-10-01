@@ -49,6 +49,228 @@ def _digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
+def _enforce_checkpoint(
+    decision: dict[str, Any],
+    starts: list[dict[str, Any]],
+    used_seconds: float,
+    timeout: float,
+    continuations: list[dict[str, Any]] | None = None,
+) -> None:
+    """Enforce checkpoints; explicit host-recorded grants preserve all counters."""
+    adopted = next(
+        (s["decision"]["checkpoint"] for s in starts if "checkpoint" in s["decision"]),
+        None,
+    )
+    if "checkpoint" not in decision:
+        _require(adopted is None, "checkpoint cannot disappear")
+        return  # Unadopted legacy callers retain their existing contract.
+    checkpoint = decision["checkpoint"]
+    _require(
+        isinstance(checkpoint, dict)
+        and set(checkpoint) == {"version", "max_starts", "max_seconds", "source"},
+        "invalid checkpoint schema",
+    )
+    _require(
+        type(checkpoint["version"]) is int
+        and checkpoint["version"] == 1
+        and type(checkpoint["max_starts"]) is int
+        and checkpoint["max_starts"] > 0
+        and _number(checkpoint["max_seconds"])
+        and checkpoint["max_seconds"] > 0
+        and _text(checkpoint["source"]),
+        "invalid checkpoint bounds/source",
+    )
+    _require(adopted is None or checkpoint == adopted, "checkpoint cannot reset")
+    # D268 permits one small internal checkpoint extension, never an outer-limit
+    # increase. Preserve the original checkpoint and make that exception finite.
+    extension = decision.get("checkpoint_extension")
+    _require(
+        "checkpoint_extension" not in decision or extension is not None,
+        "invalid one-start checkpoint extension",
+    )
+    old_extension = next(
+        (
+            s["decision"]["checkpoint_extension"]
+            for s in starts
+            if "checkpoint_extension" in s["decision"]
+        ),
+        None,
+    )
+    _require(
+        old_extension is None or extension == old_extension,
+        "checkpoint extension cannot disappear or reset",
+    )
+    extra = 0
+    if extension is not None:
+        _require(
+            adopted is not None
+            and isinstance(extension, dict)
+            and set(extension) == {"version", "starts", "source"}
+            and type(extension["version"]) is int
+            and extension["version"] == 1
+            and type(extension["starts"]) is int
+            and extension["starts"] == 1
+            and _text(extension["source"]),
+            "invalid one-start checkpoint extension",
+        )
+        extra = 1
+    max_starts = checkpoint["max_starts"] + extra
+    max_seconds = checkpoint["max_seconds"]
+    grant_ids: set[str] = set()
+    previous_baseline = -1
+    for grant in continuations or []:
+        _require(
+            isinstance(grant, dict)
+            and set(grant)
+            == {
+                "kind",
+                "version",
+                "unit_id",
+                "grant_id",
+                "at_start",
+                "used_seconds",
+                "additional_starts",
+                "additional_seconds",
+                "authority",
+                "source",
+                "source_sha256",
+                "recorded_at",
+            }
+            and grant["kind"] == "continuation_grant"
+            and type(grant["version"]) is int
+            and grant["version"] == 1
+            and grant["unit_id"] == decision["unit_id"]
+            and _text(grant["grant_id"])
+            and grant["grant_id"] not in grant_ids
+            and type(grant["at_start"]) is int
+            and previous_baseline < grant["at_start"] <= len(starts)
+            and _number(grant["used_seconds"])
+            and type(grant["additional_starts"]) is int
+            and grant["additional_starts"] > 0
+            and _number(grant["additional_seconds"])
+            and grant["additional_seconds"] > 0
+            and all(
+                _text(grant[k])
+                for k in ("authority", "source", "source_sha256", "recorded_at")
+            ),
+            "invalid host continuation grant",
+        )
+        source = Path(grant["source"])
+        _require(
+            source.is_absolute()
+            and source.is_file()
+            and hashlib.sha256(source.read_bytes()).hexdigest()
+            == grant["source_sha256"],
+            "continuation authority source missing or changed",
+        )
+        grant_ids.add(grant["grant_id"])
+        previous_baseline = grant["at_start"]
+        # A new explicit grant replaces the old ceiling, never the accounting.
+        max_starts = grant["at_start"] + grant["additional_starts"]
+        max_seconds = grant["used_seconds"] + grant["additional_seconds"]
+    _require(
+        len(starts) + 1 <= max_starts,
+        "checkpoint starts exhausted; preserve incomplete disposition",
+    )
+    _require(
+        used_seconds + timeout <= max_seconds,
+        "checkpoint time exhausted; preserve incomplete disposition",
+    )
+
+
+def _workstream_starts(
+    starts: list[dict[str, Any]], decision: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Select a stable review unit while preserving whole-parent accounting.
+
+    Authority is the trusted supervisor's attributed assertion, like limits.authority;
+    this validates continuity and boundary change, not the truth of that grant.
+    """
+    current = decision.get("workstream")
+    old = starts[-1]["decision"].get("workstream") if starts else None
+    if current is None:
+        _require(old is None, "workstream handoff cannot disappear")
+        return starts
+    fields = {
+        "version",
+        "id",
+        "owner",
+        "owned_paths",
+        "previous_id",
+        "authority",
+        "boundary",
+    }
+    _require(
+        isinstance(current, dict) and set(current) == fields,
+        "invalid workstream handoff",
+    )
+    _require(
+        type(current["version"]) is int and current["version"] == 1,
+        "invalid workstream version",
+    )
+    for key in ("id", "owner", "authority"):
+        _require(
+            _text(current[key]) and len(current[key]) <= 4096,
+            "invalid workstream identity/authority",
+        )
+    paths = current["owned_paths"]
+    _require(
+        isinstance(paths, list)
+        and 0 < len(paths) <= 32
+        and all(_text(p) for p in paths),
+        "workstream owned paths required",
+    )
+    _require(
+        len(set(paths)) == len(paths)
+        and all(
+            Path(p).is_absolute()
+            and str(Path(p)) == p
+            and ".." not in Path(p).parts
+            and p != "/"
+            for p in paths
+        ),
+        "invalid workstream owned paths",
+    )
+    if old is not None and current["id"] == old["id"]:
+        _require(current == old, "stable workstream contract cannot change")
+    else:
+        previous_id = old["id"] if old is not None else "initial"
+        _require(
+            current["id"] != "initial" and current["previous_id"] == previous_id,
+            "workstream predecessor mismatch",
+        )
+        _require(
+            all(
+                s["decision"].get("workstream", {}).get("id") != current["id"]
+                for s in starts
+            ),
+            "workstream identity cannot be reused",
+        )
+        _require(
+            current["boundary"] in {"authority", "owned_surface"},
+            "governing boundary change required",
+        )
+        if old is not None:
+            _require(
+                (
+                    current["boundary"] == "authority"
+                    and current["owner"] != old["owner"]
+                )
+                or (
+                    current["boundary"] == "owned_surface"
+                    and paths != old["owned_paths"]
+                ),
+                "workstream rename does not change governing boundary",
+            )
+        else:
+            _require(
+                current["boundary"] == "authority"
+                and current["owner"] != "chief-of-staff",
+                "initial owner transition needs changed authority",
+            )
+    return [s for s in starts if s["decision"].get("workstream") == current]
+
+
 @contextmanager
 def _journal(path: Path) -> Iterator[tuple[Any, list[dict[str, Any]]]]:
     # Reuse the existing bounded, crash-released ledger writer lock.
@@ -320,6 +542,10 @@ def reserve_start(
                 "journal belongs to another parent",
             )
             _require(
+                not any(e.get("kind") == "outcome_closed" for e in events),
+                "parent outcome already closed; no further starts",
+            )
+            _require(
                 decision.get("previous")
                 == (_digest(starts[-1]["decision"]) if starts else None),
                 "stale/resetting parent decision",
@@ -535,13 +761,16 @@ def reserve_start(
                         != (prior["capability"], prior["hypothesis"]),
                         "renamed method is causally unchanged",
                     )
+            review_starts = _workstream_starts(starts, decision)
             phase = dispatch.get("phase")
             _require(
                 phase in {"author", "diagnose", "repair", "review", "final_review"},
                 "invalid transaction phase",
             )
             round_number = dispatch.get("repair_round")
-            prior_dispatch = previous.get("dispatch", {})
+            prior_dispatch = (
+                review_starts[-1]["decision"]["dispatch"] if review_starts else {}
+            )
             prior_round = prior_dispatch.get("repair_round", 0)
             prior_phase = prior_dispatch.get("phase")
             _require(
@@ -551,7 +780,8 @@ def reserve_start(
             completed = [
                 s
                 for s, a in zip(starts, assessments)
-                if finishes[s["start"]].get("attempt") is not None
+                if s in review_starts
+                and finishes[s["start"]].get("attempt") is not None
                 and (
                     s["decision"]["dispatch"]["phase"] not in {"review", "final_review"}
                     or a["review_outcome"] != "incomplete"
@@ -566,7 +796,7 @@ def reserve_start(
                 phase != "author"
                 or not any(
                     s["decision"]["dispatch"]["phase"] in {"review", "final_review"}
-                    for s in starts
+                    for s in review_starts
                 ),
                 "authoring cannot restart after independent review",
             )
@@ -617,7 +847,7 @@ def reserve_start(
             if phase in {"review", "final_review"}:
                 failed_reviews = [
                     s
-                    for s in starts
+                    for s in review_starts
                     if s["decision"]["dispatch"]["phase"] == phase
                     and s["decision"]["dispatch"]["repair_round"] == round_number
                     and s not in completed
@@ -642,6 +872,18 @@ def reserve_start(
                 "supplied parent starts exhausted",
             )
             used = sum(f["seconds"] for f in finishes.values())
+            continuations = [e for e in events if e.get("kind") == "continuation_grant"]
+            for grant in continuations:
+                _require(
+                    grant.get("used_seconds")
+                    == sum(
+                        f["seconds"]
+                        for number, f in finishes.items()
+                        if number <= grant.get("at_start", -1)
+                    ),
+                    "continuation baseline accounting mismatch",
+                )
+            _enforce_checkpoint(decision, starts, used, timeout, continuations)
             reserve_seconds = (
                 0 if phase == "final_review" else limits.get("reserve_seconds", 0)
             )
@@ -721,3 +963,147 @@ def finish_start(
                 "controller_finished_at": datetime.now(timezone.utc).isoformat(),
             },
         )
+
+
+_PRESERVED_AT_CLOSURE = ("checkpoint", "checkpoint_extension", "limits", "workstream")
+
+
+def close_outcome(
+    journal_path: str | Path, unit_id: str, decision: dict[str, Any]
+) -> dict[str, Any]:
+    """Close a parent outcome once every start is accounted and every gap proved.
+
+    The host supplies the final acceptance judgment; this guard enforces
+    continuity with the frozen last decision and refuses while anything is
+    unaccounted, OPEN, BLOCKED or short of independent-review proof. Nothing is
+    appended on refusal, and a closed parent admits no further start.
+
+    Args:
+        journal_path: The same stable parent journal used at admission.
+        unit_id: The inherited parent identity.
+        decision: Version-1 closing decision continuing the last start's decision.
+
+    Returns:
+        The appended ``outcome_closed`` event.
+
+    Raises:
+        UnitAdmissionError: Caller, identity, accounting or acceptance fail.
+    """
+    try:
+        _require(
+            not os.environ.get(WORKER_ENV),
+            "worker-bound caller cannot close a parent outcome",
+        )
+        _require(isinstance(decision, dict), "decision must be an object")
+        _require(
+            decision.get("version") == 1
+            and decision.get("unit_id") == unit_id
+            and _text(unit_id),
+            "parent version/identity mismatch",
+        )
+        journal = Path(journal_path)
+        _require(journal.is_file(), "parent journal missing; nothing to close")
+        with _journal(journal) as (stream, events):
+            _require(
+                all(e.get("unit_id") == unit_id for e in events),
+                "journal belongs to another parent",
+            )
+            _require(
+                not any(e.get("kind") == "outcome_closed" for e in events),
+                "parent outcome already closed; frozen outcome cannot change",
+            )
+            starts = [e for e in events if e.get("kind") == "start"]
+            _require(bool(starts), "no completed parent start to close")
+            _require(
+                decision.get("previous") == _digest(starts[-1]["decision"]),
+                "stale/resetting parent decision",
+            )
+            _require(
+                type(decision.get("completed_starts")) is int
+                and decision["completed_starts"] == len(starts),
+                "completed_starts mismatch; parent start count cannot reset",
+            )
+            numbers = [s["start"] for s in starts]
+            _require(
+                numbers == list(range(1, len(starts) + 1)),
+                "parent start numbering must be exact 1..N",
+            )
+            finishes: dict[int, dict[str, Any]] = {}
+            for e in events:
+                if e.get("kind") in {"finish", "reconcile"}:
+                    _require(e.get("start") in numbers, "finishes must match starts")
+                    finishes[e["start"]] = e
+            _require(
+                all(
+                    n in finishes
+                    and finishes[n].get("accounted") is True
+                    and _number(finishes[n].get("seconds"))
+                    for n in numbers
+                ),
+                "unaccounted parent start; reconcile retained launch evidence first",
+            )
+            last = starts[-1]["decision"]
+            for key in _PRESERVED_AT_CLOSURE:
+                default: Any = {} if key == "limits" else None
+                _require(
+                    decision.get(key, default) == last.get(key, default),
+                    f"{key} cannot reset at closure",
+                )
+            _validate_rows(decision.get("gaps"), last.get("gaps", []))
+            for gap in decision["gaps"]:
+                _require(
+                    gap["state"] not in {"OPEN", "BLOCKED"},
+                    f"gap {gap['id']} remains {gap['state']}; closure refused",
+                )
+            _require(
+                all(
+                    g["state"] == "PROVED"
+                    for g in decision["gaps"]
+                    if g.get("kind") == "independent_review"
+                ),
+                "independent review must be PROVED; waiver never closes an outcome",
+            )
+            assessments = decision.get("assessments")
+            _require(
+                isinstance(assessments, list) and len(assessments) == len(starts),
+                "every completed start requires an acceptance assessment",
+            )
+            old_assessments = last.get("assessments", [])
+            _require(
+                assessments[: len(old_assessments)] == old_assessments,
+                "method assessment history cannot reset",
+            )
+            for start, assessment in zip(starts, assessments):
+                _require(
+                    isinstance(assessment, dict)
+                    and assessment.get("start") == start["start"]
+                    and type(assessment.get("advanced")) is bool
+                    and type(assessment.get("denied")) is bool
+                    and _text(assessment.get("evidence")),
+                    "invalid method assessment",
+                )
+                if start["decision"]["dispatch"]["phase"] in {"review", "final_review"}:
+                    _require(
+                        assessment.get("review_outcome")
+                        in {"passed", "blocking", "incomplete"},
+                        "review outcome evidence required",
+                    )
+            event = {
+                "kind": "outcome_closed",
+                "unit_id": unit_id,
+                "decision": decision,
+                "completed_starts": len(starts),
+                "cumulative_seconds": sum(finishes[n]["seconds"] for n in numbers),
+                "observed_at": datetime.now(timezone.utc).isoformat(),
+            }
+            _append(stream, event)
+            return event
+    except (
+        AttemptLedgerError,
+        OSError,
+        UnicodeError,
+        ValueError,
+        KeyError,
+        TypeError,
+    ) as exc:
+        raise UnitAdmissionError(str(exc)) from exc

@@ -283,6 +283,15 @@ Next action is Phase 1's first packet — display the effective channel tier in 
 
 *This file is a living document - update it frequently.*
 
+## 2026-09-22 — provisional successor models (Chief D355)
+
+Live staffing routes and crew bindings now select GPT-6 Sol, GPT-6 Luna and Claude Opus 5.5 in the former GPT-5.6 Sol/Luna and Opus 5 positions. Harness, effort, channel, role, reviewer-independence and never-automatic constraints are retained. The source is `config/staffing/`; historical evidence strings intentionally retain original IDs. Local catalog/crew doctors and focused tests passed; see Chief journal `2026-09-22.model-route-replacement.md`. Reassess after measured supervised outcomes.
+
+## 2026-09-22 — FS0 CSS packet classification repair
+
+FS5.1a's owned `frontend/src/styles.css` exposed a blocked `staff --from-packet` path. The classifier now derives the existing `mixed` language for CSS, including TSX+CSS, while unknown extensions still fail. Focused class suite: 33 passed; FS5.1a staff JSON retained all nine owned paths and derived `mixed`. Chief independent oracle, exact delta/CLI check, and final review remain pending.
+
+
 ## 2026-09-29 — isolated supervise owner repair candidate
 
 Direct owner assignment `supervise-remediation-0929`; amended diagnosis implemented
@@ -321,3 +330,29 @@ Lee accepted the rollout and authorized commit/push. The publication includes
 exact reviewed runtime bytes and necessary accepted reserve/launch dependencies,
 with catalog-compatible focused tests. Model replacements, CSS work and other
 canonical dirt remain outside this commit. See [user instructions](docs/supervise-rollout.md).
+
+## 2026-09-30 — Bonnie parent-preserving router-owner integration candidate
+
+Lee explicitly delegated the Chief as router owner for this bounded integration.
+Original parent `bonnie-architecture-upgrade-0930` remains in the Chief plan's
+append-only STATE journal. A strict workstream boundary scopes author/review
+rounds to genuinely changed owners or owned components; whole-parent starts,
+time, gap history, failures and limits remain cumulative. The protected executor
+prefix is privileged host configuration: it binds employee/parent/gap before
+reservation and carries the actual host-allocated attempt identity into Staff's
+fixed namespace adapter. A prefix by itself does not establish confinement.
+Independent owner-seam review passed; Staff consumption and forced-recovery
+integration acceptance remain open. No customer deployment or acceptance claim.
+Evidence: Chief `plans/bonnie-architecture-upgrade/OR1-record.json` and this
+repository `code-reviews/bonnie-owner-seam.md`; exact modifications are staged,
+not a publication of unrelated catalog work.
+
+
+## Chief owner repair — Bonnie, October1
+
+Lee explicitly authorized router-owner work for the original Bonnie parent. Added immutable opted-in economical checkpoint with one finite D268 extension; installed supervise guidance requires adoption. Final router210 checks passed. Independent source review72 approved its exact frozen revision; later two-field assignment-binding compatibility delta remains independently unapproved after final review75 launcher failed before the model. Original parent retains75 starts/75 finishes and exhaustion refuses another start. No76, no deployment, no parent acceptance. Evidence: /home/lee/projects/chief-of-staff/plans/bonnie-architecture-upgrade/RESULT.md. This scoped continuation does not supersede unrelated router work.
+
+
+## 2026-10-01 — Bonnie explicitly authorized continuation accepted
+
+This supersedes the exhausted75-attempt Bonnie disposition above for technical predeployment scope only. Lee granted12 additional routed starts/10800 aggregate worker-seconds under the original parent. The host admission seam now validates append-only authority-attributed continuation grants without changing counters or the old checkpoint. `close_outcome` rejects OPEN gaps and unaccounted starts, records evidenced parent closure, and prevents new starts on a closed parent. Independent final parent review87 approved the final candidate; actual original-parent closure succeeded after the unattended same-parent failure/recovery, owner handoff, review and employee-result evidence reconciled. All87 starts/finishes retained; continuation used581.412 recorded worker-seconds. Focused closure/checkpoint/continuation checks:37 passed; prior210 router/119 Staff accepted checks retained without redundant reruns. No deployment, customer acceptance or general restoration of failed staffing methods. No unrelated repository changes published. Evidence: `/home/lee/projects/chief-of-staff/plans/bonnie-architecture-upgrade/RESULT.md`, `proof/PARENT-INDEPENDENT-ACCEPTANCE.md`, `proof/FINAL-GUARDED-CLOSURE.json`. Frozen credential-free release manifest and limitations are in that outcome directory.

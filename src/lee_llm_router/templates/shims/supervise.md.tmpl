@@ -445,3 +445,11 @@ completed blocking review requires the next directed repair round. Multiple
 targets name advanced_targets explicitly; movement on another row never resets
 the failed target’s method streak. Labels/capability claims remain subject to
 independent evidence inspection.
+
+## Enforced economical checkpoint — 2026-10-01
+
+Before the next opted-in parent dispatch, freeze a finite internal execution checkpoint in the decision as `checkpoint: {version: 1, max_starts: <absolute cumulative ceiling>, max_seconds: <absolute cumulative routed-seconds ceiling>, source: <attributed checkpoint basis>}`. Include every retained start, reconciliation, child, review and owner handoff when calculating ceilings. This is economical supervisor judgment, not an invented user budget; supplied outer limits also remain binding. Once adopted, the router refuses removing or changing this checkpoint, and refuses the next reservation before provider launch when either ceiling is exhausted. Cloned child decisions must retain it. Do not use an unadopted legacy start or new parent to evade it.
+
+Choose a proportionate bounded checkpoint that reserves independent review and consuming verification. A model, method, packet, workstream or local test improvement cannot renew the checkpoint. Report acceptance-gap movement separately from implementation evidence: if owner acceptance remains unproved, local fixes do not justify an unlimited new sequence. At exhaustion preserve useful state and return an incomplete disposition; do not request routine permission or claim the task is complete. Explicit later budget authority requires its own supported contract, not editing the frozen checkpoint.
+
+D268 permits one small same-DoD internal checkpoint extension. Keep the original checkpoint immutable; a separate `checkpoint_extension: {version: 1, starts: 1, source: <attributed exception and evidence>}` grants at most one extra cumulative start and no extra time. Once adopted it cannot be changed or removed. It never raises supplied outer limits and never renews through a successor. Do not use this once-only allowance for an unchanged failed method.
